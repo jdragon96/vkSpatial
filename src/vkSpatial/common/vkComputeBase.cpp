@@ -7,6 +7,10 @@
 #include <stdexcept>
 #include <unordered_map>
 
+#ifndef VKBVH_SHADER_DIR
+#define VKBVH_SHADER_DIR "."
+#endif
+
 namespace vkCommon {
 
     // ── 파일시스템 include 처리기 ─────────────────────────────────────────────────
@@ -150,18 +154,20 @@ namespace vkCommon {
         m_dirty = true;
     }
 
-    vkComputeBase &vkComputeBase::Build(const std::string &path) {
+    vkComputeBase &vkComputeBase::Build(const std::string &filename) {
         destroyShaderResources();
 
-        std::ifstream f(path, std::ios::binary);
+        const std::string fullPath = std::string(VKBVH_SHADER_DIR) + "/" + filename;
+
+        std::ifstream f(fullPath, std::ios::binary);
         if (!f.is_open())
-            throw std::runtime_error("vkComputeBase::BuildFromFile: cannot open " + path);
+            throw std::runtime_error("vkComputeBase::BuildFromFile: cannot open " + fullPath);
         std::ostringstream ss;
         ss << f.rdbuf();
         std::string src = ss.str();
 
-        auto lastSlash = path.rfind('/');
-        std::string dir = (lastSlash != std::string::npos) ? path.substr(0, lastSlash) : ".";
+        auto lastSlash = fullPath.rfind('/');
+        std::string dir = (lastSlash != std::string::npos) ? fullPath.substr(0, lastSlash) : ".";
 
         shaderc::Compiler compiler;
         shaderc::CompileOptions opts;
@@ -169,7 +175,7 @@ namespace vkCommon {
         opts.SetIncluder(std::make_unique<FilesystemIncluder>(dir));
 
         auto result = compiler.CompileGlslToSpv(
-                src, shaderc_compute_shader, path.c_str(), opts);
+                src, shaderc_compute_shader, fullPath.c_str(), opts);
         if (result.GetCompilationStatus() != shaderc_compilation_status_success)
             throw std::runtime_error("vkComputeBase::BuildFromFile: " + result.GetErrorMessage());
 

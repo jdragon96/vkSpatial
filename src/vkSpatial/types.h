@@ -9,14 +9,6 @@
 
 namespace vkCommon {
 
-    struct AABB {
-        float aabbMinX, aabbMinY, aabbMinZ;
-        float aabbMaxX, aabbMaxY, aabbMaxZ;
-
-        void Extend() {
-        }
-    };
-
     struct Primitive {
         uint32_t index;
         float aabbMinX, aabbMinY, aabbMinZ;

@@ -14,7 +14,7 @@
 #include <random>
 #include <vector>
 
-using namespace vkbvh;
+using namespace vkSpatial;
 using namespace vkCommon;
 
 #ifndef VKBVH_SHADER_DIR
@@ -88,8 +88,6 @@ static void buildHierarchy(VkContext &ctx,
     const uint32_t N = static_cast<uint32_t>(prims.size());
     const uint32_t NODES = 2 * N - 1;
     const uint32_t numWGs = (N + WG_SIZE - 1) / WG_SIZE;
-    const std::string sd = VKBVH_SHADER_DIR;
-
     vkGPUMemory primBuf(ctx.device, ctx.physDevice);
     vkGPUMemory mortonBuf(ctx.device, ctx.physDevice);
     vkGPUMemory pongBuf(ctx.device, ctx.physDevice);
@@ -110,7 +108,7 @@ static void buildHierarchy(VkContext &ctx,
     mc.Extend(prims);
     {
         vkComputeBase k(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        k.Build(sd + "/bvh_mortonCode.comp")
+        k.Build("bvh_mortonCode.comp")
                 .Bind(0, mortonBuf)
                 .Bind(1, primBuf)
                 .Args(mc)
@@ -126,7 +124,7 @@ static void buildHierarchy(VkContext &ctx,
         RadixScanPC pcScan{numWGs};
 
         vkComputeBase h(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        h.Build(sd + "/bvh_radixSort_histogram.comp")
+        h.Build("bvh_radixSort_histogram.comp")
                 .Bind(0, *ping)
                 .Bind(1, histBuf)
                 .Args(pcSort)
@@ -134,14 +132,14 @@ static void buildHierarchy(VkContext &ctx,
         h.Sync();
 
         vkComputeBase s(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        s.Build(sd + "/bvh_radixSort_prefixScan.comp")
+        s.Build("bvh_radixSort_prefixScan.comp")
                 .Bind(0, histBuf)
                 .Args(pcScan)
                 .Dispatch(1);
         s.Sync();
 
         vkComputeBase r(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        r.Build(sd + "/bvh_radixSort_reorder.comp")
+        r.Build("bvh_radixSort_reorder.comp")
                 .Bind(0, *ping)
                 .Bind(1, histBuf)
                 .Bind(2, *pong)
@@ -155,7 +153,7 @@ static void buildHierarchy(VkContext &ctx,
     HierarchyPC hpc{N, 1u};
     {
         vkComputeBase k(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        k.Build(sd + "/bvh_hierarchy.comp")
+        k.Build("bvh_hierarchy.comp")
                 .Bind(0, *ping)
                 .Bind(1, primBuf)
                 .Bind(2, nodeBuf)

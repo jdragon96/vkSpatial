@@ -2,12 +2,25 @@
 
 #include "vkSpatial/common/vkScopedMemory.h"
 
+#include <memory>
 #include <vulkan/vulkan.h>
 
 namespace vkCommon {
 
     class vkGPUMemory {
+    public:
+        using UniquePtr = std::unique_ptr<vkGPUMemory>;
+        using SharedPtr = std::shared_ptr<vkGPUMemory>;
 
+        static UniquePtr MakeUnique(VkDevice device, VkPhysicalDevice physicalDevice,
+                                    VkBufferUsageFlags extraUsage = 0) {
+            return std::make_unique<vkGPUMemory>(device, physicalDevice, extraUsage);
+        }
+
+        static SharedPtr MakeShared(VkDevice device, VkPhysicalDevice physicalDevice,
+                                    VkBufferUsageFlags extraUsage = 0) {
+            return std::make_shared<vkGPUMemory>(device, physicalDevice, extraUsage);
+        }
 
     public:
         vkGPUMemory(VkDevice device, VkPhysicalDevice physicalDevice,

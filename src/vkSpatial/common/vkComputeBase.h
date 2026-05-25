@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -18,6 +19,19 @@ namespace vkCommon {
 
     class vkComputeBase {
     public:
+        using UniquePtr = std::unique_ptr<vkComputeBase>;
+        using SharedPtr = std::shared_ptr<vkComputeBase>;
+
+        static UniquePtr MakeUnique(VkDevice device, VkPhysicalDevice physicalDevice,
+                                    VkQueue computeQueue, VkCommandPool commandPool) {
+            return std::make_unique<vkComputeBase>(device, physicalDevice, computeQueue, commandPool);
+        }
+
+        static SharedPtr MakeShared(VkDevice device, VkPhysicalDevice physicalDevice,
+                                    VkQueue computeQueue, VkCommandPool commandPool) {
+            return std::make_shared<vkComputeBase>(device, physicalDevice, computeQueue, commandPool);
+        }
+
         vkComputeBase(VkDevice device,
                       VkPhysicalDevice physicalDevice,
                       VkQueue computeQueue,
@@ -39,6 +53,10 @@ namespace vkCommon {
         vkComputeBase &Bind(uint32_t binding, vkGPUMemory &mem) {
             return Bind(binding, mem.GetBuffer(),
                         static_cast<VkDeviceSize>(mem.GetSize()));
+        }
+
+        vkComputeBase &Bind(uint32_t binding, vkGPUMemory::SharedPtr mem) {
+            return Bind(binding, *mem);
         }
 
         template<typename T>

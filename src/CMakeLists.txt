@@ -26,3 +26,6 @@ target_include_directories(vkSpatial
 
 set(VKBVH_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shader"
         CACHE PATH "vkSpatial GLSL shader directory" FORCE)
+
+target_compile_definitions(vkSpatial PRIVATE
+        VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")

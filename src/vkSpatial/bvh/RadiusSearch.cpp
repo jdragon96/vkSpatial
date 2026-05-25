@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <stdexcept>
 
-namespace vkbvh {
+namespace vkSpatial {
 
     namespace {
         struct RadiusSearchPC {
@@ -38,7 +38,7 @@ namespace vkbvh {
         RadiusSearchPC pc{cx, cy, cz, r, maxResults};
 
         auto kernel = makeKernel(m_ctx);
-        kernel.Build(m_shaderDir + "/cmd_radiusSearch.comp")
+        kernel.Build("cmd_radiusSearch.comp")
                 .Bind(0, *m_nodeBuf)
                 .Bind(1, queryBuffer)
                 .Bind(2, countBuffer)
@@ -61,4 +61,4 @@ namespace vkbvh {
         return results;
     }
 
-} // namespace vkbvh
+} // namespace vkSpatial

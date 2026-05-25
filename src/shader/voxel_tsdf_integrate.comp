@@ -1,0 +1,86 @@
+#version 460
+layout(local_size_x = 256) in;
+
+#define TSDF_SCALE   10000
+
+#include "voxel_common.glsl"
+
+layout(push_constant) uniform PC {
+    uint  g_numPoints;
+    uint  g_hashCapacity;
+    float g_voxelSize;
+    float g_truncation;
+    float g_camX;
+    float g_camY;
+    float g_camZ;
+};
+
+struct TSDFEntry { uint key; int sumDW; uint sumW; uint pad; };
+
+layout(std430, set = 0, binding = 0) buffer HashTable { TSDFEntry g_hash[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Points { float g_points[]; };
+layout(        set = 0, binding = 2) buffer Stat { uint g_filledCount; };
+
+// Insert or find key in hash table; returns slot index or ~0u if full.
+uint findOrInsert(uint key) {
+    uint slot = wangHash(key) % g_hashCapacity;
+    for (uint p = 0u; p < MAX_PROBE; p++) {
+        uint idx  = (slot + p) % g_hashCapacity;
+        uint prev = atomicCompSwap(g_hash[idx].key, EMPTY_KEY, key);
+        if (prev == EMPTY_KEY) {
+            atomicAdd(g_filledCount, 1u);
+            return idx;
+        }
+        if (prev == key) return idx;
+    }
+    return ~0u;
+}
+
+// ── main ───────────────────────────────────────────────────────────────────────
+//
+// TSDF integration (per observed surface point):
+//
+//   For each voxel within the truncation band along the camera ray toward p:
+//     sdf = depth - projectedDist(voxelCenter, camPos, rayDir)
+//     sumDW += sdf      (×TSDF_SCALE, fixed-point)
+//     sumW  += 1.0      (×TSDF_SCALE)
+//
+//   Actual TSDF value recovered as: float(sumDW) / float(sumW)
+//
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= g_numPoints) return;
+
+    vec3 p   = vec3(g_points[gid * 3u],
+                    g_points[gid * 3u + 1u],
+                    g_points[gid * 3u + 2u]);
+    vec3 cam = vec3(g_camX, g_camY, g_camZ);
+
+    vec3  diff  = p - cam;
+    float depth = length(diff);
+    if (depth < 1e-6) return;
+    vec3 rayDir = diff / depth;
+
+    float trunc = g_truncation;
+    int   steps = int(ceil(trunc / g_voxelSize)) + 1;
+
+    for (int t = -steps; t <= steps; t++) {
+        // Sample position along ray, centred on the surface point
+        vec3  samplePos = p + rayDir * (float(t) * g_voxelSize);
+        ivec3 coord     = ivec3(floor(samplePos / g_voxelSize));
+        vec3  vCenter   = (vec3(coord) + vec3(0.5)) * g_voxelSize;
+
+        // Signed distance: positive = in front of surface, negative = behind
+        float projLen = dot(vCenter - cam, rayDir);
+        float sdf     = depth - projLen;
+        if (abs(sdf) > trunc) continue;
+
+        uint key  = packCoord(coord);
+        uint slot = findOrInsert(key);
+        if (slot == ~0u) continue;
+
+        int sdwi = int(sdf * float(TSDF_SCALE));
+        atomicAdd(g_hash[slot].sumDW, sdwi);
+        atomicAdd(g_hash[slot].sumW,  uint(TSDF_SCALE));
+    }
+}

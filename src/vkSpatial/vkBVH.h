@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace vkbvh {
+namespace vkSpatial {
 
     using namespace vkCommon;
 
@@ -69,7 +69,7 @@ namespace vkbvh {
 
     class vkBVH {
     public:
-        explicit vkBVH(VkContext *ctx, const std::string &shaderDir);
+        explicit vkBVH(VkContext *ctx);
 
         ~vkBVH();
 
@@ -106,11 +106,9 @@ namespace vkbvh {
         std::unique_ptr<vkCommon::vkGPUMemory> m_nodeBuf;         // Node[] (BVH output)
         std::unique_ptr<vkCommon::vkGPUMemory> m_constructionBuf; // LBVHConstructionInfo[]
 
-        std::string m_shaderDir;
-
         uint32_t m_count = 0;
 
         bool m_built = false;
     };
 
-} // namespace vkbvh
+} // namespace vkSpatial

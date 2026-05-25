@@ -1,0 +1,76 @@
+#version 460
+
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PC {
+    uint  g_numPoints;
+    uint  g_hashCapacity;
+    float g_voxelSize;
+};
+
+struct VoxelEntry {
+    uint key;    // packed 10-bit coord per axis, 0xFFFFFFFF = empty
+    uint count;
+};
+
+// binding 0: hash table
+layout(std430, set = 0, binding = 0) buffer HashTable {
+    VoxelEntry g_hash[];
+};
+
+// binding 1: input points (packed float3, matches Eigen::Vector3f)
+layout(std430, set = 0, binding = 1) readonly buffer Points {
+    float g_points[];
+};
+
+// binding 2: filled-voxel counter
+layout(std430, set = 0, binding = 2) buffer Stat {
+    uint g_filledCount;
+};
+
+#define EMPTY_KEY  0xFFFFFFFFu
+#define MAX_PROBE  128u
+
+// Pack ivec3 [-512,511] into 30 bits (10 per axis)
+uint packCoord(ivec3 c) {
+    return ((uint(c.x + 512) & 0x3FFu) << 20u)
+         | ((uint(c.y + 512) & 0x3FFu) << 10u)
+         |  (uint(c.z + 512) & 0x3FFu);
+}
+
+// Wang hash for scatter
+uint hashKey(uint k) {
+    k ^= k >> 16u;
+    k *= 0x45d9f3bu;
+    k ^= k >> 16u;
+    return k;
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= g_numPoints) return;
+
+    vec3  position    = vec3(g_points[gid * 3u],
+                       g_points[gid * 3u + 1u],
+                       g_points[gid * 3u + 2u]);
+
+    ivec3 coord = ivec3(floor(position / g_voxelSize));
+    uint  key   = packCoord(coord);
+    uint  h     = hashKey(key) % g_hashCapacity;
+
+    for (uint probe = 0u; probe < MAX_PROBE; probe++) {
+        uint slot = (h + probe) % g_hashCapacity;
+
+        uint prev = atomicCompSwap(g_hash[slot].key, EMPTY_KEY, key);
+
+        if (prev == EMPTY_KEY) {
+            atomicAdd(g_hash[slot].count, 1u);
+            atomicAdd(g_filledCount, 1u);
+            return;
+        }
+        if (prev == key) {
+            atomicAdd(g_hash[slot].count, 1u);
+            return;
+        }
+    }
+}

@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <stdexcept>
 
-namespace vkbvh {
+namespace vkSpatial {
 
     namespace {
         constexpr uint32_t MAX_K = 64;
@@ -41,7 +41,7 @@ namespace vkbvh {
         KNNPC pc{cx, cy, cz, uk};
 
         auto kernel = makeKernel(m_ctx);
-        kernel.Build(m_shaderDir + "/cmd_knn.comp")
+        kernel.Build("cmd_knn.comp")
                 .Bind(0, *m_nodeBuf)
                 .Bind(1, resultBuf)
                 .Bind(2, distBuf)
@@ -62,4 +62,4 @@ namespace vkbvh {
         return indices;
     }
 
-} // namespace vkbvh
+} // namespace vkSpatial

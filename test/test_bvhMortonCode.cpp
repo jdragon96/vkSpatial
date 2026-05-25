@@ -92,8 +92,7 @@ protected:
         };
         // shaderc(GlslSrc)가 크래시하므로 glslc로 사전 컴파일한 SPIR-V를 사용
         // VkComputeTest와 다르게 MortonCodeTest 셰이더는 런타임 컴파일 불가
-        const std::string shaderDir = VKBVH_SHADER_DIR;
-        const std::string compPath = shaderDir + "/bvh_mortonCode.comp";
+        const std::string compPath = std::string(VKBVH_SHADER_DIR) + "/bvh_mortonCode.comp";
         const std::string spvPath = "/tmp/bvh_mortonCode.spv";
 
         // glslc로 SPIR-V 사전 컴파일

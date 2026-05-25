@@ -12,16 +12,12 @@
 #include <random>
 #include <vector>
 
-using namespace vkbvh;
-
+using namespace vkSpatial;
+using namespace vkCommon;
 
 #ifndef VKBVH_SHADER_DIR
 #define VKBVH_SHADER_DIR "."
 #endif
-
-// ── GPU Radix Sort 헬퍼 ───────────────────────────────────────────────────────
-// vkBVH::stepSortMortonCodes() 의 독립 버전
-// count → scan → scatter 를 8번 반복 (4비트 × 8 = 32비트)
 
 static std::vector<MortonCode> gpuRadixSort(VkContext &ctx, const std::vector<MortonCode> &input) {
     constexpr uint32_t WG_SIZE = 256;
@@ -53,8 +49,6 @@ static std::vector<MortonCode> gpuRadixSort(VkContext &ctx, const std::vector<Mo
         uint32_t g_numWGs;
     };
 
-    const std::string shaderDir = VKBVH_SHADER_DIR;
-
     // ── 8패스 Radix Sort ─────────────────────────────────────────────────────
     for (uint32_t pass = 0; pass < PASSES; pass++) {
         SortPC pcSort{N, pass * 4};
@@ -62,7 +56,7 @@ static std::vector<MortonCode> gpuRadixSort(VkContext &ctx, const std::vector<Mo
 
         // Phase 1: 워크그룹별 히스토그램
         vkComputeBase count(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        count.Build(shaderDir + "/bvh_radixSort_histogram.comp")
+        count.Build("bvh_radixSort_histogram.comp")
                 .Bind(0, *ping)
                 .Bind(1, histBuf)
                 .Args(pcSort)
@@ -71,7 +65,7 @@ static std::vector<MortonCode> gpuRadixSort(VkContext &ctx, const std::vector<Mo
 
         // Phase 2: 전역 Prefix Scan
         vkComputeBase scan(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        scan.Build(shaderDir + "/bvh_radixSort_prefixScan.comp")
+        scan.Build("bvh_radixSort_prefixScan.comp")
                 .Bind(0, histBuf)
                 .Args(pcScan)
                 .Dispatch(1);
@@ -79,7 +73,7 @@ static std::vector<MortonCode> gpuRadixSort(VkContext &ctx, const std::vector<Mo
 
         // Phase 3: Scatter
         vkComputeBase scatter(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        scatter.Build(shaderDir + "/bvh_radixSort_reorder.comp")
+        scatter.Build("bvh_radixSort_reorder.comp")
                 .Bind(0, *ping)
                 .Bind(1, histBuf)
                 .Bind(2, *pong)
@@ -233,7 +227,6 @@ TEST_F(RadixSortTest, LargeRandomMatchesCpuSort) {
 
 static std::vector<MortonCode> gpuMortonThenSort(VkContext &ctx, const std::vector<Primitive> &prims) {
     const uint32_t N = static_cast<uint32_t>(prims.size());
-    const std::string shaderDir = VKBVH_SHADER_DIR;
 
     // 씬 AABB 계산 (CPU)
     float minX = 1e38f, minY = 1e38f, minZ = 1e38f;
@@ -263,7 +256,7 @@ static std::vector<MortonCode> gpuMortonThenSort(VkContext &ctx, const std::vect
 
     {
         vkComputeBase kernel(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        kernel.Build(shaderDir + "/bvh_mortonCode.comp")
+        kernel.Build("bvh_mortonCode.comp")
                 .Bind(0, mortonBuf)
                 .Bind(1, primBuf)
                 .Args(mortonPC)
@@ -349,7 +342,6 @@ TEST_F(MortonRadixSortTest, XAxisPointsSortedByX) {
 TEST_F(RadixSortTest, MortonCodeSorting) {
     const int N = 1000;
     std::vector<Primitive> points = Primitive::RadomPoint(N);
-    const std::string shaderDir = VKBVH_SHADER_DIR;
 
     // morton code
     float minX = 1e38f, minY = 1e38f, minZ = 1e38f;
@@ -380,7 +372,7 @@ TEST_F(RadixSortTest, MortonCodeSorting) {
 
     {
         vkComputeBase kernel(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        kernel.Build(shaderDir + "/bvh_mortonCode.comp")
+        kernel.Build("bvh_mortonCode.comp")
                 .Bind(0, mortonBuf)
                 .Bind(1, primBuf)
                 .Args(mortonPC)
@@ -458,7 +450,7 @@ TEST_F(RadixSortTest, MortonRadixSortTesting) {
     // Step 1: Morton 코드 계산
     {
         vkComputeBase mortonPass(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        mortonPass.Build(std::string(VKBVH_SHADER_DIR) + "/bvh_mortonCode.comp")
+        mortonPass.Build("bvh_mortonCode.comp")
                 .Bind(0, mortonBuffer)
                 .Bind(1, primitiveBuffer)
                 .Args(mc)
@@ -476,7 +468,7 @@ TEST_F(RadixSortTest, MortonRadixSortTesting) {
         RadixScanPC pcScan{numberOfWorkerGroup};
 
         vkComputeBase histPass(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        histPass.Build(std::string(VKBVH_SHADER_DIR) + "/bvh_radixSort_histogram.comp")
+        histPass.Build("bvh_radixSort_histogram.comp")
                 .Bind(0, *ping)
                 .Bind(1, histogramBuffer)
                 .Args(pcSort)
@@ -484,14 +476,14 @@ TEST_F(RadixSortTest, MortonRadixSortTesting) {
         histPass.Sync();
 
         vkComputeBase scanPass(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        scanPass.Build(std::string(VKBVH_SHADER_DIR) + "/bvh_radixSort_prefixScan.comp")
+        scanPass.Build("bvh_radixSort_prefixScan.comp")
                 .Bind(0, histogramBuffer)
                 .Args(pcScan)
                 .Dispatch(1);
         scanPass.Sync();
 
         vkComputeBase reorderPass(ctx.device, ctx.physDevice, ctx.computeQueue, ctx.cmdPool);
-        reorderPass.Build(std::string(VKBVH_SHADER_DIR) + "/bvh_radixSort_reorder.comp")
+        reorderPass.Build("bvh_radixSort_reorder.comp")
                 .Bind(0, *ping)
                 .Bind(1, histogramBuffer)
                 .Bind(2, *pong)

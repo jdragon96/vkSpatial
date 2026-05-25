@@ -6,7 +6,7 @@
 
 using namespace vkCommon;
 
-namespace vkbvh {
+namespace vkSpatial {
 
     namespace {
         vkComputeBase makeKernel(VkContext *ctx) {
@@ -16,8 +16,7 @@ namespace vkbvh {
 
     } // namespace
 
-    vkBVH::vkBVH(VkContext *ctx, const std::string &shaderDir)
-        : m_ctx(ctx), m_shaderDir(shaderDir) {}
+    vkBVH::vkBVH(VkContext *ctx) : m_ctx(ctx) {}
 
     vkBVH::~vkBVH() = default;
 
@@ -68,7 +67,7 @@ namespace vkbvh {
         pc.Extend(prims);
 
         auto kernel = makeKernel(m_ctx);
-        kernel.Build(m_shaderDir + "/bvh_mortonCode.comp")
+        kernel.Build("bvh_mortonCode.comp")
                 .Bind(0, *m_mortonBuf)
                 .Bind(1, *m_primBuf)
                 .Args(pc)
@@ -94,9 +93,9 @@ namespace vkbvh {
         auto prefixScanKernel = makeKernel(m_ctx);
         auto reorderKernel = makeKernel(m_ctx);
 
-        histogramkernel.Build(m_shaderDir + "/bvh_radixSort_histogram.comp");
-        prefixScanKernel.Build(m_shaderDir + "/bvh_radixSort_prefixScan.comp");
-        reorderKernel.Build(m_shaderDir + "/bvh_radixSort_reorder.comp");
+        histogramkernel.Build("bvh_radixSort_histogram.comp");
+        prefixScanKernel.Build("bvh_radixSort_prefixScan.comp");
+        reorderKernel.Build("bvh_radixSort_reorder.comp");
 
         for (uint32_t pass = 0; pass < PASSES; pass++) {
             RadixSortPC pcSort{m_count, pass * 4};
@@ -131,7 +130,7 @@ namespace vkbvh {
         HierarchyPC pc{m_count, 1 /*absolute pointers*/};
 
         auto kernel = makeKernel(m_ctx);
-        kernel.Build(m_shaderDir + "/bvh_hierarchy.comp")
+        kernel.Build("bvh_hierarchy.comp")
                 .Bind(0, *m_mortonBuf)
                 .Bind(1, *m_primBuf)
                 .Bind(2, *m_nodeBuf)
@@ -145,7 +144,7 @@ namespace vkbvh {
         HierarchyPC pc{m_count, 1};
 
         auto kernel = makeKernel(m_ctx);
-        kernel.Build(m_shaderDir + "/bvh_boundingBox.comp")
+        kernel.Build("bvh_boundingBox.comp")
                 .Bind(0, *m_nodeBuf)
                 .Bind(1, *m_constructionBuf)
                 .Args(pc)
@@ -153,4 +152,4 @@ namespace vkbvh {
         kernel.Sync();
     }
 
-} // namespace vkbvh
+} // namespace vkSpatial

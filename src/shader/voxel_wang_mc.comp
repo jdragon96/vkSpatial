@@ -1,0 +1,104 @@
+#version 460
+layout(local_size_x = 64) in;
+
+#include "voxel_common.glsl"
+
+struct VoxelEntry { uint key; uint count; };
+
+layout(std430, set=0, binding=0) readonly buffer HashTable { VoxelEntry g_hash[]; };
+layout(        set=0, binding=1)          buffer Ctr       { uint count;           } ctr;
+layout(std430, set=0, binding=2)          buffer Verts     { vec4 data[];           } verts;
+
+layout(push_constant) uniform PC {
+    float voxelSize;
+    uint  hashCapacity;
+} pc;
+
+bool isOccupied(int kx, int ky, int kz) {
+    uint key  = packCoord(ivec3(kx, ky, kz));
+    uint slot = wangHash(key) % pc.hashCapacity;
+    for (uint p = 0u; p < MAX_PROBE; p++) {
+        uint k = g_hash[(slot + p) % pc.hashCapacity].key;
+        if (k == EMPTY_KEY) return false;
+        if (k == key)       return true;
+    }
+    return false;
+}
+
+// ── per-cube MC processing ────────────────────────────────────────────────────
+//
+// Ownership rule: only emit triangles if no corner with index < myCorner is
+// occupied. Guarantees each cube is processed by exactly one thread.
+//
+void processCube(int ax, int ay, int az, int myCorner) {
+    for (int c = 0; c < myCorner; c++) {
+        if (isOccupied(ax + CORNER[c].x, ay + CORNER[c].y, az + CORNER[c].z)) return;
+    }
+
+    float sdf[8];
+    for (int c = 0; c < 8; c++) {
+        sdf[c] = isOccupied(ax + CORNER[c].x, ay + CORNER[c].y, az + CORNER[c].z) ? -1.0 : 1.0;
+    }
+
+    int cubeIndex = 0;
+    for (int c = 0; c < 8; c++) {
+        if (sdf[c] < 0.0) cubeIndex |= (1 << c);
+    }
+    if (edgeTable[cubeIndex] == 0) return;
+
+    float s = pc.voxelSize;
+    vec3 p[8];
+    for (int c = 0; c < 8; c++) {
+        p[c] = vec3(ax + CORNER[c].x, ay + CORNER[c].y, az + CORNER[c].z) * s;
+    }
+
+    int et = edgeTable[cubeIndex];
+    vec3 ev[12];
+    if((et&   1)!=0) ev[ 0]=vertInterp(p[0],p[1],sdf[0],sdf[1]);
+    if((et&   2)!=0) ev[ 1]=vertInterp(p[1],p[2],sdf[1],sdf[2]);
+    if((et&   4)!=0) ev[ 2]=vertInterp(p[2],p[3],sdf[2],sdf[3]);
+    if((et&   8)!=0) ev[ 3]=vertInterp(p[3],p[0],sdf[3],sdf[0]);
+    if((et&  16)!=0) ev[ 4]=vertInterp(p[4],p[5],sdf[4],sdf[5]);
+    if((et&  32)!=0) ev[ 5]=vertInterp(p[5],p[6],sdf[5],sdf[6]);
+    if((et&  64)!=0) ev[ 6]=vertInterp(p[6],p[7],sdf[6],sdf[7]);
+    if((et& 128)!=0) ev[ 7]=vertInterp(p[7],p[4],sdf[7],sdf[4]);
+    if((et& 256)!=0) ev[ 8]=vertInterp(p[0],p[4],sdf[0],sdf[4]);
+    if((et& 512)!=0) ev[ 9]=vertInterp(p[1],p[5],sdf[1],sdf[5]);
+    if((et&1024)!=0) ev[10]=vertInterp(p[2],p[6],sdf[2],sdf[6]);
+    if((et&2048)!=0) ev[11]=vertInterp(p[3],p[7],sdf[3],sdf[7]);
+
+    int triBase = cubeIndex * 16;
+    for (int i = 0; i < 15; i += 3) {
+        int ei0 = triTable[triBase + i];
+        if (ei0 == -1) break;
+        uint offset = atomicAdd(ctr.count, 1u);
+        if (offset >= MC_MAX_TRIS) return;
+        verts.data[offset*3u+0u] = vec4(ev[ei0],                   1.0);
+        verts.data[offset*3u+1u] = vec4(ev[triTable[triBase+i+2]], 1.0);
+        verts.data[offset*3u+2u] = vec4(ev[triTable[triBase+i+1]], 1.0);
+    }
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= pc.hashCapacity) return;
+
+    uint key = g_hash[idx].key;
+    if (key == EMPTY_KEY) return;
+
+    int kx = int((key >> 20u) & 0x3FFu) - 512;
+    int ky = int((key >> 10u) & 0x3FFu) - 512;
+    int kz = int( key         & 0x3FFu) - 512;
+
+    for (int dx = -1; dx <= 0; dx++) {
+        for (int dy = -1; dy <= 0; dy++) {
+            for (int dz = -1; dz <= 0; dz++) {
+                int ox = (dx == -1) ? 1 : 0;
+                int oy = (dy == -1) ? 1 : 0;
+                int oz = (dz == -1) ? 1 : 0;
+                int myCorner = INV_CORNER[ox * 4 + oy * 2 + oz];
+                processCube(kx + dx, ky + dy, kz + dz, myCorner);
+            }
+        }
+    }
+}

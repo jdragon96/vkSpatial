@@ -9,7 +9,7 @@
 #include <random>
 #include <vector>
 
-using namespace vkbvh;
+using namespace vkSpatial;
 using namespace vkCommon;
 
 #ifndef VKBVH_SHADER_DIR
@@ -44,7 +44,7 @@ TEST_F(RadiusSearchTest, NoPointsInRadius) {
             {10.f, 10.f, 10.f},
             {20.f, 20.f, 20.f},
     };
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     auto result = bvh.RadiusSearch(0.f, 0.f, 0.f, 1.f);
@@ -60,7 +60,7 @@ TEST_F(RadiusSearchTest, AllPointsInRadius) {
             {0.0f, 0.1f, 0.0f},
             {0.0f, -0.1f, 0.0f},
     };
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     auto result = bvh.RadiusSearch(0.f, 0.f, 0.f, 1.f);
@@ -84,7 +84,7 @@ TEST_F(RadiusSearchTest, PartialPointsMatchCpuReference) {
     };
     const float cx = 0.f, cy = 0.f, cz = 0.f, r = 1.0f;
 
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     auto gpuResult = bvh.RadiusSearch(cx, cy, cz, r);
@@ -108,7 +108,7 @@ TEST_F(RadiusSearchTest, AxisAlignedPointsCorrectSet) {
             {4.f, 0.f, 0.f}, // dist=4
             {5.f, 0.f, 0.f}, // dist=5
     };
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     // r=3.5 → indices {0, 1, 2} 검출
@@ -135,7 +135,7 @@ TEST_F(RadiusSearchTest, RandomPointsMatchCpuBruteForce) {
 
     const float cx = 1.f, cy = -1.f, cz = 0.5f, r = 3.f;
 
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     auto gpuResult = bvh.RadiusSearch(cx, cy, cz, r);
@@ -162,7 +162,7 @@ TEST_F(RadiusSearchTest, LargerRadiusReturnsMorePoints) {
         p.z = dist(rng);
     }
 
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     const float cx = 0.f, cy = 0.f, cz = 0.f;
@@ -190,7 +190,7 @@ TEST_F(RadiusSearchTest, MultipleRadiiEachMatchCpu) {
         p.z = dist(rng);
     }
 
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     const float cx = 0.5f, cy = -0.5f, cz = 1.0f;
@@ -217,7 +217,7 @@ TEST_F(RadiusSearchTest, PointAtQueryCenterAlwaysFound) {
             {0.f, 0.f, 0.f},   // 쿼리 중심에 위치
             {100.f, 0.f, 0.f}, // 멀리 있는 더미
     };
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     for (float r: {0.0f, 0.001f, 1.0f}) {

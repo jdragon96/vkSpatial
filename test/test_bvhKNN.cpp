@@ -9,7 +9,7 @@
 #include <random>
 #include <vector>
 
-using namespace vkbvh;
+using namespace vkSpatial;
 using namespace vkCommon;
 
 #ifndef VKBVH_SHADER_DIR
@@ -51,7 +51,7 @@ TEST_F(KNNTest, NearestSingleNeighbor) {
             {3.f, 0.f, 0.f}, // dist=3
             {5.f, 0.f, 0.f}, // dist=5
     };
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     auto result = bvh.KNN(0.f, 0.f, 0.f, 1);
@@ -68,7 +68,7 @@ TEST_F(KNNTest, Top3OnAxis) {
             {4.f, 0.f, 0.f}, // dist=4
             {5.f, 0.f, 0.f}, // dist=5
     };
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     auto result = bvh.KNN(0.f, 0.f, 0.f, 3);
@@ -86,7 +86,7 @@ TEST_F(KNNTest, KGreaterThanN) {
             {2.f, 0.f, 0.f},
             {3.f, 0.f, 0.f},
     };
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     auto result = bvh.KNN(0.f, 0.f, 0.f, 10);
@@ -99,7 +99,7 @@ TEST_F(KNNTest, PointAtQueryIsNearest) {
             {0.f, 0.f, 0.f}, // 쿼리 중심에 위치 → dist=0
             {5.f, 5.f, 5.f}, // 더미
     };
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     auto result = bvh.KNN(0.f, 0.f, 0.f, 1);
@@ -123,7 +123,7 @@ TEST_F(KNNTest, RandomPointsMatchCpuBruteForce) {
 
     const float cx = 0.f, cy = 0.f, cz = 0.f;
 
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     auto gpuResult = bvh.KNN(cx, cy, cz, k);
@@ -150,7 +150,7 @@ TEST_F(KNNTest, VariousKMatchCpu) {
         p.z = dist(rng);
     }
 
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     const float cx = 1.f, cy = -1.f, cz = 0.5f;
@@ -183,7 +183,7 @@ TEST_F(KNNTest, LargerKReturnsMoreResults) {
         p.z = dist(rng);
     }
 
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     size_t prevSize = 0;
@@ -210,7 +210,7 @@ TEST_F(KNNTest, KEqualsN_ReturnsAll) {
         p.z = dist(rng);
     }
 
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkBVH bvh(&ctx);
     bvh.Build(points);
 
     auto result = bvh.KNN(0.f, 0.f, 0.f, static_cast<int>(N));

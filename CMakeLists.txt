@@ -9,6 +9,7 @@ find_package(Eigen3 REQUIRED)
 
 add_subdirectory(lib)
 add_subdirectory(src)
+add_subdirectory(example)
 
 option(BUILD_TESTS "Build tests." ON)
 if (BUILD_TESTS)

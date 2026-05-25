@@ -16,10 +16,8 @@ lib/SPIRV-Reflect   — SPIR-V reflection (automatic local_size detection)
 
 ```bash
 git clone --recursive <repo-url>
-cd VkLBVH
 
-cmake -S . -B build
-cmake --build build --parallel
+cmake -S . -B build && cmake --build build --parallel
 ```
 
 If the Vulkan SDK path is not set in your environment:
@@ -130,46 +128,14 @@ struct Primitive    { uint32_t index;
 
 ### Test Suites
 
-| Suite              | File                  | What it verifies                          |
-| ------------------ | --------------------- | ----------------------------------------- |
-| `VkComputeTest`    | test_vkCompute.cpp    | Basic Vulkan compute functionality        |
-| `MortonCodeTest`   | test_mortonCode.cpp   | GPU Morton code computation accuracy      |
-| `RadixSortTest`    | test_radixSort.cpp    | 4-bit Radix Sort correctness              |
-| `HierarchyTest`    | test_hierarchy.cpp    | BVH hierarchy structural validity         |
-| `RadiusSearchTest` | test_radiusSearch.cpp | GPU Radius Search vs CPU brute-force      |
-| `KNNTest`          | test_knn.cpp          | GPU KNN vs CPU brute-force                |
-
----
-
-## Project Structure
-
-```
-VkLBVH/
-├── src/
-│   ├── shader/                  # GLSL shader sources
-│   │   ├── bvh_mortonCode.comp
-│   │   ├── bvh_radixSort_*.comp
-│   │   ├── bvh_hierarchy.comp
-│   │   ├── bvh_boundingBox.comp
-│   │   ├── cmd_radiusSearch.comp
-│   │   └── cmd_knn.comp
-│   └── vkBVH/
-│       ├── vkBVH.h / vkBVH.cpp  # Public API
-│       ├── types.h               # Primitive, MortonCode, etc.
-│       ├── command/
-│       │   ├── RadiusSearch.cpp  # RadiusSearch implementation
-│       │   └── KNN.cpp           # KNN implementation
-│       └── common/
-│           ├── vkContext.*       # Vulkan instance / device / queue
-│           ├── vkGPUMemory.*     # GPU buffer alloc / upload / download
-│           ├── vkComputeBase.*   # Compute kernel wrapper (Build/Bind/Dispatch)
-│           └── vkScopedMemory.*  # RAII memory mapping
-├── test/                         # GTest test suite
-├── examples/                     # Usage examples (PCD load, PLY export)
-└── lib/
-    ├── SPIRV-Reflect/            # SPIR-V reflection
-    └── tinyobjloader/            # OBJ loader
-```
+| Suite              | File                  | What it verifies                     |
+| ------------------ | --------------------- | ------------------------------------ |
+| `VkComputeTest`    | test_vkCompute.cpp    | Basic Vulkan compute functionality   |
+| `MortonCodeTest`   | test_mortonCode.cpp   | GPU Morton code computation accuracy |
+| `RadixSortTest`    | test_radixSort.cpp    | 4-bit Radix Sort correctness         |
+| `HierarchyTest`    | test_hierarchy.cpp    | BVH hierarchy structural validity    |
+| `RadiusSearchTest` | test_radiusSearch.cpp | GPU Radius Search vs CPU brute-force |
+| `KNNTest`          | test_knn.cpp          | GPU KNN vs CPU brute-force           |
 
 ---
 

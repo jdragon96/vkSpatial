@@ -19,11 +19,9 @@ target_include_directories(vkspatial_tests PRIVATE
 target_compile_definitions(vkspatial_tests PRIVATE
         VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")
 
-get_target_property(_gtest_loc GTest::gtest IMPORTED_LOCATION)
-get_filename_component(_gtest_dir "${_gtest_loc}" DIRECTORY)
 set_target_properties(vkspatial_tests PROPERTIES
-        BUILD_RPATH "${_gtest_dir}"
-        INSTALL_RPATH "${_gtest_dir}")
+        BUILD_RPATH "$<TARGET_FILE_DIR:GTest::gtest>;$<TARGET_FILE_DIR:GTest::gtest_main>"
+        INSTALL_RPATH "$<TARGET_FILE_DIR:GTest::gtest>;$<TARGET_FILE_DIR:GTest::gtest_main>")
 
 include(GoogleTest)
 gtest_discover_tests(vkspatial_tests DISCOVERY_MODE PRE_TEST)
