@@ -1,7 +1,6 @@
-# vkBVH
+# vkSpatial
 
-GPU-accelerated Linear Bounding Volume Hierarchy (LBVH) built on Vulkan compute shaders.  
-Every operation — from BVH construction to spatial queries — runs entirely on the GPU.
+GPU-accelerated spatial structures.
 
 ---
 
@@ -9,7 +8,6 @@ Every operation — from BVH construction to spatial queries — runs entirely o
 
 ```
 lib/SPIRV-Reflect   — SPIR-V reflection (automatic local_size detection)
-lib/tinyobjloader   — OBJ mesh loading (lbvh examples)
 ```
 
 ---
