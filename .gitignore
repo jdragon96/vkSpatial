@@ -1,0 +1,36 @@
+# JetBrains IDE
+.idea/*
+**/.idea/*
+*.iws
+*.iml
+*.eml
+.DS_Store
+
+/build/*
+**/cmake-build-debug/*
+**/cmake-build-debug-coverage/*
+**/cmake-build-release/*
+**/cmake-build-release-coverage/*
+
+# Visual Studio
+/out/
+**/out/
+CmakeSettings.json
+/.vs/
+**/.vs/
+
+/.vscode/
+**/.vscodeout/
+
+/.claude/
+**/.claude/
+
+/build/
+**/build/
+
+# Shaders
+*.spv
+
+# specific models
+hairball.obj
+powerplant.obj

@@ -1,0 +1,70 @@
+#version 460
+#extension GL_GOOGLE_include_directive: enable
+
+#include "bvh_common.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PC {
+    uint g_count;
+    uint g_absolute_pointers;
+};
+
+layout(std430, set = 0, binding = 0) coherent buffer Nodes {
+    Node g_nodes[];
+};
+
+layout(std430, set = 0, binding = 1) buffer ConstructionInfos {
+    LBVHConstructionInfo g_constrInfos[];
+};
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+
+    if (gid >= g_count) {
+        return;
+    }
+
+    const int LEAF_OFFSET = int(g_count) - 1;
+
+    uint nodeIdx = g_constrInfos[LEAF_OFFSET + int(gid)].parent;
+
+    while (true) {
+        int historicalVisits = atomicAdd(g_constrInfos[nodeIdx].visitationCount, 1);
+        
+        if (historicalVisits == 1) {
+            return; 
+        }
+
+        memoryBarrierBuffer();
+
+        Node currentNode = g_nodes[nodeIdx];
+        Node childA;
+        Node childB;
+
+        if (g_absolute_pointers != 0u) {
+            childA = g_nodes[currentNode.left];
+            childB = g_nodes[currentNode.right];
+        } else {
+            childA = g_nodes[nodeIdx + currentNode.left];
+            childB = g_nodes[nodeIdx + currentNode.right];
+        }
+
+        currentNode.aabbMinX = min(childA.aabbMinX, childB.aabbMinX);
+        currentNode.aabbMinY = min(childA.aabbMinY, childB.aabbMinY);
+        currentNode.aabbMinZ = min(childA.aabbMinZ, childB.aabbMinZ);
+        currentNode.aabbMaxX = max(childA.aabbMaxX, childB.aabbMaxX);
+        currentNode.aabbMaxY = max(childA.aabbMaxY, childB.aabbMaxY);
+        currentNode.aabbMaxZ = max(childA.aabbMaxZ, childB.aabbMaxZ);
+        
+        g_nodes[nodeIdx] = currentNode;
+
+        memoryBarrierBuffer();
+
+        if (nodeIdx == 0u) {
+            return;
+        }
+        
+        nodeIdx = g_constrInfos[nodeIdx].parent;
+    }
+}
