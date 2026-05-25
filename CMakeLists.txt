@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(lbvh VERSION 0.1.0 DESCRIPTION "Vulkan Linear BVH" LANGUAGES CXX)
+project(lbvh VERSION 0.1.0 DESCRIPTION "Vulkan Spatial Structures" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

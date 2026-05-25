@@ -1,13 +1,16 @@
 #include <gtest/gtest.h>
 
-#include "vkBVH/common/vkContext.h"
-#include "vkBVH/types.h"
-#include "vkBVH/vkBVH.h"
+#include "vkSpatial/common/vkContext.h"
+#include "vkSpatial/types.h"
+#include "vkSpatial/vkBVH.h"
 
 #include <algorithm>
 #include <cmath>
 #include <random>
 #include <vector>
+
+using namespace vkbvh;
+using namespace vkCommon;
 
 #ifndef VKBVH_SHADER_DIR
 #define VKBVH_SHADER_DIR "."

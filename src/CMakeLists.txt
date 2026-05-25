@@ -3,33 +3,26 @@ project(vkbvh LANGUAGES CXX)
 
 find_package(Vulkan REQUIRED)
 
-# Vulkan SDK shaderc (GLSL 런타임 컴파일)
 set(VULKAN_SDK "$ENV{VULKAN_SDK}")
-if(NOT VULKAN_SDK)
-    set(VULKAN_SDK "/Users/sjy/VulkanSDK/1.4.328.1/macOS")
-endif()
 find_library(SHADERC_LIB shaderc_combined HINTS "${VULKAN_SDK}/lib")
 
-# src/vkBVH/*.cpp + src/vkBVH/common/*.cpp 자동 수집
-file(GLOB VKBVH_SOURCES
-        "${CMAKE_CURRENT_SOURCE_DIR}/vkBVH/*.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/vkBVH/command/*.cpp"
-        "${CMAKE_CURRENT_SOURCE_DIR}/vkBVH/common/*.cpp")
+file(GLOB_RECURSE VKBVH_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/vkSpatial/*.cpp")
 
-add_library(vkBVH STATIC ${VKBVH_SOURCES})
-add_library(vkBVH::vkBVH ALIAS vkBVH)
+add_library(vkSpatial STATIC ${VKBVH_SOURCES})
+add_library(vkSpatial::vkSpatial ALIAS vkSpatial)
 
-target_link_libraries(vkBVH
+target_link_libraries(vkSpatial
         PUBLIC  Vulkan::Vulkan
         PRIVATE ${SHADERC_LIB} spirv-reflect)
 
-target_include_directories(vkBVH
+target_include_directories(vkSpatial
         PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>         # #include "vkBVH/common/..."
-            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/lib>              # #include "SPIRV-Reflect/..."
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/lib>
             /opt/homebrew/opt/eigen/include/eigen3
         PRIVATE
             "${VULKAN_SDK}/include")
 
 set(VKBVH_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shader"
-        CACHE PATH "vkBVH GLSL shader directory" FORCE)
+        CACHE PATH "vkSpatial GLSL shader directory" FORCE)

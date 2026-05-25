@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
 
-#include "vkBVH/common/vkComputeBase.h"
-#include "vkBVH/common/vkContext.h"
-#include "vkBVH/common/vkGPUMemory.h"
-#include "vkBVH/types.h"
-#include "vkBVH/vkBVH.h"
+#include "vkSpatial/common/vkComputeBase.h"
+#include "vkSpatial/common/vkContext.h"
+#include "vkSpatial/common/vkGPUMemory.h"
+#include "vkSpatial/types.h"
+#include "vkSpatial/vkBVH.h"
 
 #include <Eigen/Core>
 #include <algorithm>
@@ -13,6 +13,9 @@
 #include <queue>
 #include <random>
 #include <vector>
+
+using namespace vkbvh;
+using namespace vkCommon;
 
 #ifndef VKBVH_SHADER_DIR
 #define VKBVH_SHADER_DIR "."

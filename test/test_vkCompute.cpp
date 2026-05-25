@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
-#include "vkBVH/common/vkComputeBase.h"
-#include "vkBVH/common/vkContext.h"
-#include "vkBVH/common/vkGPUMemory.h"
+#include "vkSpatial/common/vkComputeBase.h"
+#include "vkSpatial/common/vkContext.h"
+#include "vkSpatial/common/vkGPUMemory.h"
 
 #include <numeric>
 #include <vector>
+
+using namespace vkCommon;
 
 class SumKernel : public vkComputeBase {
 public:
