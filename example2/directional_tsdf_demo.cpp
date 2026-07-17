@@ -43,7 +43,7 @@ int main() {
     simple.Build(ctx, voxelSize, truncation, 1u << 20, 1u << 15);
 
     std::ofstream csv("directional_tsdf_stats.csv");
-    csv << "frame,points,resident,missing,overlapPct,h2dKB,writeBack,"
+    csv << "frame,points,resident,missing,overlapPct,h2dKB,d2hKB,gpuSubmits,writeBack,"
            "beginMs,ensureMs,integrateMs,extractMs,mergeMs,cloudPoints\n";
 
     for (int f = 0; f < numFrames; ++f) {
@@ -68,15 +68,15 @@ int main() {
         const auto st = tsdf.LastFrameStats();
         csv << f << ',' << points.size() << ',' << st.residentCount << ','
             << st.missingCount << ',' << st.overlapRatio * 100.0f << ','
-            << st.h2dBytes / 1024 << ',' << st.writeBackCount << ','
-            << st.beginFrameMs << ',' << st.ensureResidentMs << ','
+            << st.h2dBytes / 1024 << ',' << st.d2hBytes / 1024 << ',' << st.gpuSubmits << ','
+            << st.writeBackCount << ',' << st.beginFrameMs << ',' << st.ensureResidentMs << ','
             << st.integrateMs << ',' << st.extractMs << ',' << st.mergeMs << ','
             << tsdf.PointCloud().size() << '\n';
 
         std::cout << "frame " << f << ": pts=" << points.size()
                   << " missing=" << st.missingCount
                   << " overlap=" << st.overlapRatio * 100.0f << "%"
-                  << " h2d=" << st.h2dBytes / 1024 << "KB"
+                  << " submits=" << st.gpuSubmits
                   << " cloud=" << tsdf.PointCloud().size() << "\n";
     }
 
