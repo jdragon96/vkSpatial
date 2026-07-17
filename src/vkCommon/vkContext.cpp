@@ -83,8 +83,17 @@ namespace vkCommon {
             auto presentFamilyRet = vkbDevice.get_queue_index(vkb::QueueType::present);
             if (!presentQueueRet || !presentFamilyRet)
                 throw std::runtime_error("VkContext: no present-capable graphics queue available");
+            uint32_t presentFamilyIndex = presentFamilyRet.value();
+            // vkb::QueueType::present only checks vkGetPhysicalDeviceSurfaceSupportKHR; it does
+            // not guarantee the selected queue family also supports graphics. Every consumer of
+            // graphicsQueue/graphicsFamily (e.g. Renderer) assumes graphics capability, so verify
+            // it explicitly here rather than silently handing out a present-only queue.
+            if (presentFamilyIndex >= vkbDevice.queue_families.size() ||
+                !(vkbDevice.queue_families[presentFamilyIndex].queueFlags & VK_QUEUE_GRAPHICS_BIT))
+                throw std::runtime_error(
+                        "VkContext: present-capable queue family does not support graphics");
             graphicsQueue = presentQueueRet.value();
-            graphicsFamily = presentFamilyRet.value();
+            graphicsFamily = presentFamilyIndex;
         }
 
         createCommandPool();
