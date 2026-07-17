@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 
+#include "Engine/Core/Buffer.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Core/OneShotCommands.h"
+
+#include <numeric>
+#include <vector>
 
 using namespace Engine::Core;
 
@@ -50,4 +54,31 @@ TEST(OneShotCommandsTest, FillBufferRoundTripsThroughSubmit) {
         EXPECT_EQ(data[i], 0x2A2A2A2Au) << "word " << i;
 
     vmaDestroyBuffer(ctx.allocator, buffer, allocation);
+}
+
+TEST(BufferTest, AllocateUploadDownloadRoundTrip) {
+    Context ctx;
+    Buffer buffer(ctx);
+
+    constexpr uint32_t kCount = 1024;
+    std::vector<float> source(kCount);
+    std::iota(source.begin(), source.end(), 0.0f);
+
+    buffer.Allocate(kCount * sizeof(float));
+    buffer.Upload(source.data(), kCount * sizeof(float));
+
+    std::vector<float> result(kCount, -1.0f);
+    buffer.Download(result.data(), kCount * sizeof(float));
+
+    for (uint32_t i = 0; i < kCount; ++i)
+        EXPECT_FLOAT_EQ(result[i], source[i]) << "index " << i;
+}
+
+TEST(BufferTest, DownloadBeyondCapacityThrows) {
+    Context ctx;
+    Buffer buffer(ctx);
+    buffer.Allocate(16);
+
+    std::vector<uint8_t> dst(64);
+    EXPECT_THROW(buffer.Download(dst.data(), 64), std::runtime_error);
 }
