@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "vkSpatial/common/vkContext.h"
+#include "vkCommon/vkContext.h"
 #include "vkSpatial/types.h"
 #include "vkSpatial/vkBVH.h"
 

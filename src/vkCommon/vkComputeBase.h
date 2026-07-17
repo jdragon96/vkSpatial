@@ -1,6 +1,6 @@
 #pragma once
 
-#include "vkSpatial/common/vkGPUMemory.h"
+#include "vkCommon/vkGPUMemory.h"
 
 #include <cstdint>
 #include <cstring>

@@ -1,0 +1,449 @@
+#version 460
+#extension GL_GOOGLE_include_directive: enable
+
+#include "bvh_wide_common.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#define STACK_CAPACITY 128
+#define MATERIAL_DIFFUSE 0u
+#define MATERIAL_METAL 1u
+#define MATERIAL_DIELECTRIC 2u
+#define MATERIAL_EMISSIVE 3u
+
+layout(push_constant) uniform PC {
+    float g_originX, g_originY, g_originZ;
+    float g_rightX, g_rightY, g_rightZ;
+    float g_upX, g_upY, g_upZ;
+    float g_forwardX, g_forwardY, g_forwardZ;
+    float g_tanHalfFovY;
+    float g_aspect;
+    uint g_width;
+    uint g_height;
+    uint g_frameIndex;
+    uint g_maxBounces;
+    uint g_samplesPerPixel;
+    uint g_outputSwapRedBlue;
+    float g_tMin;
+    float g_tMax;
+    float g_lightCenterX, g_lightCenterY, g_lightCenterZ;
+    float g_environmentStrength;
+    float g_lightUX, g_lightUY, g_lightUZ, g_lightPad0;
+    float g_lightVX, g_lightVY, g_lightVZ, g_lightPad1;
+    float g_lightEmissionX, g_lightEmissionY, g_lightEmissionZ, g_lightPad2;
+};
+
+struct Material {
+    float albedoX;
+    float albedoY;
+    float albedoZ;
+    float roughness;
+    float emissionX;
+    float emissionY;
+    float emissionZ;
+    float ior;
+    uint type;
+    float metallic;
+    float transmission;
+    float padding;
+};
+
+struct Hit {
+    bool hit;
+    bool frontFace;
+    float t;
+    uint primIndex;
+    uint materialId;
+    vec3 position;
+    vec3 normal;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer Nodes {
+    WideNode g_nodes[];
+};
+layout(std430, set = 0, binding = 1) readonly buffer Leaves {
+    LeafRange g_leaves[];
+};
+layout(std430, set = 0, binding = 2) readonly buffer MortonCodes {
+    MortonCode g_mortonCodes[];
+};
+layout(std430, set = 0, binding = 3) readonly buffer Primitives {
+    Primitive g_primitives[];
+};
+layout(std430, set = 0, binding = 4) readonly buffer TriVerts {
+    float g_triVerts[];
+};
+layout(std430, set = 0, binding = 5) readonly buffer MaterialIds {
+    uint g_materialIds[];
+};
+layout(std430, set = 0, binding = 6) readonly buffer Materials {
+    Material g_materials[];
+};
+layout(std430, set = 0, binding = 7) buffer Accum {
+    vec4 g_accum[];
+};
+layout(std430, set = 0, binding = 8) writeonly buffer Output {
+    uint g_pixels[];
+};
+
+uint unpackByte(uint word, uint slot) {
+    return (word >> ((slot & 3u) * 8u)) & 0xFFu;
+}
+
+void decodeChild(in WideNode node, uint slot, out vec3 mn, out vec3 mx) {
+    uint word = slot / 4u;
+    vec3 qMin = vec3(
+        unpackByte(node.qBounds[0u + word], slot),
+        unpackByte(node.qBounds[2u + word], slot),
+        unpackByte(node.qBounds[4u + word], slot));
+    vec3 qMax = vec3(
+        unpackByte(node.qBounds[6u + word], slot),
+        unpackByte(node.qBounds[8u + word], slot),
+        unpackByte(node.qBounds[10u + word], slot));
+    vec3 origin = vec3(node.originX, node.originY, node.originZ);
+    vec3 scale = vec3(node.scaleX, node.scaleY, node.scaleZ);
+    mn = origin + scale * qMin;
+    mx = origin + scale * qMax;
+}
+
+bool rayAABB(vec3 ro, vec3 invRd, vec3 mn, vec3 mx, float tMaxIn, out float tNear) {
+    vec3 t0 = (mn - ro) * invRd;
+    vec3 t1 = (mx - ro) * invRd;
+    vec3 ts = min(t0, t1);
+    vec3 tb = max(t0, t1);
+    tNear = max(max(ts.x, ts.y), max(ts.z, 0.0));
+    float tFar = min(min(tb.x, tb.y), min(tb.z, tMaxIn));
+    return tNear <= tFar;
+}
+
+bool rayTriangle(vec3 ro, vec3 rd, vec3 v0, vec3 v1, vec3 v2,
+                 float tMaxIn, out float tHit, out vec3 normal, out bool frontFace) {
+    const float EPS = 1e-7;
+    vec3 e1 = v1 - v0;
+    vec3 e2 = v2 - v0;
+    vec3 pvec = cross(rd, e2);
+    float det = dot(e1, pvec);
+    if (abs(det) < EPS)
+        return false;
+
+    float invDet = 1.0 / det;
+    vec3 tvec = ro - v0;
+    float u = dot(tvec, pvec) * invDet;
+    if (u < 0.0 || u > 1.0)
+        return false;
+
+    vec3 qvec = cross(tvec, e1);
+    float v = dot(rd, qvec) * invDet;
+    if (v < 0.0 || u + v > 1.0)
+        return false;
+
+    float t = dot(e2, qvec) * invDet;
+    if (t < g_tMin || t > tMaxIn)
+        return false;
+
+    vec3 rawNormal = normalize(cross(e1, e2));
+    frontFace = dot(rawNormal, rd) < 0.0;
+    normal = frontFace ? rawNormal : -rawNormal;
+    tHit = t;
+    return true;
+}
+
+Hit traceClosest(vec3 ro, vec3 rd, float tMaxIn) {
+    Hit result;
+    result.hit = false;
+    result.frontFace = true;
+    result.t = tMaxIn;
+    result.primIndex = 0u;
+    result.materialId = 0u;
+    result.position = vec3(0.0);
+    result.normal = vec3(0.0, 1.0, 0.0);
+
+    vec3 invRd = 1.0 / rd;
+    uint stack[STACK_CAPACITY];
+    uint top = 0u;
+    stack[top++] = 0u;
+
+    while (top > 0u) {
+        WideNode node = g_nodes[stack[--top]];
+
+        for (uint slot = 0u; slot < node.childCount; ++slot) {
+            vec3 childMin;
+            vec3 childMax;
+            decodeChild(node, slot, childMin, childMax);
+
+            float tNear;
+            if (!rayAABB(ro, invRd, childMin, childMax, result.t, tNear))
+                continue;
+
+            if ((node.leafMask & (1u << slot)) != 0u) {
+                LeafRange leaf = g_leaves[node.child[slot]];
+                for (uint i = 0u; i < leaf.primitiveCount; ++i) {
+                    uint sortedIndex = leaf.firstPrimitive + i;
+                    uint primIndex = g_mortonCodes[sortedIndex].index;
+                    uint base = primIndex * 9u;
+
+                    vec3 v0 = vec3(g_triVerts[base + 0u], g_triVerts[base + 1u], g_triVerts[base + 2u]);
+                    vec3 v1 = vec3(g_triVerts[base + 3u], g_triVerts[base + 4u], g_triVerts[base + 5u]);
+                    vec3 v2 = vec3(g_triVerts[base + 6u], g_triVerts[base + 7u], g_triVerts[base + 8u]);
+
+                    float t;
+                    vec3 n;
+                    bool frontFace;
+                    if (rayTriangle(ro, rd, v0, v1, v2, result.t, t, n, frontFace)) {
+                        result.hit = true;
+                        result.frontFace = frontFace;
+                        result.t = t;
+                        result.primIndex = primIndex;
+                        result.materialId = g_materialIds[primIndex];
+                        result.position = ro + rd * t;
+                        result.normal = n;
+                    }
+                }
+            } else if (top < STACK_CAPACITY) {
+                stack[top++] = node.child[slot];
+            }
+        }
+    }
+
+    return result;
+}
+
+bool traceAny(vec3 ro, vec3 rd, float tMaxIn) {
+    vec3 invRd = 1.0 / rd;
+    uint stack[STACK_CAPACITY];
+    uint top = 0u;
+    stack[top++] = 0u;
+
+    while (top > 0u) {
+        WideNode node = g_nodes[stack[--top]];
+
+        for (uint slot = 0u; slot < node.childCount; ++slot) {
+            vec3 childMin;
+            vec3 childMax;
+            decodeChild(node, slot, childMin, childMax);
+
+            float tNear;
+            if (!rayAABB(ro, invRd, childMin, childMax, tMaxIn, tNear))
+                continue;
+
+            if ((node.leafMask & (1u << slot)) != 0u) {
+                LeafRange leaf = g_leaves[node.child[slot]];
+                for (uint i = 0u; i < leaf.primitiveCount; ++i) {
+                    uint sortedIndex = leaf.firstPrimitive + i;
+                    uint primIndex = g_mortonCodes[sortedIndex].index;
+                    uint base = primIndex * 9u;
+
+                    vec3 v0 = vec3(g_triVerts[base + 0u], g_triVerts[base + 1u], g_triVerts[base + 2u]);
+                    vec3 v1 = vec3(g_triVerts[base + 3u], g_triVerts[base + 4u], g_triVerts[base + 5u]);
+                    vec3 v2 = vec3(g_triVerts[base + 6u], g_triVerts[base + 7u], g_triVerts[base + 8u]);
+
+                    float t;
+                    vec3 n;
+                    bool frontFace;
+                    if (rayTriangle(ro, rd, v0, v1, v2, tMaxIn, t, n, frontFace))
+                        return true;
+                }
+            } else if (top < STACK_CAPACITY) {
+                stack[top++] = node.child[slot];
+            }
+        }
+    }
+
+    return false;
+}
+
+uint mixSeed(uint v) {
+    v ^= v >> 16u;
+    v *= 0x7feb352du;
+    v ^= v >> 15u;
+    v *= 0x846ca68bu;
+    v ^= v >> 16u;
+    return v;
+}
+
+float rand(inout uint state) {
+    state = state * 1664525u + 1013904223u;
+    uint bits = (state >> 9u) | 0x3f800000u;
+    return uintBitsToFloat(bits) - 1.0;
+}
+
+vec3 randomUnitVector(inout uint state) {
+    float z = rand(state) * 2.0 - 1.0;
+    float a = rand(state) * 6.28318530718;
+    float r = sqrt(max(0.0, 1.0 - z * z));
+    return vec3(r * cos(a), r * sin(a), z);
+}
+
+void makeBasis(vec3 n, out vec3 tangent, out vec3 bitangent) {
+    vec3 helper = abs(n.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    tangent = normalize(cross(helper, n));
+    bitangent = cross(n, tangent);
+}
+
+vec3 sampleCosineHemisphere(vec3 n, inout uint state) {
+    float r1 = rand(state);
+    float r2 = rand(state);
+    float phi = 6.28318530718 * r1;
+    float r = sqrt(r2);
+    float x = cos(phi) * r;
+    float y = sin(phi) * r;
+    float z = sqrt(max(0.0, 1.0 - r2));
+
+    vec3 tangent;
+    vec3 bitangent;
+    makeBasis(n, tangent, bitangent);
+    return normalize(tangent * x + bitangent * y + n * z);
+}
+
+float schlick(float cosTheta, float ior) {
+    float r0 = (1.0 - ior) / (1.0 + ior);
+    r0 *= r0;
+    float m = 1.0 - cosTheta;
+    return r0 + (1.0 - r0) * m * m * m * m * m;
+}
+
+vec3 skyColor(vec3 rd) {
+    float t = clamp(rd.y * 0.5 + 0.5, 0.0, 1.0);
+    return mix(vec3(0.02, 0.018, 0.02), vec3(0.12, 0.14, 0.18), t) * g_environmentStrength;
+}
+
+vec3 materialAlbedo(Material mat) {
+    return vec3(mat.albedoX, mat.albedoY, mat.albedoZ);
+}
+
+vec3 materialEmission(Material mat) {
+    return vec3(mat.emissionX, mat.emissionY, mat.emissionZ);
+}
+
+vec3 sampleAreaLight(Hit hit, Material mat, inout uint state) {
+    if (mat.type != MATERIAL_DIFFUSE)
+        return vec3(0.0);
+
+    vec3 lightCenter = vec3(g_lightCenterX, g_lightCenterY, g_lightCenterZ);
+    vec3 lightU = vec3(g_lightUX, g_lightUY, g_lightUZ);
+    vec3 lightV = vec3(g_lightVX, g_lightVY, g_lightVZ);
+    vec3 lightNormal = normalize(cross(lightU, lightV));
+    float lightArea = length(cross(lightU, lightV));
+    vec3 lightPoint = lightCenter + (rand(state) - 0.5) * lightU + (rand(state) - 0.5) * lightV;
+
+    vec3 toLight = lightPoint - hit.position;
+    float dist2 = dot(toLight, toLight);
+    float dist = sqrt(dist2);
+    vec3 lightDir = toLight / max(dist, 1e-4);
+
+    float cosSurface = max(dot(hit.normal, lightDir), 0.0);
+    float cosLight = max(dot(lightNormal, -lightDir), 0.0);
+    if (cosSurface <= 0.0 || cosLight <= 0.0)
+        return vec3(0.0);
+
+    vec3 shadowOrigin = hit.position + hit.normal * 0.002;
+    if (traceAny(shadowOrigin, lightDir, max(dist - 0.01, 0.0)))
+        return vec3(0.0);
+
+    vec3 albedo = materialAlbedo(mat);
+    vec3 lightEmission = vec3(g_lightEmissionX, g_lightEmissionY, g_lightEmissionZ);
+    return albedo * lightEmission * (cosSurface * cosLight * lightArea / max(3.14159265 * dist2, 1e-4));
+}
+
+vec3 tracePath(vec3 ro, vec3 rd, inout uint state) {
+    vec3 radiance = vec3(0.0);
+    vec3 throughput = vec3(1.0);
+
+    for (uint bounce = 0u; bounce < g_maxBounces; ++bounce) {
+        Hit hit = traceClosest(ro, rd, g_tMax);
+        if (!hit.hit) {
+            radiance += throughput * skyColor(rd);
+            break;
+        }
+
+        Material mat = g_materials[hit.materialId];
+        vec3 emission = materialEmission(mat);
+        if (mat.type == MATERIAL_EMISSIVE) {
+            radiance += throughput * emission;
+            break;
+        }
+
+        vec3 albedo = materialAlbedo(mat);
+
+        if (mat.type == MATERIAL_DIFFUSE) {
+            radiance += throughput * sampleAreaLight(hit, mat, state);
+            rd = sampleCosineHemisphere(hit.normal, state);
+            ro = hit.position + hit.normal * 0.002;
+            throughput *= albedo;
+        } else if (mat.type == MATERIAL_METAL) {
+            vec3 reflected = reflect(normalize(rd), hit.normal);
+            rd = normalize(reflected + max(mat.roughness, 0.0) * randomUnitVector(state));
+            if (dot(rd, hit.normal) <= 0.0)
+                break;
+            ro = hit.position + hit.normal * 0.002;
+            throughput *= albedo;
+        } else if (mat.type == MATERIAL_DIELECTRIC) {
+            vec3 unitDir = normalize(rd);
+            float ior = max(mat.ior, 1.01);
+            float eta = hit.frontFace ? (1.0 / ior) : ior;
+            float cosTheta = min(dot(-unitDir, hit.normal), 1.0);
+            float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+            bool cannotRefract = eta * sinTheta > 1.0;
+            float reflectProb = schlick(cosTheta, ior);
+
+            if (cannotRefract || reflectProb > rand(state)) {
+                rd = reflect(unitDir, hit.normal);
+            } else {
+                rd = refract(unitDir, hit.normal, eta);
+            }
+
+            vec3 offsetNormal = dot(rd, hit.normal) > 0.0 ? hit.normal : -hit.normal;
+            ro = hit.position + offsetNormal * 0.002;
+            throughput *= albedo;
+        } else {
+            break;
+        }
+
+        if (bounce >= 3u) {
+            float p = clamp(max(max(throughput.r, throughput.g), throughput.b), 0.05, 0.95);
+            if (rand(state) > p)
+                break;
+            throughput /= p;
+        }
+    }
+
+    return radiance;
+}
+
+void main() {
+    uvec2 pixel = gl_GlobalInvocationID.xy;
+    if (pixel.x >= g_width || pixel.y >= g_height)
+        return;
+
+    uint pixelIndex = pixel.y * g_width + pixel.x;
+    uint seed = mixSeed(pixel.x * 1973u ^ pixel.y * 9277u ^
+                        g_frameIndex * 26699u ^ 0x9e3779b9u);
+
+    vec3 origin = vec3(g_originX, g_originY, g_originZ);
+    vec3 right = vec3(g_rightX, g_rightY, g_rightZ);
+    vec3 up = vec3(g_upX, g_upY, g_upZ);
+    vec3 forward = vec3(g_forwardX, g_forwardY, g_forwardZ);
+
+    vec3 frameColor = vec3(0.0);
+    for (uint sampleIndex = 0u; sampleIndex < g_samplesPerPixel; ++sampleIndex) {
+        vec2 jitter = vec2(rand(seed), rand(seed));
+        vec2 ndc = (vec2(pixel) + jitter) / vec2(g_width, g_height) * 2.0 - 1.0;
+        vec3 rd = normalize(
+            forward +
+            right * (ndc.x * g_tanHalfFovY * g_aspect) -
+            up * (ndc.y * g_tanHalfFovY));
+        frameColor += tracePath(origin, rd, seed);
+    }
+    frameColor /= float(g_samplesPerPixel);
+
+    vec3 accum = g_frameIndex == 0u ? vec3(0.0) : g_accum[pixelIndex].rgb;
+    accum += frameColor;
+    g_accum[pixelIndex] = vec4(accum, 1.0);
+
+    vec3 color = accum / float(g_frameIndex + 1u);
+    color = color / (color + vec3(1.0));
+    color = pow(clamp(color, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));
+
+    vec3 packedColor = g_outputSwapRedBlue != 0u ? color.bgr : color.rgb;
+    g_pixels[pixelIndex] = packUnorm4x8(vec4(packedColor, 1.0));
+}

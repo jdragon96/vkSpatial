@@ -48,9 +48,9 @@ namespace vkCommon {
         float g_minX = std::numeric_limits<float>::max();
         float g_minY = std::numeric_limits<float>::max();
         float g_minZ = std::numeric_limits<float>::max();
-        float g_maxX = std::numeric_limits<float>::max();
-        float g_maxY = std::numeric_limits<float>::max();
-        float g_maxZ = std::numeric_limits<float>::max();
+        float g_maxX = std::numeric_limits<float>::lowest();
+        float g_maxY = std::numeric_limits<float>::lowest();
+        float g_maxZ = std::numeric_limits<float>::lowest();
 
         void Extend(const std::vector<Primitive> &primitives) {
             for (auto &prim: primitives) {

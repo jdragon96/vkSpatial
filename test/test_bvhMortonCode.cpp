@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
-#include "vkSpatial/common/vkComputeBase.h"
-#include "vkSpatial/common/vkContext.h"
-#include "vkSpatial/common/vkGPUMemory.h"
+#include "vkCommon/vkComputeBase.h"
+#include "vkCommon/vkContext.h"
+#include "vkCommon/vkGPUMemory.h"
 #include "vkSpatial/types.h"
 
 #include <Eigen/Core>

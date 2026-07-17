@@ -1,4 +1,4 @@
-#include "vkSpatial/common/vkGPUMemory.h"
+#include "vkCommon/vkGPUMemory.h"
 
 #include <cstring>
 #include <stdexcept>
@@ -43,8 +43,7 @@ namespace vkCommon {
 
     // ── 데이터 전송 ───────────────────────────────────────────────────────────────
 
-    bool vkGPUMemory::Upload(const void *data, uint32_t bytes,
-                             VkQueue queue, VkCommandPool cmdPool) {
+    bool vkGPUMemory::Upload(const void *data, uint32_t bytes, VkQueue queue, VkCommandPool cmdPool) {
         if (!m_buffer || bytes > m_size) return false;
 
         VkBuffer stagingBuf;

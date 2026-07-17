@@ -18,6 +18,9 @@ lib/SPIRV-Reflect   — SPIR-V reflection (automatic local_size detection)
 git clone --recursive <repo-url>
 
 cmake -S . -B build && cmake --build build --parallel
+
+cmake --build build --target vkRender bvh_path_tracer
+cmake --build build --target vkRender cube_render
 ```
 
 If the Vulkan SDK path is not set in your environment:
@@ -32,16 +35,16 @@ cmake --build build --parallel
 ## Quick Start
 
 ```cpp
-#include "vkBVH/common/vkContext.h"
-#include "vkBVH/vkBVH.h"
+#include "vkCommon/vkContext.h"
+#include "vkSpatial/vkBVH.h"
 
 int main() {
     // 1. Initialize Vulkan context
-    VkContext ctx;
+    vkCommon::VkContext ctx;
     ctx.init();
 
     // 2. Prepare point data
-    std::vector<PointPrim> points = {
+    std::vector<vkSpatial::PointPrim> points = {
         {1.0f, 0.0f, 0.0f},
         {2.0f, 1.0f, 0.5f},
         {0.5f, 0.5f, 0.5f},
@@ -49,7 +52,7 @@ int main() {
     };
 
     // 3. Build BVH
-    vkBVH bvh(&ctx, VKBVH_SHADER_DIR);
+    vkSpatial::vkBVH bvh(&ctx);
     bvh.Build(points);
 
     // 4. Radius Search: find all points within radius 2.0 of the origin

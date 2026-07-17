@@ -1,6 +1,6 @@
 #pragma once
 
-#include "vkSpatial/common/vkScopedMemory.h"
+#include "vkCommon/vkScopedMemory.h"
 
 #include <memory>
 #include <vulkan/vulkan.h>

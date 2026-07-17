@@ -1,7 +1,7 @@
 #pragma once
 
-#include "vkSpatial/common/vkContext.h"
-#include "vkSpatial/common/vkGPUMemory.h"
+#include "vkCommon/vkContext.h"
+#include "vkCommon/vkGPUMemory.h"
 #include "vkSpatial/types.h"
 
 #include <algorithm>

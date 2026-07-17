@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="1180" viewBox="0 0 1040 1180">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <marker id="dashArrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#b91c1c"/>
+    </marker>
+    <style>
+      .box { fill: #f8fafc; stroke: #334155; stroke-width: 2; rx: 8; }
+      .decision { fill: #fff7ed; stroke: #c2410c; stroke-width: 2; }
+      .state { fill: #ecfeff; stroke: #0e7490; stroke-width: 2; rx: 8; }
+      .create { fill: #f0fdf4; stroke: #15803d; stroke-width: 2; rx: 8; }
+      .fail { fill: #fef2f2; stroke: #b91c1c; stroke-width: 2; rx: 8; }
+      .text { font-family: Arial, sans-serif; font-size: 18px; fill: #0f172a; text-anchor: middle; dominant-baseline: middle; }
+      .small { font-family: Arial, sans-serif; font-size: 14px; fill: #475569; text-anchor: middle; dominant-baseline: middle; }
+      .arrow { stroke: #334155; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #b91c1c; stroke-width: 2; fill: none; stroke-dasharray: 8 6; marker-end: url(#dashArrow); }
+    </style>
+  </defs>
+
+  <text x="520" y="36" class="text" style="font-size: 26px; font-weight: 700;">GraphicsPipeline::Build Flow</text>
+
+  <rect x="330" y="70" width="380" height="56" class="box"/>
+  <text x="520" y="98" class="text">Build(descriptor)</text>
+
+  <polygon points="520,160 720,220 520,280 320,220" class="decision"/>
+  <text x="520" y="214" class="text">shaderStages empty?</text>
+  <text x="520" y="238" class="small">graphics pipeline needs shader stage</text>
+
+  <rect x="80" y="192" width="190" height="56" class="fail"/>
+  <text x="175" y="220" class="text">throw</text>
+  <text x="175" y="242" class="small">no shader stage</text>
+
+  <rect x="330" y="320" width="380" height="56" class="box"/>
+  <text x="520" y="348" class="text">Destroy previous pipeline</text>
+  <text x="520" y="370" class="small">VkPipeline / VkPipelineLayout</text>
+
+  <rect x="330" y="410" width="380" height="74" class="box"/>
+  <text x="520" y="435" class="text">Prepare temporary containers</text>
+  <text x="520" y="459" class="small">shaderModules, shaderStages</text>
+
+  <rect x="330" y="520" width="380" height="96" class="state"/>
+  <text x="520" y="544" class="text">For each ShaderStageDescriptor</text>
+  <text x="520" y="570" class="small">Load SPIR-V</text>
+  <text x="520" y="592" class="small">vkCreateShaderModule</text>
+  <text x="520" y="614" class="small">VkPipelineShaderStageCreateInfo</text>
+
+  <rect x="330" y="660" width="380" height="122" class="state"/>
+  <text x="520" y="682" class="text">Build fixed-function states</text>
+  <text x="520" y="708" class="small">Vertex Input / Input Assembly</text>
+  <text x="520" y="730" class="small">Viewport / Rasterization / Multisample</text>
+  <text x="520" y="752" class="small">Depth Stencil / Color Blend / Dynamic</text>
+
+  <rect x="330" y="820" width="380" height="64" class="create"/>
+  <text x="520" y="848" class="text">vkCreatePipelineLayout</text>
+  <text x="520" y="870" class="small">descriptor sets + push constants</text>
+
+  <rect x="330" y="920" width="380" height="64" class="create"/>
+  <text x="520" y="948" class="text">VkPipelineRenderingCreateInfo</text>
+  <text x="520" y="970" class="small">color/depth attachment formats</text>
+
+  <rect x="330" y="1020" width="380" height="64" class="create"/>
+  <text x="520" y="1048" class="text">vkCreateGraphicsPipelines</text>
+  <text x="520" y="1070" class="small">creates immutable VkPipeline</text>
+
+  <rect x="760" y="520" width="220" height="96" class="fail"/>
+  <text x="870" y="548" class="text">Failure cleanup</text>
+  <text x="870" y="574" class="small">destroy shader modules</text>
+  <text x="870" y="596" class="small">Destroy partial state</text>
+
+  <rect x="760" y="940" width="220" height="88" class="box"/>
+  <text x="870" y="968" class="text">Success cleanup</text>
+  <text x="870" y="994" class="small">cache formats</text>
+  <text x="870" y="1016" class="small">destroy shader modules</text>
+
+  <path d="M520 126 L520 156" class="arrow"/>
+  <path d="M320 220 L270 220" class="arrow"/>
+  <text x="296" y="206" class="small">yes</text>
+  <path d="M520 280 L520 318" class="arrow"/>
+  <text x="548" y="300" class="small">no</text>
+  <path d="M520 376 L520 408" class="arrow"/>
+  <path d="M520 484 L520 518" class="arrow"/>
+  <path d="M520 616 L520 658" class="arrow"/>
+  <path d="M520 782 L520 818" class="arrow"/>
+  <path d="M520 884 L520 918" class="arrow"/>
+  <path d="M520 984 L520 1018" class="arrow"/>
+  <path d="M710 1052 C760 1052 780 1010 758 990" class="arrow"/>
+  <path d="M710 568 C742 568 742 568 758 568" class="dash"/>
+  <path d="M710 852 C745 852 790 675 830 618" class="dash"/>
+  <path d="M710 1052 C765 1052 825 650 860 618" class="dash"/>
+</svg>

@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Vulkan REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(glfw3 REQUIRED)
 
 add_subdirectory(lib)
 add_subdirectory(src)

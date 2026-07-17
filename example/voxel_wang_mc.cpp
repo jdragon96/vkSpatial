@@ -1,4 +1,4 @@
-#include "vkSpatial/common/vkContext.h"
+#include "vkCommon/vkContext.h"
 #include "vkSpatial/vkVoxelHash.h"
 
 #include <Eigen/Core>

@@ -1,4 +1,4 @@
-#include "vkSpatial/common/vkContext.h"
+#include "vkCommon/vkContext.h"
 #include "vkSpatial/vkTSDF.h"
 
 #include <Eigen/Core>
@@ -23,13 +23,13 @@ int main() {
     vkCommon::VkContext ctx;
     ctx.init();
 
-    constexpr float    voxelSize       = 0.1f;
-    constexpr float    truncation      = 0.3f;
-    constexpr float    pointResolution = 0.05f;
-    constexpr float    radius          = 1.0f;
-    constexpr float    camRadius       = 3.0f;   // camera orbit distance
-    constexpr uint32_t hashCapacity    = 1u << 20;
-    constexpr uint32_t maxPoints       = 1u << 15; // 32768 — headroom for large slices
+    constexpr float voxelSize = 0.1f;
+    constexpr float truncation = 0.3f;
+    constexpr float pointResolution = 0.05f;
+    constexpr float radius = 1.0f;
+    constexpr float camRadius = 3.0f; // camera orbit distance
+    constexpr uint32_t hashCapacity = 1u << 20;
+    constexpr uint32_t maxPoints = 1u << 15; // 32768 — headroom for large slices
 
     // ── Pre-generate sphere surface points (thin shell ±voxelSize/2 around r=1) ──
     std::vector<Eigen::Vector3f> surfacePoints;
@@ -38,7 +38,7 @@ int main() {
     for (float x = -radius - voxelSize; x <= radius + voxelSize + 1e-4f; x += pointResolution)
         for (float y = -radius - voxelSize; y <= radius + voxelSize + 1e-4f; y += pointResolution)
             for (float z = -radius - voxelSize; z <= radius + voxelSize + 1e-4f; z += pointResolution) {
-                float r2 = x*x + y*y + z*z;
+                float r2 = x * x + y * y + z * z;
                 if (r2 >= rLo && r2 <= rHi)
                     surfacePoints.emplace_back(x, y, z);
             }
@@ -53,8 +53,8 @@ int main() {
         // Camera sweeps numElevation latitude rings × numAzimuth positions each.
         // At every pose, only points whose outward normal faces the camera are
         // integrated — identical to a real depth sensor scanning around an object.
-        constexpr int   numElevation = 9;    // rings from -80° to +80°
-        constexpr int   numAzimuth   = 36;   // 10° steps per ring
+        constexpr int numElevation = 9;       // rings from -80° to +80°
+        constexpr int numAzimuth = 36;        // 10° steps per ring
         constexpr float cosThreshold = 0.15f; // reject near-grazing rays (>81°)
 
         int totalPoses = 0, totalPts = 0;
@@ -67,15 +67,15 @@ int main() {
                 float azRad = 2.0f * static_cast<float>(M_PI) * az / numAzimuth;
 
                 Eigen::Vector3f cam(
-                    camRadius * cosEl * std::cos(azRad),
-                    camRadius * sinEl,
-                    camRadius * cosEl * std::sin(azRad));
+                        camRadius * cosEl * std::cos(azRad),
+                        camRadius * sinEl,
+                        camRadius * cosEl * std::sin(azRad));
 
                 // Collect visible surface points from this pose.
                 // Visibility: outward normal (= p/|p| for unit sphere) points toward cam.
                 std::vector<Eigen::Vector3f> visible;
                 visible.reserve(512);
-                for (const auto &p : surfacePoints) {
+                for (const auto &p: surfacePoints) {
                     Eigen::Vector3f dir = (cam - p).normalized();
                     if (p.normalized().dot(dir) > cosThreshold)
                         visible.push_back(p);

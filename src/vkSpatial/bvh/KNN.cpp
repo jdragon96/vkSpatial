@@ -1,5 +1,5 @@
-#include "vkSpatial/common/vkComputeBase.h"
-#include "vkSpatial/common/vkGPUMemory.h"
+#include "vkCommon/vkComputeBase.h"
+#include "vkCommon/vkGPUMemory.h"
 #include "vkSpatial/vkBVH.h"
 
 #include <algorithm>

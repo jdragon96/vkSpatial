@@ -1,8 +1,8 @@
 #pragma once
 
-#include "vkSpatial/common/vkComputeBase.h"
-#include "vkSpatial/common/vkContext.h"
-#include "vkSpatial/common/vkGPUMemory.h"
+#include "vkCommon/vkComputeBase.h"
+#include "vkCommon/vkContext.h"
+#include "vkCommon/vkGPUMemory.h"
 
 #include <Eigen/Core>
 #include <string>

@@ -44,12 +44,6 @@ bool hasData(int kx, int ky, int kz) {
     return false;
 }
 
-// ── per-cube MC processing ────────────────────────────────────────────────────
-//
-// Ownership: skip if an earlier corner owns this cube.
-// All 8 corners must be observed; unobserved corners return +truncation as a
-// placeholder, biasing edge interpolation and producing spike artifacts.
-//
 void processCube(int ax, int ay, int az, int myCorner) {
     for (int c = 0; c < myCorner; c++) {
         if (hasData(ax + CORNER[c].x, ay + CORNER[c].y, az + CORNER[c].z)) return;

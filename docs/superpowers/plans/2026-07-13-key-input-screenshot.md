@@ -20,6 +20,7 @@
 ### Task 1: `vkRender::KeyInput` 컴포넌트 추가
 
 **Files:**
+
 - Create: `src/vkRender/KeyInput.h`
 - Create: `src/vkRender/KeyInput.cpp`
 - Modify: `src/vkRender/Engine.h`
@@ -27,6 +28,7 @@
 - Modify: `src/vkRender/vkRender.h`
 
 **Interfaces:**
+
 - Produces: `vkRender::KeyEventType{Any,Press,Release,Repeat}`, `vkRender::KeyEvent{type, keyCode(int), modifiers(uint32_t), timestampSeconds(double), handled(bool)}`, `vkRender::KeyInput{AddListener(KeyEventType, Callback, int priority=0) -> ListenerId, RemoveListener(ListenerId) -> bool, ClearListeners(), OnKey(int keyCode, KeyEventType, uint32_t modifiers=0, double timestampSeconds=0.0), IsKeyDown(int keyCode) const -> bool}`, `vkRender::KeyListenerGroup`, `vkRender::Engine::CreateKeyInput() const -> std::unique_ptr<KeyInput>`.
 - Consumes: 없음 (이 태스크는 독립적인 신규 컴포넌트이며 Vulkan 리소스에 의존하지 않는다).
 
@@ -300,12 +302,14 @@ git commit -m "Add vkRender::KeyInput keyboard event component"
 ### Task 2: `vkRender::Screenshot` 유틸리티 추가 (PNG 캡처)
 
 **Files:**
+
 - Create: `lib/stb/stb_image_write.h` (벤더링)
 - Create: `src/vkRender/Screenshot.h`
 - Create: `src/vkRender/Screenshot.cpp`
 - Modify: `src/vkRender/vkRender.h`
 
 **Interfaces:**
+
 - Consumes: `vkCommon::VkContext{device, physDevice, graphicsQueue, graphicsFamily}` (필드는 `src/vkCommon/vkContext.h`에 이미 정의됨).
 - Produces: `vkRender::Screenshot::CaptureToPNG(vkCommon::VkContext *context, VkImage image, VkFormat format, VkExtent2D extent, VkImageLayout currentLayout, const std::string &path)`, `vkRender::Screenshot::TimestampedPath(const std::string &directory = "screenshots") -> std::string`.
 
@@ -587,9 +591,11 @@ git commit -m "Add vkRender::Screenshot PNG capture utility"
 ### Task 3: `cube_render.cpp`에 Enter 키 캡처 연결
 
 **Files:**
+
 - Modify: `example/cube_render.cpp`
 
 **Interfaces:**
+
 - Consumes: `vkRender::Engine::CreateKeyInput()`, `vkRender::KeyInput::AddListener/OnKey`, `vkRender::KeyEventType::Press`, `vkRender::Screenshot::CaptureToPNG`, `vkRender::Screenshot::TimestampedPath`, `vkRender::Renderer::CurrentImageIndex()` (기존, `Renderer.h:35`), `vkRender::SwapChain::Image()/Format()/Extent()` (기존).
 - Produces: 없음 (최종 통합 태스크).
 
@@ -721,6 +727,7 @@ Expected: 에러 없이 빌드 성공.
 Run: `./build/example/cube_render` (실제 바이너리 경로는 빌드 출력에서 확인)
 
 수행할 확인:
+
 1. 창이 뜨고 회전하는 큐브가 정상적으로 렌더링되는지 확인.
 2. Enter 키를 누른 뒤 터미널에 `cube_render: screenshot saved`가 출력되는지 확인.
 3. 실행 파일 기준 상대 경로 `screenshots/` 폴더에 `screenshot_YYYYMMDD_HHMMSS.png` 파일이 생성됐는지 확인 (`ls screenshots/`).

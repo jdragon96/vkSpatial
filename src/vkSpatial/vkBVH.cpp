@@ -1,5 +1,5 @@
 #include "vkSpatial/vkBVH.h"
-#include "vkSpatial/common/vkComputeBase.h"
+#include "vkCommon/vkComputeBase.h"
 
 #include <limits>
 #include <stdexcept>

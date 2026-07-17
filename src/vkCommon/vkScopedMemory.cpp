@@ -1,4 +1,4 @@
-#include "vkSpatial/common/vkScopedMemory.h"
+#include "vkCommon/vkScopedMemory.h"
 
 namespace vkCommon {
 
