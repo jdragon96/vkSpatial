@@ -28,6 +28,9 @@ CmakeSettings.json
 /build/
 **/build/
 
+/private_docs/
+**/private_docs/
+
 # Shaders
 *.spv
 
