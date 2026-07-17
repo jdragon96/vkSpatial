@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Engine/Compute/CommandBatch.h"
+#include "Engine/Compute/StagingBuffer.h"
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
@@ -38,6 +40,7 @@ namespace Engine::Spatial {
             float integrateMs = 0.0f;
             float extractMs = 0.0f;
             float mergeMs = 0.0f;
+            uint32_t gpuSubmits = 0; // queue submissions this frame (Phase 5 batching metric)
         };
 
         struct ClassifyCounts {
@@ -118,6 +121,18 @@ namespace Engine::Spatial {
         uint32_t m_maxPoints = 0;
         uint32_t m_maxCandidates = 0;
         std::vector<ExtractedPoint> m_pointCloud;
+
+        // Persistent host-visible staging (Phase 5): allocated once in Build, reused every
+        // frame to back batched copies instead of per-call transient staging.
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageCounts;      // DST, 3*u32
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageLists;       // DST, poolCapacity*u32 (reusable/writeBack)
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageCleanFree;   // DST, poolCapacity*u32
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageGroups;      // SRC|DST, kStageGroupCap*groupBytes
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageMeta;        // SRC|DST, poolCapacity*sizeof(ActiveGroupMeta)
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stagePoints;      // SRC, maxPoints*6*f32
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageSlotList;    // SRC, poolCapacity*u32
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageCandidates;  // DST, maxCandidates*sizeof(DirectionalCandidate)
+        std::vector<uint32_t> m_reusableSlots; // reusable pool slots downloaded in BeginFrame
 
         // CPU mirror of slot occupancy: which key each slot currently holds.
         std::unordered_map<DirectionalGroupKey, uint32_t, DirectionalGroupKeyHash> m_residentIndex;

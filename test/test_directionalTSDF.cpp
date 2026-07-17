@@ -594,3 +594,13 @@ TEST(DirectionalTSDFPhase4Test, IntegrationAccumulatesAcrossEviction) {
     EXPECT_NEAR(pass2[0].weight, 2.0f * pass1[0].weight, pass1[0].weight * 0.1f);
     EXPECT_NEAR(pass2[0].value, pass1[0].value, 0.05f);
 }
+
+TEST(DirectionalTSDFPhase5Test, BareBeginFrameUsesFewSubmits) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 256);
+
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+    // fill+classify+readback fold into one batch; no dirty groups → no write-back batch.
+    EXPECT_EQ(tsdf.LastFrameStats().gpuSubmits, 1u);
+}

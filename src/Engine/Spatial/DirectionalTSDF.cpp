@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <stdexcept>
 
@@ -12,6 +13,7 @@ namespace Engine::Spatial {
 
     namespace {
         constexpr uint32_t kGroupBytes = kVoxelsPerGroup * uint32_t(sizeof(GpuTsdfVoxel)); // 4096
+        constexpr uint32_t kStageGroupCap = 4096; // max groups staged per H2D/D2H batch (chunked if exceeded)
 
         struct RegisterPC {
             uint32_t count;
@@ -102,6 +104,20 @@ namespace Engine::Spatial {
         m_candidateBuffer->Allocate(maxCandidates * sizeof(DirectionalCandidate));
         m_candidateCounter->Allocate(sizeof(uint32_t));
 
+        // Persistent host-visible staging (Phase 5): allocated once, reused every frame.
+        using Engine::Compute::StagingBuffer;
+        const VkBufferUsageFlags kSrc = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        const VkBufferUsageFlags kDst = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        const VkBufferUsageFlags kSrcDst = kSrc | kDst;
+        m_stageCounts = std::make_unique<StagingBuffer>(ctx, 3u * sizeof(uint32_t), kDst);
+        m_stageLists = std::make_unique<StagingBuffer>(ctx, VkDeviceSize(poolCapacity) * sizeof(uint32_t), kDst);
+        m_stageCleanFree = std::make_unique<StagingBuffer>(ctx, VkDeviceSize(poolCapacity) * sizeof(uint32_t), kDst);
+        m_stageGroups = std::make_unique<StagingBuffer>(ctx, VkDeviceSize(kStageGroupCap) * kGroupBytes, kSrcDst);
+        m_stageMeta = std::make_unique<StagingBuffer>(ctx, VkDeviceSize(poolCapacity) * sizeof(ActiveGroupMeta), kSrcDst);
+        m_stagePoints = std::make_unique<StagingBuffer>(ctx, VkDeviceSize(maxPoints) * 6u * sizeof(float), kSrc);
+        m_stageSlotList = std::make_unique<StagingBuffer>(ctx, VkDeviceSize(poolCapacity) * sizeof(uint32_t), kSrc);
+        m_stageCandidates = std::make_unique<StagingBuffer>(ctx, VkDeviceSize(maxCandidates) * sizeof(DirectionalCandidate), kDst);
+
         m_registerKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         m_registerKernel->Build("directional_tsdf_register_reusable.comp")
                 .Bind(0, *m_slotListBuffer)
@@ -159,114 +175,115 @@ namespace Engine::Spatial {
         m_stats = {};
         m_requiredThisFrame.clear();
 
-        fillIndexGridInvalid();
+        // Batch 1: reset indexGrid + counts → classify → copy counts + reusable + cleanFree
+        // lists back, all in a single submit.
+        {
+            ClassifyPC cpc{m_poolCapacity, m_localBase.x(), m_localBase.y(), m_localBase.z()};
+            m_classifyKernel->Args(cpc);
 
-        // 1. Classify every pool slot against the new local base (design doc §9).
-        const uint32_t zeros[3] = {0, 0, 0};
-        m_countsBuffer->Upload(zeros, sizeof(zeros));
-        ClassifyPC cpc{m_poolCapacity, m_localBase.x(), m_localBase.y(), m_localBase.z()};
-        m_classifyKernel->Args(cpc).DispatchElements(m_poolCapacity);
+            std::vector<VkBufferCopy> countsRegion(1);
+            countsRegion[0] = {0, 0, 3u * sizeof(uint32_t)};
+            std::vector<VkBufferCopy> listRegion(1);
+            listRegion[0] = {0, 0, VkDeviceSize(m_poolCapacity) * sizeof(uint32_t)};
 
-        // 2. Download the three lists (synchronous; the pool is small).
-        uint32_t counts[3] = {0, 0, 0};
-        m_countsBuffer->Download(counts, sizeof(counts));
+            Engine::Compute::CommandBatch batch(*m_ctx);
+            batch.FillBuffer(m_indexGrid->Handle(), 0, VK_WHOLE_SIZE, kInvalidPoolIndex);
+            batch.FillBuffer(m_countsBuffer->Handle(), 0, VK_WHOLE_SIZE, 0u);
+            batch.Barrier();
+            batch.DispatchElements(*m_classifyKernel, m_poolCapacity);
+            batch.Barrier();
+            batch.CopyBuffer(m_countsBuffer->Handle(), m_stageCounts->Handle(), countsRegion);
+            batch.CopyBuffer(m_reusableList->Handle(), m_stageLists->Handle(), listRegion);
+            batch.CopyBuffer(m_cleanFreeList->Handle(), m_stageCleanFree->Handle(), listRegion);
+            batch.Submit();
+            ++m_stats.gpuSubmits;
+        }
+
+        uint32_t counts[3];
+        std::memcpy(counts, m_stageCounts->Mapped(), sizeof(counts));
         m_lastCounts = {counts[0], counts[1], counts[2]};
 
         std::vector<uint32_t> reusable(counts[0]);
         if (counts[0] > 0)
-            m_reusableList->Download(reusable.data(), counts[0] * sizeof(uint32_t));
+            std::memcpy(reusable.data(), m_stageLists->Mapped(), counts[0] * sizeof(uint32_t));
 
         std::vector<uint32_t> cleanFree(counts[1]);
         if (counts[1] > 0)
-            m_cleanFreeList->Download(cleanFree.data(), counts[1] * sizeof(uint32_t));
+            std::memcpy(cleanFree.data(), m_stageCleanFree->Mapped(), counts[1] * sizeof(uint32_t));
         m_freeSlots.assign(cleanFree.begin(), cleanFree.end());
 
-        // Write-back: dirty groups that left the window go to the host store, their
-        // meta is cleared (otherwise next frame's classify would see stale-valid meta
-        // and write them back twice), and their slots are freed (design doc §12).
-        // Synchronous processing inside BeginFrame guarantees invariant #5.
+        // Write-back (design doc §12): dirty groups that left the window → host store,
+        // clear their meta, free their slots. Chunked by kStageGroupCap; guarantees
+        // invariant #5 because it completes synchronously before any slot reuse.
         m_stats.writeBackCount = counts[2];
         if (counts[2] > 0) {
             std::vector<uint32_t> writeBack(counts[2]);
-            m_writeBackList->Download(writeBack.data(), counts[2] * sizeof(uint32_t));
+            {
+                std::vector<VkBufferCopy> listRegion(1);
+                listRegion[0] = {0, 0, VkDeviceSize(m_poolCapacity) * sizeof(uint32_t)};
+                Engine::Compute::CommandBatch batch(*m_ctx);
+                batch.CopyBuffer(m_writeBackList->Handle(), m_stageLists->Handle(), listRegion);
+                batch.Submit();
+                ++m_stats.gpuSubmits;
+            }
+            std::memcpy(writeBack.data(), m_stageLists->Mapped(), counts[2] * sizeof(uint32_t));
 
             const uint32_t groupBytes = kVoxelsPerGroup * uint32_t(sizeof(GpuTsdfVoxel));
-            const uint32_t bytes = counts[2] * groupBytes;
-            Engine::Core::Buffer staging(*m_ctx);
-            staging.Allocate(bytes);
-            {
-                std::vector<VkBufferCopy> regions(counts[2]);
-                for (uint32_t i = 0; i < counts[2]; ++i) {
-                    regions[i].srcOffset = VkDeviceSize(writeBack[i]) * groupBytes;
-                    regions[i].dstOffset = VkDeviceSize(i) * groupBytes;
-                    regions[i].size = groupBytes;
-                }
-                VkBuffer src = m_poolVoxels->Handle();
-                VkBuffer dst = staging.Handle();
-                Engine::Core::SubmitOneShot(*m_ctx, Engine::Core::QueueRole::Compute,
-                                            [&](VkCommandBuffer cmd) {
-                                                vkCmdCopyBuffer(cmd, src, dst,
-                                                                uint32_t(regions.size()),
-                                                                regions.data());
-                                            });
-            }
-            std::vector<GpuTsdfVoxel> raw(size_t(counts[2]) * kVoxelsPerGroup);
-            staging.Download(raw.data(), bytes);
+            std::vector<ActiveGroupMeta> clearMeta(kStageGroupCap); // zero = invalid/Free
 
-            for (uint32_t i = 0; i < counts[2]; ++i) {
-                const uint32_t slot = writeBack[i];
-                DirectionalHostStore::Group group{};
-                for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
-                    const GpuTsdfVoxel &g = raw[size_t(i) * kVoxelsPerGroup + v];
-                    group[v].weight = float(g.sumW) / float(kTsdfFixedScale);
-                    group[v].value = g.sumW > 0
-                                             ? float(double(g.sumDW) / double(g.sumW))
-                                             : 0.0f;
+            for (uint32_t base = 0; base < counts[2]; base += kStageGroupCap) {
+                const uint32_t chunk = std::min(kStageGroupCap, counts[2] - base);
+                std::vector<VkBufferCopy> voxRegions(chunk), metaRegions(chunk);
+                for (uint32_t i = 0; i < chunk; ++i) {
+                    const uint32_t slot = writeBack[base + i];
+                    voxRegions[i] = {VkDeviceSize(slot) * groupBytes, VkDeviceSize(i) * groupBytes, groupBytes};
+                    metaRegions[i] = {VkDeviceSize(i) * sizeof(ActiveGroupMeta),
+                                      VkDeviceSize(slot) * sizeof(ActiveGroupMeta), sizeof(ActiveGroupMeta)};
                 }
-                m_hostStore.Put(m_slotKeys[slot], group);
-            }
+                std::memcpy(m_stageMeta->Mapped(), clearMeta.data(), chunk * sizeof(ActiveGroupMeta));
 
-            // Clear the written-back slots' meta so they classify as free next frame.
-            {
-                std::vector<ActiveGroupMeta> clearMeta(counts[2]); // zero = invalid/Free
-                Engine::Core::Buffer metaStaging(*m_ctx);
-                const uint32_t metaBytes = counts[2] * uint32_t(sizeof(ActiveGroupMeta));
-                metaStaging.Allocate(metaBytes);
-                metaStaging.Upload(clearMeta.data(), metaBytes);
-                std::vector<VkBufferCopy> regions(counts[2]);
-                for (uint32_t i = 0; i < counts[2]; ++i) {
-                    regions[i].srcOffset = VkDeviceSize(i) * sizeof(ActiveGroupMeta);
-                    regions[i].dstOffset = VkDeviceSize(writeBack[i]) * sizeof(ActiveGroupMeta);
-                    regions[i].size = sizeof(ActiveGroupMeta);
+                Engine::Compute::CommandBatch batch(*m_ctx);
+                batch.CopyBuffer(m_poolVoxels->Handle(), m_stageGroups->Handle(), voxRegions);
+                batch.CopyBuffer(m_stageMeta->Handle(), m_metaBuffer->Handle(), metaRegions);
+                batch.Submit();
+                ++m_stats.gpuSubmits;
+
+                const auto *raw = static_cast<const GpuTsdfVoxel *>(m_stageGroups->Mapped());
+                for (uint32_t i = 0; i < chunk; ++i) {
+                    const uint32_t slot = writeBack[base + i];
+                    DirectionalHostStore::Group group{};
+                    for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
+                        const GpuTsdfVoxel &g = raw[size_t(i) * kVoxelsPerGroup + v];
+                        group[v].weight = float(g.sumW) / float(kTsdfFixedScale);
+                        group[v].value = g.sumW > 0 ? float(double(g.sumDW) / double(g.sumW)) : 0.0f;
+                    }
+                    m_hostStore.Put(m_slotKeys[slot], group);
+                    m_freeSlots.push_back(slot);
                 }
-                VkBuffer src = metaStaging.Handle();
-                VkBuffer dst = m_metaBuffer->Handle();
-                Engine::Core::SubmitOneShot(*m_ctx, Engine::Core::QueueRole::Compute,
-                                            [&](VkCommandBuffer cmd) {
-                                                vkCmdCopyBuffer(cmd, src, dst,
-                                                                uint32_t(regions.size()),
-                                                                regions.data());
-                                            });
+                m_stats.d2hBytes += chunk * groupBytes;
             }
-
-            for (uint32_t slot : writeBack)
-                m_freeSlots.push_back(slot);
-            m_stats.d2hBytes += bytes;
         }
 
-        // 3. Re-register reusable slots into the freshly-reset indexGrid. Invariant #6:
-        //    this must complete before any missing-group decision is made.
+        // Re-register reusable slots into the freshly-reset indexGrid so the integrate/
+        // extract kernels see them. (Task 4 folds this into the EnsureResident batch; here
+        // it is its own batch. A bare BeginFrame right after Build has 0 reusable → 0 extra
+        // submits.) Missing detection uses the CPU mirror below, not this — invariant #6.
         if (counts[0] > 0) {
+            Engine::Compute::CommandBatch batch(*m_ctx);
             m_registerKernel->Bind(0, *m_reusableList);
             RegisterPC rpc{counts[0], m_localBase.x(), m_localBase.y(), m_localBase.z()};
-            m_registerKernel->Args(rpc).DispatchElements(counts[0]);
+            m_registerKernel->Args(rpc);
+            batch.DispatchElements(*m_registerKernel, counts[0]);
+            batch.Submit();
+            ++m_stats.gpuSubmits;
         }
 
-        // 4. Rebuild the CPU resident mirror from the reusable set.
+        // Rebuild the CPU resident mirror from the reusable set.
         m_residentIndex.clear();
         for (uint32_t slot : reusable)
             m_residentIndex.emplace(m_slotKeys[slot], slot);
         m_stats.residentCount = uint32_t(m_residentIndex.size());
+        m_reusableSlots.assign(reusable.begin(), reusable.end());
     }
 
     void DirectionalTSDF::EnsureResident(const std::vector<DirectionalGroupKey> &required) {
