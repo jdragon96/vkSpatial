@@ -39,6 +39,7 @@ namespace Engine::Core {
 
         void createCommandPools();
         void createAllocator();
+        void cleanup();
     };
 
 } // namespace Engine::Core
