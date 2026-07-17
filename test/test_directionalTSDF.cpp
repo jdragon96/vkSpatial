@@ -568,3 +568,29 @@ TEST(DirectionalTSDFPhase4Test, EvictedDirtyGroupReloadsFromHostStore) {
     EXPECT_NEAR(post[0].value, pre[0].value, 1e-3f);
     EXPECT_NEAR(post[0].weight, pre[0].weight, 1e-3f);
 }
+
+// End-to-end: integration → eviction (write-back) → return (reload) → re-integration.
+// The running weighted average must continue seamlessly across the host-store round
+// trip: same data integrated twice → double the weight, same value.
+TEST(DirectionalTSDFPhase4Test, IntegrationAccumulatesAcrossEviction) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 4096);
+
+    std::vector<Eigen::Vector3f> points, normals;
+    makePlane(0.0f, 0.4f, 0.05f, Eigen::Vector3f(1, 0, 0), points, normals);
+    const Eigen::Vector3f cam(2, 0, 0);
+
+    tsdf.Integrate(points, normals, cam, Eigen::Vector3f::Zero());
+    const DirectionalGroupKey key{0, 0, 0, 0};
+    auto pass1 = tsdf.DebugDownloadGroupVoxels(key);
+    ASSERT_GT(pass1[0].weight, 0.0f);
+
+    tsdf.BeginFrame(Eigen::Vector3f(80.0f, 0.0f, 0.0f)); // evict + write back
+
+    tsdf.Integrate(points, normals, cam, Eigen::Vector3f::Zero()); // reload + accumulate
+    auto pass2 = tsdf.DebugDownloadGroupVoxels(key);
+
+    EXPECT_NEAR(pass2[0].weight, 2.0f * pass1[0].weight, pass1[0].weight * 0.1f);
+    EXPECT_NEAR(pass2[0].value, pass1[0].value, 0.05f);
+}
