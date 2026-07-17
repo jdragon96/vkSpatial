@@ -19,6 +19,7 @@ FetchContent_MakeAvailable(fetch_vk_bootstrap)
 add_subdirectory(lib)
 add_subdirectory(src)
 add_subdirectory(example)
+add_subdirectory(example2)
 
 option(BUILD_TESTS "Build tests." ON)
 if (BUILD_TESTS)
