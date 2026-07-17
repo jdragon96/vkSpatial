@@ -27,10 +27,6 @@ namespace vkCommon {
         void shutdown();
 
     private:
-        void createInstance(bool enablePresent,
-                            const std::vector<const char *> &extraInstanceExtensions);
-        void pickPhysicalDevice();
-        void createDevice(bool enablePresent);
         void createCommandPool();
 
         bool m_presentEnabled = false;
