@@ -515,3 +515,56 @@ TEST(DirectionalTSDFPhase3Test, ReintegrationDoesNotDuplicatePoints) {
     EXPECT_GT(count2, count1 / 2);
     EXPECT_LT(count2, count1 * 3 / 2);
 }
+
+TEST(DirectionalTSDFPhase4Test, DirtyGroupWritesBackToHostStore) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 4096);
+
+    std::vector<Eigen::Vector3f> points, normals;
+    makePlane(0.0f, 0.4f, 0.05f, Eigen::Vector3f(1, 0, 0), points, normals);
+    tsdf.Integrate(points, normals, Eigen::Vector3f(2, 0, 0), Eigen::Vector3f::Zero());
+
+    const DirectionalGroupKey key{0, 0, 0, 0};
+    auto pre = tsdf.DebugDownloadGroupVoxels(key);
+    ASSERT_GT(pre[0].weight, 0.0f);
+
+    // Window leaves: dirty groups must be written back and their slots freed.
+    tsdf.BeginFrame(Eigen::Vector3f(80.0f, 0.0f, 0.0f));
+    auto st = tsdf.LastFrameStats();
+    EXPECT_GT(st.writeBackCount, 0u);
+    EXPECT_GT(st.d2hBytes, 0u);
+
+    ASSERT_TRUE(tsdf.HostStore().Contains(key));
+    const auto &stored = tsdf.HostStore().Get(key);
+    EXPECT_NEAR(stored[0].value, pre[0].value, 1e-3f);
+    EXPECT_NEAR(stored[0].weight, pre[0].weight, 1e-3f);
+
+    // The dirty slot was cleared, so it must NOT revive on return. (Clean halo groups
+    // keep their meta and may legitimately revive — that is Phase 2 behaviour.)
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+    EXPECT_EQ(tsdf.DebugQueryPoolIndex(key), kInvalidPoolIndex);
+}
+
+TEST(DirectionalTSDFPhase4Test, EvictedDirtyGroupReloadsFromHostStore) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 4096);
+
+    std::vector<Eigen::Vector3f> points, normals;
+    makePlane(0.0f, 0.4f, 0.05f, Eigen::Vector3f(1, 0, 0), points, normals);
+    tsdf.Integrate(points, normals, Eigen::Vector3f(2, 0, 0), Eigen::Vector3f::Zero());
+
+    const DirectionalGroupKey key{0, 0, 0, 0};
+    auto pre = tsdf.DebugDownloadGroupVoxels(key);
+
+    tsdf.BeginFrame(Eigen::Vector3f(80.0f, 0.0f, 0.0f)); // write-back + free
+
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+    tsdf.EnsureResident({key});
+    EXPECT_EQ(tsdf.LastFrameStats().missingCount, 1u); // freed → reload, not revive
+
+    auto post = tsdf.DebugDownloadGroupVoxels(key);
+    EXPECT_NEAR(post[0].value, pre[0].value, 1e-3f);
+    EXPECT_NEAR(post[0].weight, pre[0].weight, 1e-3f);
+}

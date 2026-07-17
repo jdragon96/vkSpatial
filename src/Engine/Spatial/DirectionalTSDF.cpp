@@ -181,8 +181,78 @@ namespace Engine::Spatial {
             m_cleanFreeList->Download(cleanFree.data(), counts[1] * sizeof(uint32_t));
         m_freeSlots.assign(cleanFree.begin(), cleanFree.end());
 
-        // WriteBackList is produced for Phase 4; nothing marks dirty until integration.
+        // Write-back: dirty groups that left the window go to the host store, their
+        // meta is cleared (otherwise next frame's classify would see stale-valid meta
+        // and write them back twice), and their slots are freed (design doc §12).
+        // Synchronous processing inside BeginFrame guarantees invariant #5.
         m_stats.writeBackCount = counts[2];
+        if (counts[2] > 0) {
+            std::vector<uint32_t> writeBack(counts[2]);
+            m_writeBackList->Download(writeBack.data(), counts[2] * sizeof(uint32_t));
+
+            const uint32_t groupBytes = kVoxelsPerGroup * uint32_t(sizeof(GpuTsdfVoxel));
+            const uint32_t bytes = counts[2] * groupBytes;
+            Engine::Core::Buffer staging(*m_ctx);
+            staging.Allocate(bytes);
+            {
+                std::vector<VkBufferCopy> regions(counts[2]);
+                for (uint32_t i = 0; i < counts[2]; ++i) {
+                    regions[i].srcOffset = VkDeviceSize(writeBack[i]) * groupBytes;
+                    regions[i].dstOffset = VkDeviceSize(i) * groupBytes;
+                    regions[i].size = groupBytes;
+                }
+                VkBuffer src = m_poolVoxels->Handle();
+                VkBuffer dst = staging.Handle();
+                Engine::Core::SubmitOneShot(*m_ctx, Engine::Core::QueueRole::Compute,
+                                            [&](VkCommandBuffer cmd) {
+                                                vkCmdCopyBuffer(cmd, src, dst,
+                                                                uint32_t(regions.size()),
+                                                                regions.data());
+                                            });
+            }
+            std::vector<GpuTsdfVoxel> raw(size_t(counts[2]) * kVoxelsPerGroup);
+            staging.Download(raw.data(), bytes);
+
+            for (uint32_t i = 0; i < counts[2]; ++i) {
+                const uint32_t slot = writeBack[i];
+                DirectionalHostStore::Group group{};
+                for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
+                    const GpuTsdfVoxel &g = raw[size_t(i) * kVoxelsPerGroup + v];
+                    group[v].weight = float(g.sumW) / float(kTsdfFixedScale);
+                    group[v].value = g.sumW > 0
+                                             ? float(double(g.sumDW) / double(g.sumW))
+                                             : 0.0f;
+                }
+                m_hostStore.Put(m_slotKeys[slot], group);
+            }
+
+            // Clear the written-back slots' meta so they classify as free next frame.
+            {
+                std::vector<ActiveGroupMeta> clearMeta(counts[2]); // zero = invalid/Free
+                Engine::Core::Buffer metaStaging(*m_ctx);
+                const uint32_t metaBytes = counts[2] * uint32_t(sizeof(ActiveGroupMeta));
+                metaStaging.Allocate(metaBytes);
+                metaStaging.Upload(clearMeta.data(), metaBytes);
+                std::vector<VkBufferCopy> regions(counts[2]);
+                for (uint32_t i = 0; i < counts[2]; ++i) {
+                    regions[i].srcOffset = VkDeviceSize(i) * sizeof(ActiveGroupMeta);
+                    regions[i].dstOffset = VkDeviceSize(writeBack[i]) * sizeof(ActiveGroupMeta);
+                    regions[i].size = sizeof(ActiveGroupMeta);
+                }
+                VkBuffer src = metaStaging.Handle();
+                VkBuffer dst = m_metaBuffer->Handle();
+                Engine::Core::SubmitOneShot(*m_ctx, Engine::Core::QueueRole::Compute,
+                                            [&](VkCommandBuffer cmd) {
+                                                vkCmdCopyBuffer(cmd, src, dst,
+                                                                uint32_t(regions.size()),
+                                                                regions.data());
+                                            });
+            }
+
+            for (uint32_t slot : writeBack)
+                m_freeSlots.push_back(slot);
+            m_stats.d2hBytes += bytes;
+        }
 
         // 3. Re-register reusable slots into the freshly-reset indexGrid. Invariant #6:
         //    this must complete before any missing-group decision is made.
