@@ -38,11 +38,11 @@ if (GLSLC_EXECUTABLE)
 
     add_executable(cube_render2
             cube_render.cpp
+            CubePass.cpp
             "${CMAKE_SOURCE_DIR}/src/utilities/SimpleResource.cpp"
             "${CMAKE_SOURCE_DIR}/src/utilities/Math.cpp")
     add_dependencies(cube_render2 cube_render2_shaders)
-    target_link_libraries(cube_render2 PRIVATE Engine::Render Engine::Core glfw)
-    target_include_directories(cube_render2 PRIVATE /opt/homebrew/opt/eigen/include/eigen3)
+    target_link_libraries(cube_render2 PRIVATE Engine::Render Engine::Core)
     target_compile_definitions(cube_render2 PRIVATE
             CUBE_RENDER2_SHADER_DIR=\"${CUBE_RENDER2_SHADER_OUTPUT_DIR}\")
 else ()

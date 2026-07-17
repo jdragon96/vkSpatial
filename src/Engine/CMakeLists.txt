@@ -1,4 +1,5 @@
-file(GLOB_RECURSE ENGINE_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Core/*.cpp")
+file(GLOB_RECURSE ENGINE_CORE_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Core/*.cpp")
 
 add_library(EngineCore STATIC ${ENGINE_CORE_SOURCES})
 add_library(Engine::Core ALIAS EngineCore)
@@ -18,17 +19,21 @@ target_include_directories(EngineCore
 target_compile_definitions(EngineCore PRIVATE
         VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")
 
-file(GLOB_RECURSE ENGINE_RENDER_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Render/*.cpp")
+file(GLOB_RECURSE ENGINE_RENDER_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Render/*.cpp"
+        "${CMAKE_SOURCE_DIR}/src/utilities/Math.cpp")
 
 add_library(EngineRender STATIC ${ENGINE_RENDER_SOURCES})
 add_library(Engine::Render ALIAS EngineRender)
 
 target_link_libraries(EngineRender
-        PUBLIC Engine::Core Vulkan::Vulkan)
+        PUBLIC Engine::Core Vulkan::Vulkan
+        PRIVATE glfw)
 
 target_include_directories(EngineRender
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
+            /opt/homebrew/opt/eigen/include/eigen3
         PRIVATE
             "${VULKAN_SDK}/include")
 
