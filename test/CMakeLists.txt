@@ -11,6 +11,7 @@ target_link_libraries(vkspatial_tests
         PRIVATE
         vkSpatial::vkSpatial
         Engine::Core
+        Engine::Render
         GTest::gtest
         GTest::gtest_main)
 

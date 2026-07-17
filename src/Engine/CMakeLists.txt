@@ -1,4 +1,6 @@
-file(GLOB_RECURSE ENGINE_CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Core/*.cpp")
+file(GLOB_RECURSE ENGINE_CORE_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Core/*.cpp"
+        "${CMAKE_SOURCE_DIR}/src/utilities/Math.cpp")
 
 add_library(EngineCore STATIC ${ENGINE_CORE_SOURCES})
 add_library(Engine::Core ALIAS EngineCore)
@@ -12,6 +14,7 @@ target_include_directories(EngineCore
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/lib>
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/lib/vma>
+            /opt/homebrew/opt/eigen/include/eigen3
         PRIVATE
             "${VULKAN_SDK}/include")
 
@@ -29,5 +32,6 @@ target_link_libraries(EngineRender
 target_include_directories(EngineRender
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
+            /opt/homebrew/opt/eigen/include/eigen3
         PRIVATE
             "${VULKAN_SDK}/include")
