@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.18)
 project(vkspatial_example2 LANGUAGES CXX)
 
+add_executable(voxel_tsdf_mc voxel_tsdf_mc.cpp)
+target_link_libraries(voxel_tsdf_mc PRIVATE Engine::Spatial)
+target_compile_definitions(voxel_tsdf_mc PRIVATE VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")
+
+add_executable(directional_tsdf_demo directional_tsdf_demo.cpp)
+target_link_libraries(directional_tsdf_demo PRIVATE Engine::Spatial)
+target_compile_definitions(directional_tsdf_demo PRIVATE VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")
+
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
 if (GLSLC_EXECUTABLE)
     set(CUBE_RENDER2_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
