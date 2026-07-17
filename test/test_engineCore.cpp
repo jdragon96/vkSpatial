@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Engine/Core/Buffer.h"
+#include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Core/Image.h"
 #include "Engine/Core/OneShotCommands.h"
@@ -94,4 +95,48 @@ TEST(ImageTest, CreateDepth2DProducesValidHandles) {
     EXPECT_EQ(image.AspectMask(), static_cast<VkImageAspectFlags>(VK_IMAGE_ASPECT_DEPTH_BIT));
     EXPECT_TRUE(image.Matches({256, 256}, VK_FORMAT_D32_SFLOAT));
     EXPECT_FALSE(image.Matches({512, 512}));
+}
+
+TEST(ComputePipelineTest, DispatchSimpleShaderProducesExpectedOutput) {
+    Context ctx;
+
+    constexpr uint32_t N = 10001u;  // sum(0..N-1) = 50,005,000
+    std::vector<uint32_t> input(N);
+    std::iota(input.begin(), input.end(), 0u);
+
+    Buffer inputBuffer(ctx, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    inputBuffer.Allocate(N * sizeof(uint32_t));
+    inputBuffer.Upload(input.data(), N * sizeof(uint32_t));
+
+    Buffer outputBuffer(ctx, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    outputBuffer.Allocate(sizeof(uint32_t));
+    uint32_t zero = 0;
+    outputBuffer.Upload(&zero, sizeof(uint32_t));
+
+    static const char *kShader = R"(
+        #version 450
+        layout(local_size_x = 256) in;
+        layout(binding = 0) readonly buffer InputBuf { uint values[]; } inputBuf;
+        layout(binding = 1) buffer OutputBuf { uint total; } outputBuf;
+        layout(push_constant) uniform PC { uint count; } pc;
+        void main() {
+            uint idx = gl_GlobalInvocationID.x;
+            if (idx >= pc.count) return;
+            atomicAdd(outputBuf.total, inputBuf.values[idx]);
+        }
+    )";
+
+    struct PushConstants { uint32_t count; };
+
+    ComputePipeline pipeline(ctx);
+    pipeline.Build(kShader, ShaderInput::GlslSrc)
+            .Bind(0, inputBuffer)
+            .Bind(1, outputBuffer)
+            .Args(PushConstants{N})
+            .DispatchElements(N);
+
+    uint32_t result = 0;
+    outputBuffer.Download(&result, sizeof(uint32_t));
+
+    EXPECT_EQ(result, 50005000u);
 }
