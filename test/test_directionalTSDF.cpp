@@ -211,3 +211,61 @@ TEST(DirectionalTSDFTest, KeyOutsideLocalWindowThrows) {
     EXPECT_THROW(tsdf.EnsureResident({DirectionalGroupKey{100, 0, 0, 0}}),
                  std::runtime_error);
 }
+
+TEST(DirectionalTSDFPhase2Test, RepeatedFrameSameAABBReusesEverything) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, /*poolCapacity=*/256);
+
+    std::vector<DirectionalGroupKey> required = {
+            {0, 0, 0, 0}, {1, 0, 0, 2}, {-2, 3, 1, 5}};
+
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+    tsdf.EnsureResident(required);
+    EXPECT_EQ(tsdf.LastFrameStats().missingCount, 3u);
+
+    std::vector<uint32_t> slotsBefore;
+    for (const auto &key : required)
+        slotsBefore.push_back(tsdf.DebugQueryPoolIndex(key));
+
+    // Same AABB again: everything must be reused, nothing uploaded.
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+    tsdf.EnsureResident(required);
+
+    auto stats = tsdf.LastFrameStats();
+    EXPECT_EQ(stats.missingCount, 0u);
+    EXPECT_EQ(stats.h2dBytes, 0u);
+    EXPECT_EQ(stats.residentCount, 3u);
+    EXPECT_FLOAT_EQ(stats.overlapRatio, 1.0f);
+    EXPECT_EQ(tsdf.DebugLastClassifyCounts().reusable, 3u);
+
+    for (size_t i = 0; i < required.size(); ++i)
+        EXPECT_EQ(tsdf.DebugQueryPoolIndex(required[i]), slotsBefore[i]);
+}
+
+TEST(DirectionalTSDFPhase2Test, OverlapRatioReflectsPartialReuse) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 256);
+
+    // Frame 1: groups x ∈ [0, 9]. Frame 2: x ∈ [5, 14] → 5 reused, 5 missing.
+    std::vector<DirectionalGroupKey> frame1, frame2;
+    for (int x = 0; x <= 9; ++x) frame1.push_back({x, 0, 0, 0});
+    for (int x = 5; x <= 14; ++x) frame2.push_back({x, 0, 0, 0});
+
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+    tsdf.EnsureResident(frame1);
+    EXPECT_EQ(tsdf.LastFrameStats().missingCount, 10u);
+
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+    tsdf.EnsureResident(frame2);
+
+    auto stats = tsdf.LastFrameStats();
+    EXPECT_EQ(stats.missingCount, 5u);
+    EXPECT_EQ(stats.h2dBytes, uint32_t(5u * kVoxelsPerGroup * sizeof(GpuTsdfVoxel)));
+    EXPECT_FLOAT_EQ(stats.overlapRatio, 0.5f);
+    // All 10 frame-1 groups are still inside the window → all reusable.
+    EXPECT_EQ(tsdf.DebugLastClassifyCounts().reusable, 10u);
+    // Resident = 10 reused + 5 newly uploaded.
+    EXPECT_EQ(stats.residentCount, 15u);
+}

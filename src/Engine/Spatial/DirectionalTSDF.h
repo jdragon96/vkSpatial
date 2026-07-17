@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Engine::Spatial {
@@ -17,10 +18,11 @@ namespace Engine::Spatial {
     // Directional TSDF with a host/GPU streaming cache
     // (docs/superpowers/specs/2026-07-17-directional-tsdf-design.md).
     //
-    // Phase 1 scope: BeginFrame uses full-reload semantics (every slot freed each frame);
-    // EnsureResident uploads every requested group from the host store and registers it in
-    // the indexGrid. Device-side classification/reuse (Phase 2), integration/extraction
-    // (Phase 3) and dirty write-back (Phase 4) come later.
+    // Phase 2 scope: BeginFrame classifies the active pool against the new local base on
+    // the GPU (ReusableList / CleanFreeList / WriteBackList), re-registers reusable slots
+    // into the indexGrid, and EnsureResident uploads only genuinely missing groups using
+    // CleanFreeList slots. Integration/extraction (Phase 3) and dirty write-back (Phase 4)
+    // come later; WriteBackList is produced but not yet consumed.
     class DirectionalTSDF {
     public:
         struct Stats {
@@ -30,6 +32,12 @@ namespace Engine::Spatial {
             uint32_t h2dBytes = 0;
             uint32_t d2hBytes = 0;
             float overlapRatio = 0.0f;
+        };
+
+        struct ClassifyCounts {
+            uint32_t reusable = 0;
+            uint32_t cleanFree = 0;
+            uint32_t writeBack = 0;
         };
 
         void Build(Engine::Core::Context &ctx,
@@ -55,6 +63,9 @@ namespace Engine::Spatial {
         uint32_t PoolCapacity() const { return m_poolCapacity; }
         Stats LastFrameStats() const { return m_stats; }
 
+        // Result of the most recent BeginFrame classification (test/debug).
+        ClassifyCounts DebugLastClassifyCounts() const { return m_lastCounts; }
+
         // Test/debug helpers — synchronous GPU downloads, not for per-frame use.
         std::vector<uint32_t> DebugDownloadIndexGrid();
         uint32_t DebugQueryPoolIndex(const DirectionalGroupKey &key);
@@ -73,16 +84,24 @@ namespace Engine::Spatial {
         std::unique_ptr<Engine::Core::Buffer> m_poolVoxels;     // GpuTsdfVoxel[poolCapacity*512]
         std::unique_ptr<Engine::Core::Buffer> m_metaBuffer;     // ActiveGroupMeta[poolCapacity]
         std::unique_ptr<Engine::Core::Buffer> m_slotListBuffer; // uint32[poolCapacity]
+        std::unique_ptr<Engine::Core::Buffer> m_reusableList;   // uint32[poolCapacity]
+        std::unique_ptr<Engine::Core::Buffer> m_cleanFreeList;  // uint32[poolCapacity]
+        std::unique_ptr<Engine::Core::Buffer> m_writeBackList;  // uint32[poolCapacity]
+        std::unique_ptr<Engine::Core::Buffer> m_countsBuffer;   // uint32[3]
         std::unique_ptr<Engine::Core::ComputePipeline> m_registerKernel;
+        std::unique_ptr<Engine::Core::ComputePipeline> m_classifyKernel;
 
         // CPU mirror of slot occupancy: which key each slot currently holds.
         std::unordered_map<DirectionalGroupKey, uint32_t, DirectionalGroupKeyHash> m_residentIndex;
         std::vector<DirectionalGroupKey> m_slotKeys;
-        uint32_t m_nextFreeSlot = 0;
+        std::vector<uint32_t> m_freeSlots; // rebuilt from CleanFreeList every BeginFrame
+        std::unordered_set<DirectionalGroupKey, DirectionalGroupKeyHash> m_requiredThisFrame;
 
         Stats m_stats;
+        ClassifyCounts m_lastCounts;
 
         void fillIndexGridInvalid();
+        void updateOverlapRatio();
         Eigen::Vector3i quantizeLocalBase(const Eigen::Vector3f &center) const;
     };
 
