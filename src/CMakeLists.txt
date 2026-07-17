@@ -9,6 +9,8 @@ find_library(SHADERC_LIB shaderc_combined HINTS "${VULKAN_SDK}/lib")
 set(VKBVH_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shader"
         CACHE PATH "vkSpatial GLSL shader directory" FORCE)
 
+add_subdirectory(Engine)
+
 file(GLOB_RECURSE VKCOMMON_SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/vkCommon/*.cpp")
 
