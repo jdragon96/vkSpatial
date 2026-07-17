@@ -604,3 +604,22 @@ TEST(DirectionalTSDFPhase5Test, BareBeginFrameUsesFewSubmits) {
     // fill+classify+readback fold into one batch; no dirty groups → no write-back batch.
     EXPECT_EQ(tsdf.LastFrameStats().gpuSubmits, 1u);
 }
+
+TEST(DirectionalTSDFPhase5Test, SteadyStateIntegrateUsesThreeSubmits) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 4096);
+
+    std::vector<Eigen::Vector3f> points, normals;
+    makePlane(0.0f, 0.4f, 0.05f, Eigen::Vector3f(1, 0, 0), points, normals);
+
+    // Frame 1 (cold): uploads everything.
+    tsdf.Integrate(points, normals, Eigen::Vector3f(2, 0, 0), Eigen::Vector3f::Zero());
+    // Frame 2 (identical window): no missing, no write-back → the minimal batch count.
+    tsdf.Integrate(points, normals, Eigen::Vector3f(2, 0, 0), Eigen::Vector3f::Zero());
+
+    // Batch 1 (BeginFrame classify+readback) + Batch 2 (register+integrate) +
+    // Batch 3 (extract+readback) = 3 submits, no write-back this frame.
+    EXPECT_EQ(tsdf.LastFrameStats().gpuSubmits, 3u);
+    EXPECT_EQ(tsdf.LastFrameStats().missingCount, 0u);
+}

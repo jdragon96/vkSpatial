@@ -54,7 +54,7 @@ namespace Engine::Spatial {
                    float truncation = 0.3f,
                    uint32_t poolCapacity = 32768,
                    uint32_t maxPoints = 1u << 15,
-                   uint32_t maxCandidates = 1u << 18);
+                   uint32_t maxCandidates = 1u << 16);
 
         // Starts a frame: recomputes the local base (window centred on the hint, snapped to
         // the group grid) and resets the indexGrid to kInvalidPoolIndex.
@@ -148,6 +148,12 @@ namespace Engine::Spatial {
         Eigen::Vector3i quantizeLocalBase(const Eigen::Vector3f &center) const;
         std::vector<ExtractedPoint> mergeCandidates(
                 const std::vector<DirectionalCandidate> &candidates) const;
+
+        // Stages missing groups into persistent staging and records upload copies +
+        // combined (reusable + missing) register dispatch into `batch`. Does NOT submit.
+        // Returns the number of slots registered.
+        uint32_t recordResidency(const std::vector<DirectionalGroupKey> &required,
+                                 Engine::Compute::CommandBatch &batch);
     };
 
 } // namespace Engine::Spatial

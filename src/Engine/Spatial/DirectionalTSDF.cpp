@@ -264,21 +264,10 @@ namespace Engine::Spatial {
             }
         }
 
-        // Re-register reusable slots into the freshly-reset indexGrid so the integrate/
-        // extract kernels see them. (Task 4 folds this into the EnsureResident batch; here
-        // it is its own batch. A bare BeginFrame right after Build has 0 reusable → 0 extra
-        // submits.) Missing detection uses the CPU mirror below, not this — invariant #6.
-        if (counts[0] > 0) {
-            Engine::Compute::CommandBatch batch(*m_ctx);
-            m_registerKernel->Bind(0, *m_reusableList);
-            RegisterPC rpc{counts[0], m_localBase.x(), m_localBase.y(), m_localBase.z()};
-            m_registerKernel->Args(rpc);
-            batch.DispatchElements(*m_registerKernel, counts[0]);
-            batch.Submit();
-            ++m_stats.gpuSubmits;
-        }
-
-        // Rebuild the CPU resident mirror from the reusable set.
+        // Reusable slots are re-registered into the indexGrid inside the EnsureResident /
+        // Integrate batch (recordResidency), together with the missing slots, so the
+        // register dispatch runs once. Missing detection uses the CPU mirror below, not the
+        // GPU indexGrid — invariant #6 holds at the mirror level.
         m_residentIndex.clear();
         for (uint32_t slot : reusable)
             m_residentIndex.emplace(m_slotKeys[slot], slot);
@@ -286,10 +275,8 @@ namespace Engine::Spatial {
         m_reusableSlots.assign(reusable.begin(), reusable.end());
     }
 
-    void DirectionalTSDF::EnsureResident(const std::vector<DirectionalGroupKey> &required) {
-        if (!m_ctx)
-            throw std::runtime_error("DirectionalTSDF: Build() must be called first");
-
+    uint32_t DirectionalTSDF::recordResidency(const std::vector<DirectionalGroupKey> &required,
+                                              Engine::Compute::CommandBatch &batch) {
         struct Pending {
             DirectionalGroupKey key;
             uint32_t slot;
@@ -304,16 +291,12 @@ namespace Engine::Spatial {
             if (lx < 0 || ly < 0 || lz < 0 ||
                 lx >= int(kLocalGroupGrid) || ly >= int(kLocalGroupGrid) ||
                 lz >= int(kLocalGroupGrid))
-                throw std::runtime_error(
-                        "DirectionalTSDF: required group is outside the local window");
-
+                throw std::runtime_error("DirectionalTSDF: required group is outside the local window");
             m_requiredThisFrame.insert(key);
-
             if (m_residentIndex.find(key) != m_residentIndex.end())
                 continue;
             if (m_freeSlots.empty())
                 throw std::runtime_error("DirectionalTSDF: active pool exhausted");
-
             const uint32_t slot = m_freeSlots.back();
             m_freeSlots.pop_back();
             m_residentIndex.emplace(key, slot);
@@ -321,88 +304,65 @@ namespace Engine::Spatial {
             pending.push_back({key, slot});
         }
         m_stats.residentCount = uint32_t(m_residentIndex.size());
-        if (pending.empty()) {
-            updateOverlapRatio();
-            return;
-        }
 
-        // Encode host groups into the GPU fixed-point format and build their meta entries.
-        std::vector<GpuTsdfVoxel> voxelData(pending.size() * kVoxelsPerGroup);
-        std::vector<ActiveGroupMeta> metaData(pending.size());
+        if (pending.size() > kStageGroupCap)
+            throw std::runtime_error("DirectionalTSDF: missing groups exceed staging cap (chunking TODO)");
+
+        const uint32_t groupBytes = kVoxelsPerGroup * uint32_t(sizeof(GpuTsdfVoxel));
+        auto *voxStage = static_cast<GpuTsdfVoxel *>(m_stageGroups->Mapped());
+        auto *metaStage = static_cast<ActiveGroupMeta *>(m_stageMeta->Mapped());
+        auto *slotStage = static_cast<uint32_t *>(m_stageSlotList->Mapped());
+
+        // Combined register list: reusable slots (already have valid GPU meta) + missing
+        // slots (meta uploaded below). One register dispatch handles both.
+        uint32_t regCount = 0;
+        for (uint32_t s : m_reusableSlots) slotStage[regCount++] = s;
+
+        std::vector<VkBufferCopy> voxRegions(pending.size()), metaRegions(pending.size());
         for (size_t i = 0; i < pending.size(); ++i) {
-            const auto &key = pending[i].key;
-            const auto &group = m_hostStore.GetOrCreate(key);
+            const auto &pk = pending[i];
+            const auto &group = m_hostStore.GetOrCreate(pk.key);
             for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
                 const HostTsdfVoxel &h = group[v];
-                GpuTsdfVoxel &g = voxelData[i * kVoxelsPerGroup + v];
+                GpuTsdfVoxel &g = voxStage[i * kVoxelsPerGroup + v];
                 g.sumW = uint32_t(std::lround(double(h.weight) * kTsdfFixedScale));
-                g.sumDW = int32_t(
-                        std::lround(double(h.value) * double(h.weight) * kTsdfFixedScale));
+                g.sumDW = int32_t(std::lround(double(h.value) * double(h.weight) * kTsdfFixedScale));
             }
-            metaData[i] = ActiveGroupMeta{key.gx, key.gy, key.gz,
-                                          PackMeta(key.direction, SlotState::ResidentClean,
-                                                   /*dirty=*/false, /*valid=*/true)};
+            metaStage[i] = ActiveGroupMeta{pk.key.gx, pk.key.gy, pk.key.gz,
+                                           PackMeta(pk.key.direction, SlotState::ResidentClean, false, true)};
+            voxRegions[i] = {VkDeviceSize(i) * groupBytes, VkDeviceSize(pk.slot) * groupBytes, groupBytes};
+            metaRegions[i] = {VkDeviceSize(i) * sizeof(ActiveGroupMeta),
+                              VkDeviceSize(pk.slot) * sizeof(ActiveGroupMeta), sizeof(ActiveGroupMeta)};
+            slotStage[regCount++] = pk.slot;
         }
-
-        // Voxel payloads → scattered pool slots: staging buffer + one multi-region copy.
-        {
-            const uint32_t bytes = uint32_t(voxelData.size() * sizeof(GpuTsdfVoxel));
-            Engine::Core::Buffer staging(*m_ctx);
-            staging.Allocate(bytes);
-            staging.Upload(voxelData.data(), bytes);
-
-            std::vector<VkBufferCopy> regions(pending.size());
-            for (size_t i = 0; i < pending.size(); ++i) {
-                regions[i].srcOffset = VkDeviceSize(i) * kGroupBytes;
-                regions[i].dstOffset = VkDeviceSize(pending[i].slot) * kGroupBytes;
-                regions[i].size = kGroupBytes;
-            }
-            VkBuffer src = staging.Handle();
-            VkBuffer dst = m_poolVoxels->Handle();
-            Engine::Core::SubmitOneShot(*m_ctx, Engine::Core::QueueRole::Compute,
-                                        [&](VkCommandBuffer cmd) {
-                                            vkCmdCopyBuffer(cmd, src, dst,
-                                                            uint32_t(regions.size()),
-                                                            regions.data());
-                                        });
-            m_stats.h2dBytes += bytes;
+        if (!pending.empty()) {
+            batch.CopyBuffer(m_stageGroups->Handle(), m_poolVoxels->Handle(), voxRegions);
+            batch.CopyBuffer(m_stageMeta->Handle(), m_metaBuffer->Handle(), metaRegions);
+            m_stats.h2dBytes += uint32_t(pending.size()) * groupBytes;
         }
-
-        // Meta entries → scattered meta slots: same staging + multi-region pattern.
-        {
-            const uint32_t bytes = uint32_t(metaData.size() * sizeof(ActiveGroupMeta));
-            Engine::Core::Buffer staging(*m_ctx);
-            staging.Allocate(bytes);
-            staging.Upload(metaData.data(), bytes);
-
-            std::vector<VkBufferCopy> regions(pending.size());
-            for (size_t i = 0; i < pending.size(); ++i) {
-                regions[i].srcOffset = VkDeviceSize(i) * sizeof(ActiveGroupMeta);
-                regions[i].dstOffset = VkDeviceSize(pending[i].slot) * sizeof(ActiveGroupMeta);
-                regions[i].size = sizeof(ActiveGroupMeta);
-            }
-            VkBuffer src = staging.Handle();
-            VkBuffer dst = m_metaBuffer->Handle();
-            Engine::Core::SubmitOneShot(*m_ctx, Engine::Core::QueueRole::Compute,
-                                        [&](VkCommandBuffer cmd) {
-                                            vkCmdCopyBuffer(cmd, src, dst,
-                                                            uint32_t(regions.size()),
-                                                            regions.data());
-                                        });
-        }
-
-        // Register the freshly-filled slots in the indexGrid.
-        std::vector<uint32_t> slots(pending.size());
-        for (size_t i = 0; i < pending.size(); ++i)
-            slots[i] = pending[i].slot;
-        m_slotListBuffer->Upload(slots.data(), uint32_t(slots.size() * sizeof(uint32_t)));
-
-        m_registerKernel->Bind(0, *m_slotListBuffer);
-        RegisterPC pc{uint32_t(slots.size()), m_localBase.x(), m_localBase.y(),
-                      m_localBase.z()};
-        m_registerKernel->Args(pc).DispatchElements(uint32_t(slots.size()));
-
         m_stats.missingCount += uint32_t(pending.size());
+
+        if (regCount > 0) {
+            std::vector<VkBufferCopy> slotRegion(1);
+            slotRegion[0] = {0, 0, VkDeviceSize(regCount) * sizeof(uint32_t)};
+            batch.CopyBuffer(m_stageSlotList->Handle(), m_slotListBuffer->Handle(), slotRegion);
+            batch.Barrier();
+            RegisterPC rpc{regCount, m_localBase.x(), m_localBase.y(), m_localBase.z()};
+            m_registerKernel->Args(rpc).Bind(0, *m_slotListBuffer);
+            batch.DispatchElements(*m_registerKernel, regCount);
+        }
+        return regCount;
+    }
+
+    void DirectionalTSDF::EnsureResident(const std::vector<DirectionalGroupKey> &required) {
+        if (!m_ctx)
+            throw std::runtime_error("DirectionalTSDF: Build() must be called first");
+        Engine::Compute::CommandBatch batch(*m_ctx);
+        const uint32_t reg = recordResidency(required, batch);
+        if (reg > 0) {
+            batch.Submit();
+            ++m_stats.gpuSubmits;
+        }
         updateOverlapRatio();
     }
 
@@ -462,30 +422,33 @@ namespace Engine::Spatial {
                                     {k.gx + dx, k.gy + dy, k.gz + dz, k.direction});
             required.assign(requiredSet.begin(), requiredSet.end());
         }
-        EnsureResident(required);
-        const auto t2 = Clock::now();
-
-        // Upload samples and integrate.
-        std::vector<float> samples(size_t(N) * 6u);
+        // Stage point samples into the persistent staging buffer (CPU side).
+        auto *ptStage = static_cast<float *>(m_stagePoints->Mapped());
         for (uint32_t i = 0; i < N; ++i) {
-            samples[size_t(i) * 6 + 0] = points[i].x();
-            samples[size_t(i) * 6 + 1] = points[i].y();
-            samples[size_t(i) * 6 + 2] = points[i].z();
-            samples[size_t(i) * 6 + 3] = normals[i].x();
-            samples[size_t(i) * 6 + 4] = normals[i].y();
-            samples[size_t(i) * 6 + 5] = normals[i].z();
+            ptStage[size_t(i) * 6 + 0] = points[i].x();
+            ptStage[size_t(i) * 6 + 1] = points[i].y();
+            ptStage[size_t(i) * 6 + 2] = points[i].z();
+            ptStage[size_t(i) * 6 + 3] = normals[i].x();
+            ptStage[size_t(i) * 6 + 4] = normals[i].y();
+            ptStage[size_t(i) * 6 + 5] = normals[i].z();
         }
-        m_pointBuffer->Upload(samples.data(), uint32_t(samples.size() * sizeof(float)));
-        IntegratePC ipc{N,
-                        m_voxelSize,
-                        m_truncation,
-                        m_localBase.x(),
-                        m_localBase.y(),
-                        m_localBase.z(),
-                        cameraPos.x(),
-                        cameraPos.y(),
-                        cameraPos.z()};
-        m_integrateKernel->Args(ipc).DispatchElements(N);
+
+        // Batch 2: residency (upload missing + combined register) + point upload + integrate.
+        {
+            Engine::Compute::CommandBatch batch(*m_ctx);
+            recordResidency(required, batch);
+            std::vector<VkBufferCopy> ptRegion(1);
+            ptRegion[0] = {0, 0, VkDeviceSize(N) * 6u * sizeof(float)};
+            batch.CopyBuffer(m_stagePoints->Handle(), m_pointBuffer->Handle(), ptRegion);
+            batch.Barrier();
+            IntegratePC ipc{N, m_voxelSize, m_truncation, m_localBase.x(), m_localBase.y(),
+                            m_localBase.z(), cameraPos.x(), cameraPos.y(), cameraPos.z()};
+            m_integrateKernel->Args(ipc);
+            batch.DispatchElements(*m_integrateKernel, N);
+            batch.Submit();
+            ++m_stats.gpuSubmits;
+        }
+        updateOverlapRatio();
         const auto t3 = Clock::now();
 
         // recomputeMask is SPATIAL (design doc §14): re-extract every resident direction
@@ -501,27 +464,40 @@ namespace Engine::Spatial {
                         spatialKey(entry.first.gx, entry.first.gy, entry.first.gz)) > 0)
                 groupSlots.push_back(entry.second);
 
+        // Batch 3: extract + candidate readback (counter + full candidate buffer), one submit.
         uint32_t candidateCount = 0;
         if (!groupSlots.empty()) {
-            m_slotListBuffer->Upload(groupSlots.data(),
-                                     uint32_t(groupSlots.size() * sizeof(uint32_t)));
-            const uint32_t zero = 0;
-            m_candidateCounter->Upload(&zero, sizeof(zero));
-            ExtractPC epc{uint32_t(groupSlots.size()),
-                          m_voxelSize,
-                          m_maxCandidates,
-                          m_localBase.x(),
-                          m_localBase.y(),
-                          m_localBase.z()};
-            m_extractKernel->Args(epc).DispatchElements(
-                    uint32_t(groupSlots.size()) * kVoxelsPerGroup);
-            m_candidateCounter->Download(&candidateCount, sizeof(candidateCount));
+            auto *slotStage = static_cast<uint32_t *>(m_stageSlotList->Mapped());
+            std::memcpy(slotStage, groupSlots.data(), groupSlots.size() * sizeof(uint32_t));
+            std::vector<VkBufferCopy> slotRegion(1);
+            slotRegion[0] = {0, 0, VkDeviceSize(groupSlots.size()) * sizeof(uint32_t)};
+            std::vector<VkBufferCopy> cntCopy(1);
+            cntCopy[0] = {0, 0, sizeof(uint32_t)};
+            std::vector<VkBufferCopy> candCopy(1);
+            candCopy[0] = {0, 0, VkDeviceSize(m_maxCandidates) * sizeof(DirectionalCandidate)};
+
+            ExtractPC epc{uint32_t(groupSlots.size()), m_voxelSize, m_maxCandidates,
+                          m_localBase.x(), m_localBase.y(), m_localBase.z()};
+            m_extractKernel->Args(epc);
+
+            Engine::Compute::CommandBatch batch(*m_ctx);
+            batch.CopyBuffer(m_stageSlotList->Handle(), m_slotListBuffer->Handle(), slotRegion);
+            batch.FillBuffer(m_candidateCounter->Handle(), 0, VK_WHOLE_SIZE, 0u);
+            batch.Barrier();
+            batch.DispatchElements(*m_extractKernel, uint32_t(groupSlots.size()) * kVoxelsPerGroup);
+            batch.Barrier();
+            batch.CopyBuffer(m_candidateCounter->Handle(), m_stageCounts->Handle(), cntCopy);
+            batch.CopyBuffer(m_candidateBuffer->Handle(), m_stageCandidates->Handle(), candCopy);
+            batch.Submit();
+            ++m_stats.gpuSubmits;
+
+            std::memcpy(&candidateCount, m_stageCounts->Mapped(), sizeof(uint32_t));
             candidateCount = std::min(candidateCount, m_maxCandidates);
         }
         std::vector<DirectionalCandidate> candidates(candidateCount);
         if (candidateCount > 0)
-            m_candidateBuffer->Download(candidates.data(),
-                                        candidateCount * sizeof(DirectionalCandidate));
+            std::memcpy(candidates.data(), m_stageCandidates->Mapped(),
+                        candidateCount * sizeof(DirectionalCandidate));
         const auto t4 = Clock::now();
 
         // Candidate merge + old-point replacement (§14/§15, invariant #9).
@@ -537,8 +513,8 @@ namespace Engine::Spatial {
         const auto t5 = Clock::now();
 
         m_stats.beginFrameMs = msBetween(t0, t1);
-        m_stats.ensureResidentMs = msBetween(t1, t2);
-        m_stats.integrateMs = msBetween(t2, t3);
+        m_stats.ensureResidentMs = 0.0f;         // residency folded into the integrate batch
+        m_stats.integrateMs = msBetween(t1, t3); // BeginFrame → end of Batch 2
         m_stats.extractMs = msBetween(t3, t4);
         m_stats.mergeMs = msBetween(t4, t5);
     }
