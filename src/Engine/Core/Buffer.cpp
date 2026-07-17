@@ -66,11 +66,16 @@ namespace Engine::Core {
         std::memcpy(stagingAllocationInfo.pMappedData, data, bytes);
 
         VkBuffer dstBuffer = m_buffer;
-        SubmitOneShot(m_context, role, [&](VkCommandBuffer cmd) {
-            VkBufferCopy region{};
-            region.size = bytes;
-            vkCmdCopyBuffer(cmd, stagingBuffer, dstBuffer, 1, &region);
-        });
+        try {
+            SubmitOneShot(m_context, role, [&](VkCommandBuffer cmd) {
+                VkBufferCopy region{};
+                region.size = bytes;
+                vkCmdCopyBuffer(cmd, stagingBuffer, dstBuffer, 1, &region);
+            });
+        } catch (...) {
+            vmaDestroyBuffer(m_context.allocator, stagingBuffer, stagingAllocation);
+            throw;
+        }
 
         vmaDestroyBuffer(m_context.allocator, stagingBuffer, stagingAllocation);
     }
@@ -97,11 +102,16 @@ namespace Engine::Core {
             throw std::runtime_error("Buffer::Download: failed to create staging buffer");
 
         VkBuffer srcBuffer = m_buffer;
-        SubmitOneShot(m_context, role, [&](VkCommandBuffer cmd) {
-            VkBufferCopy region{};
-            region.size = bytes;
-            vkCmdCopyBuffer(cmd, srcBuffer, stagingBuffer, 1, &region);
-        });
+        try {
+            SubmitOneShot(m_context, role, [&](VkCommandBuffer cmd) {
+                VkBufferCopy region{};
+                region.size = bytes;
+                vkCmdCopyBuffer(cmd, srcBuffer, stagingBuffer, 1, &region);
+            });
+        } catch (...) {
+            vmaDestroyBuffer(m_context.allocator, stagingBuffer, stagingAllocation);
+            throw;
+        }
 
         std::memcpy(data, stagingAllocationInfo.pMappedData, bytes);
 
