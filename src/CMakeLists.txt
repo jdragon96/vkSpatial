@@ -17,7 +17,7 @@ add_library(vkCommon::vkCommon ALIAS vkCommon)
 
 target_link_libraries(vkCommon
         PUBLIC  Vulkan::Vulkan
-        PRIVATE ${SHADERC_LIB} spirv-reflect)
+        PRIVATE ${SHADERC_LIB} spirv-reflect vk-bootstrap::vk-bootstrap)
 
 target_include_directories(vkCommon
         PUBLIC

@@ -8,6 +8,14 @@ find_package(Vulkan REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(glfw3 REQUIRED)
 
+include(FetchContent)
+FetchContent_Declare(
+        fetch_vk_bootstrap
+        GIT_REPOSITORY https://github.com/charles-lunarg/vk-bootstrap
+        GIT_TAG        v1.4.356
+)
+FetchContent_MakeAvailable(fetch_vk_bootstrap)
+
 add_subdirectory(lib)
 add_subdirectory(src)
 add_subdirectory(example)
