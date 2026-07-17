@@ -1,0 +1,85 @@
+#version 460
+layout(local_size_x = 256) in;
+
+// Dominant-direction TSDF integration (design doc §13). Extends SimpleTSDF's
+// voxel_tsdf_integrate.comp ray-march: each sample writes only into the direction
+// layer chosen by its normal's dominant axis, and only into resident groups
+// (invariant #7 — indexGrid miss → skip). Touched slots are marked dirty.
+
+#define LOCAL_GRID 50
+#define TSDF_SCALE 10000.0
+
+struct PointSample { float px, py, pz, nx, ny, nz; };
+struct GpuVoxel { int sumDW; uint sumW; };
+struct ActiveGroupMeta { int gx; int gy; int gz; uint packed; };
+
+layout(push_constant) uniform PC {
+    uint  g_numPoints;
+    float g_voxelSize;
+    float g_truncation;
+    int   g_baseX;
+    int   g_baseY;
+    int   g_baseZ;
+    float g_camX;
+    float g_camY;
+    float g_camZ;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer Points { PointSample g_points[]; };
+layout(std430, set = 0, binding = 1) readonly buffer IndexGrid { uint g_indexGrid[]; };
+layout(std430, set = 0, binding = 2) buffer Pool { GpuVoxel g_pool[]; };
+layout(std430, set = 0, binding = 3) buffer Meta { ActiveGroupMeta g_meta[]; };
+
+// Must match dominantAxisOf() in DirectionalTSDF.cpp exactly (comparison order + ties).
+uint dominantAxis(vec3 n) {
+    vec3 a = abs(n);
+    if (a.x >= a.y && a.x >= a.z) return n.x >= 0.0 ? 0u : 1u;
+    if (a.y >= a.x && a.y >= a.z) return n.y >= 0.0 ? 2u : 3u;
+    return n.z >= 0.0 ? 4u : 5u;
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= g_numPoints) return;
+
+    PointSample s = g_points[gid];
+    vec3 p = vec3(s.px, s.py, s.pz);
+    vec3 cam = vec3(g_camX, g_camY, g_camZ);
+
+    vec3 diff = p - cam;
+    float depth = length(diff);
+    if (depth < 1e-6) return;
+    vec3 rayDir = diff / depth;
+    uint dir = dominantAxis(vec3(s.nx, s.ny, s.nz));
+
+    int steps = int(ceil(g_truncation / g_voxelSize)) + 1;
+    for (int t = -steps; t <= steps; t++) {
+        vec3 samplePos = p + rayDir * (float(t) * g_voxelSize);
+        ivec3 v = ivec3(floor(samplePos / g_voxelSize));
+        vec3 vCenter = (vec3(v) + vec3(0.5)) * g_voxelSize;
+
+        float sdf = depth - dot(vCenter - cam, rayDir);
+        if (abs(sdf) > g_truncation) continue;
+
+        ivec3 g = v >> 3; // floor division by 8, negatives included
+        int lx = g.x - g_baseX;
+        int ly = g.y - g_baseY;
+        int lz = g.z - g_baseZ;
+        if (lx < 0 || ly < 0 || lz < 0 ||
+            lx >= LOCAL_GRID || ly >= LOCAL_GRID || lz >= LOCAL_GRID)
+            continue;
+
+        uint cell = ((uint(lz) * uint(LOCAL_GRID) + uint(ly)) * uint(LOCAL_GRID) + uint(lx)) * 6u + dir;
+        uint poolIndex = g_indexGrid[cell];
+        if (poolIndex == 0xFFFFFFFFu) continue; // not resident → not in the write set
+
+        ivec3 lv = v & 7;
+        uint voxelIdx = (uint(lv.z) * 8u + uint(lv.y)) * 8u + uint(lv.x);
+        uint addr = poolIndex * 512u + voxelIdx;
+
+        float newValue = clamp(sdf / g_truncation, -1.0, 1.0);
+        atomicAdd(g_pool[addr].sumDW, int(newValue * TSDF_SCALE));
+        atomicAdd(g_pool[addr].sumW, uint(TSDF_SCALE));
+        atomicOr(g_meta[poolIndex].packed, 1u << 16); // dirty flag
+    }
+}

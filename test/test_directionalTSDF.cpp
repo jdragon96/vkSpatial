@@ -409,3 +409,42 @@ TEST(DirectionalTSDFPhase2Test, SteadyStateUploadIsSmallFractionOfFullReload) {
     EXPECT_EQ(steadyBytesMax, uint32_t(3u * kVoxelsPerGroup * sizeof(GpuTsdfVoxel)));
     EXPECT_LT(float(steadyBytesMax) / float(fullReloadBytes), 0.15f);
 }
+
+namespace {
+    // Grid of samples on the plane x = planeX with the given normal.
+    void makePlane(float planeX, float extent, float step, const Eigen::Vector3f &normal,
+                   std::vector<Eigen::Vector3f> &points, std::vector<Eigen::Vector3f> &normals) {
+        for (float y = -extent; y <= extent + 1e-4f; y += step)
+            for (float z = -extent; z <= extent + 1e-4f; z += step) {
+                points.emplace_back(planeX, y, z);
+                normals.push_back(normal);
+            }
+    }
+} // namespace
+
+TEST(DirectionalTSDFPhase3Test, IntegrationWritesSignedBandAndMarksDirty) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 4096);
+
+    std::vector<Eigen::Vector3f> points, normals;
+    makePlane(0.0f, 0.4f, 0.05f, Eigen::Vector3f(1, 0, 0), points, normals);
+
+    tsdf.Integrate(points, normals, /*cam=*/Eigen::Vector3f(2, 0, 0),
+                   /*hint=*/Eigen::Vector3f::Zero());
+    EXPECT_GT(tsdf.LastFrameStats().missingCount, 0u);
+
+    // Camera on +X: voxel (0,0,0) (centre x=+0.05) is in front → value > 0.
+    auto front = tsdf.DebugDownloadGroupVoxels({0, 0, 0, 0}); // +X layer
+    EXPECT_GT(front[0].weight, 0.0f);
+    EXPECT_GT(front[0].value, 0.0f);
+
+    // Voxel (-1,0,0) lives in group gx=-1 at local (7,0,0) → index 7; behind → value < 0.
+    auto behind = tsdf.DebugDownloadGroupVoxels({-1, 0, 0, 0});
+    EXPECT_GT(behind[7].weight, 0.0f);
+    EXPECT_LT(behind[7].value, 0.0f);
+
+    // Dirty marking: move the window away → dirty groups fall outside → WriteBackList.
+    tsdf.BeginFrame(Eigen::Vector3f(80.0f, 0.0f, 0.0f));
+    EXPECT_GT(tsdf.DebugLastClassifyCounts().writeBack, 0u);
+}

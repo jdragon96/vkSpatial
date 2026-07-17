@@ -32,6 +32,12 @@ namespace Engine::Spatial {
             uint32_t h2dBytes = 0;
             uint32_t d2hBytes = 0;
             float overlapRatio = 0.0f;
+            // Stage timings (ms). Valid because every GPU submission is synchronous.
+            float beginFrameMs = 0.0f;
+            float ensureResidentMs = 0.0f;
+            float integrateMs = 0.0f;
+            float extractMs = 0.0f;
+            float mergeMs = 0.0f;
         };
 
         struct ClassifyCounts {
@@ -43,7 +49,9 @@ namespace Engine::Spatial {
         void Build(Engine::Core::Context &ctx,
                    float voxelSize = 0.1f,
                    float truncation = 0.3f,
-                   uint32_t poolCapacity = 32768);
+                   uint32_t poolCapacity = 32768,
+                   uint32_t maxPoints = 1u << 15,
+                   uint32_t maxCandidates = 1u << 18);
 
         // Starts a frame: recomputes the local base (window centred on the hint, snapped to
         // the group grid) and resets the indexGrid to kInvalidPoolIndex.
@@ -54,6 +62,18 @@ namespace Engine::Spatial {
         // Keys already resident this frame are skipped. Throws if a key lies outside the
         // current local window or the pool is exhausted.
         void EnsureResident(const std::vector<DirectionalGroupKey> &required);
+
+        // Full frame pipeline (design doc §5): BeginFrame → write-set/halo residency →
+        // GPU integration → extraction over the recompute mask → candidate merge →
+        // old-point replacement. points/normals must be the same length; at most
+        // maxPoints samples are used.
+        void Integrate(const std::vector<Eigen::Vector3f> &points,
+                       const std::vector<Eigen::Vector3f> &normals,
+                       const Eigen::Vector3f &cameraPos,
+                       const Eigen::Vector3f &aabbCenterHint);
+
+        const std::vector<ExtractedPoint> &PointCloud() const { return m_pointCloud; }
+        void ExportPointCloud(const std::string &path) const; // ASCII PLY with normals
 
         DirectionalHostStore &HostStore() { return m_hostStore; }
         Eigen::Vector3i LocalBase() const { return m_localBase; }
@@ -88,8 +108,16 @@ namespace Engine::Spatial {
         std::unique_ptr<Engine::Core::Buffer> m_cleanFreeList;  // uint32[poolCapacity]
         std::unique_ptr<Engine::Core::Buffer> m_writeBackList;  // uint32[poolCapacity]
         std::unique_ptr<Engine::Core::Buffer> m_countsBuffer;   // uint32[3]
+        std::unique_ptr<Engine::Core::Buffer> m_pointBuffer;      // PointSample[maxPoints]
+        std::unique_ptr<Engine::Core::Buffer> m_candidateBuffer;  // DirectionalCandidate[maxCandidates]
+        std::unique_ptr<Engine::Core::Buffer> m_candidateCounter; // uint32
         std::unique_ptr<Engine::Core::ComputePipeline> m_registerKernel;
         std::unique_ptr<Engine::Core::ComputePipeline> m_classifyKernel;
+        std::unique_ptr<Engine::Core::ComputePipeline> m_integrateKernel;
+        std::unique_ptr<Engine::Core::ComputePipeline> m_extractKernel;
+        uint32_t m_maxPoints = 0;
+        uint32_t m_maxCandidates = 0;
+        std::vector<ExtractedPoint> m_pointCloud;
 
         // CPU mirror of slot occupancy: which key each slot currently holds.
         std::unordered_map<DirectionalGroupKey, uint32_t, DirectionalGroupKeyHash> m_residentIndex;
@@ -103,6 +131,8 @@ namespace Engine::Spatial {
         void fillIndexGridInvalid();
         void updateOverlapRatio();
         Eigen::Vector3i quantizeLocalBase(const Eigen::Vector3f &center) const;
+        std::vector<ExtractedPoint> mergeCandidates(
+                const std::vector<DirectionalCandidate> &candidates) const;
     };
 
 } // namespace Engine::Spatial

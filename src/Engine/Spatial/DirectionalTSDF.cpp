@@ -2,7 +2,10 @@
 
 #include "Engine/Core/OneShotCommands.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <fstream>
 #include <stdexcept>
 
 namespace Engine::Spatial {
@@ -23,16 +26,55 @@ namespace Engine::Spatial {
             int32_t baseY;
             int32_t baseZ;
         };
+
+        struct IntegratePC {
+            uint32_t numPoints;
+            float voxelSize;
+            float truncation;
+            int32_t baseX;
+            int32_t baseY;
+            int32_t baseZ;
+            float camX;
+            float camY;
+            float camZ;
+        };
+
+        struct ExtractPC {
+            uint32_t numGroups;
+            float voxelSize;
+            uint32_t maxCandidates;
+            int32_t baseX;
+            int32_t baseY;
+            int32_t baseZ;
+        };
+
+        // Must match dominantAxis() in directional_tsdf_integrate.comp exactly.
+        uint8_t dominantAxisOf(const Eigen::Vector3f &n) {
+            const float ax = std::fabs(n.x()), ay = std::fabs(n.y()), az = std::fabs(n.z());
+            if (ax >= ay && ax >= az) return n.x() >= 0.0f ? 0 : 1;
+            if (ay >= ax && ay >= az) return n.y() >= 0.0f ? 2 : 3;
+            return n.z() >= 0.0f ? 4 : 5;
+        }
+
+        uint64_t spatialKey(int32_t x, int32_t y, int32_t z) {
+            return (uint64_t(uint32_t(x) & 0x1FFFFFu) << 42) |
+                   (uint64_t(uint32_t(y) & 0x1FFFFFu) << 21) |
+                   uint64_t(uint32_t(z) & 0x1FFFFFu);
+        }
     } // namespace
 
     void DirectionalTSDF::Build(Engine::Core::Context &ctx,
                                 float voxelSize,
                                 float truncation,
-                                uint32_t poolCapacity) {
+                                uint32_t poolCapacity,
+                                uint32_t maxPoints,
+                                uint32_t maxCandidates) {
         m_ctx = &ctx;
         m_voxelSize = voxelSize;
         m_truncation = truncation;
         m_poolCapacity = poolCapacity;
+        m_maxPoints = maxPoints;
+        m_maxCandidates = maxCandidates;
 
         m_indexGrid = std::make_unique<Engine::Core::Buffer>(ctx);
         m_poolVoxels = std::make_unique<Engine::Core::Buffer>(ctx);
@@ -53,6 +95,13 @@ namespace Engine::Spatial {
         m_writeBackList->Allocate(poolCapacity * sizeof(uint32_t));
         m_countsBuffer->Allocate(3u * sizeof(uint32_t));
 
+        m_pointBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
+        m_candidateBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
+        m_candidateCounter = std::make_unique<Engine::Core::Buffer>(ctx);
+        m_pointBuffer->Allocate(maxPoints * 6u * sizeof(float));
+        m_candidateBuffer->Allocate(maxCandidates * sizeof(DirectionalCandidate));
+        m_candidateCounter->Allocate(sizeof(uint32_t));
+
         m_registerKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         m_registerKernel->Build("directional_tsdf_register_reusable.comp")
                 .Bind(0, *m_slotListBuffer)
@@ -66,6 +115,15 @@ namespace Engine::Spatial {
                 .Bind(2, *m_cleanFreeList)
                 .Bind(3, *m_writeBackList)
                 .Bind(4, *m_countsBuffer);
+
+        m_integrateKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
+        m_integrateKernel->Build("directional_tsdf_integrate.comp")
+                .Bind(0, *m_pointBuffer)
+                .Bind(1, *m_indexGrid)
+                .Bind(2, *m_poolVoxels)
+                .Bind(3, *m_metaBuffer);
+
+        m_pointCloud.clear();
 
         // classify reads every slot's meta, so never-used slots must read as invalid.
         VkBuffer meta = m_metaBuffer->Handle();
@@ -250,6 +308,93 @@ namespace Engine::Spatial {
 
         m_stats.missingCount += uint32_t(pending.size());
         updateOverlapRatio();
+    }
+
+    void DirectionalTSDF::Integrate(const std::vector<Eigen::Vector3f> &points,
+                                    const std::vector<Eigen::Vector3f> &normals,
+                                    const Eigen::Vector3f &cameraPos,
+                                    const Eigen::Vector3f &aabbCenterHint) {
+        if (points.size() != normals.size())
+            throw std::runtime_error("DirectionalTSDF: points/normals size mismatch");
+        if (points.empty()) return;
+
+        using Clock = std::chrono::steady_clock;
+        auto msBetween = [](Clock::time_point a, Clock::time_point b) {
+            return std::chrono::duration<float, std::milli>(b - a).count();
+        };
+
+        const auto t0 = Clock::now();
+        BeginFrame(aabbCenterHint);
+        const auto t1 = Clock::now();
+
+        const uint32_t N = std::min(uint32_t(points.size()), m_maxPoints);
+
+        // IntegrationWriteSet: per-sample conservative box over the truncation-band
+        // ray segment (design doc §7/§13), keyed by the sample's dominant direction.
+        std::unordered_set<DirectionalGroupKey, DirectionalGroupKeyHash> writeSet;
+        for (uint32_t i = 0; i < N; ++i) {
+            Eigen::Vector3f diff = points[i] - cameraPos;
+            float depth = diff.norm();
+            if (depth < 1e-6f) continue;
+            Eigen::Vector3f dir = diff / depth;
+            const uint8_t d = dominantAxisOf(normals[i]);
+            const float band = m_truncation + m_voxelSize;
+            Eigen::Vector3f a = points[i] - dir * band;
+            Eigen::Vector3f b = points[i] + dir * band;
+            Eigen::Vector3i vmin, vmax;
+            for (int c = 0; c < 3; ++c) {
+                const float lo = std::min(a[c], b[c]);
+                const float hi = std::max(a[c], b[c]);
+                vmin[c] = int(std::floor(lo / m_voxelSize)) - 1;
+                vmax[c] = int(std::floor(hi / m_voxelSize)) + 1;
+            }
+            for (int gz = vmin.z() >> 3; gz <= (vmax.z() >> 3); ++gz)
+                for (int gy = vmin.y() >> 3; gy <= (vmax.y() >> 3); ++gy)
+                    for (int gx = vmin.x() >> 3; gx <= (vmax.x() >> 3); ++gx)
+                        writeSet.insert({gx, gy, gz, d});
+        }
+
+        // ResidentRequiredSet = writeSet + 1-group halo (extraction neighbourhood, §7).
+        std::vector<DirectionalGroupKey> required;
+        {
+            std::unordered_set<DirectionalGroupKey, DirectionalGroupKeyHash> requiredSet;
+            for (const auto &k : writeSet)
+                for (int dz = -1; dz <= 1; ++dz)
+                    for (int dy = -1; dy <= 1; ++dy)
+                        for (int dx = -1; dx <= 1; ++dx)
+                            requiredSet.insert(
+                                    {k.gx + dx, k.gy + dy, k.gz + dz, k.direction});
+            required.assign(requiredSet.begin(), requiredSet.end());
+        }
+        EnsureResident(required);
+        const auto t2 = Clock::now();
+
+        // Upload samples and integrate.
+        std::vector<float> samples(size_t(N) * 6u);
+        for (uint32_t i = 0; i < N; ++i) {
+            samples[size_t(i) * 6 + 0] = points[i].x();
+            samples[size_t(i) * 6 + 1] = points[i].y();
+            samples[size_t(i) * 6 + 2] = points[i].z();
+            samples[size_t(i) * 6 + 3] = normals[i].x();
+            samples[size_t(i) * 6 + 4] = normals[i].y();
+            samples[size_t(i) * 6 + 5] = normals[i].z();
+        }
+        m_pointBuffer->Upload(samples.data(), uint32_t(samples.size() * sizeof(float)));
+        IntegratePC ipc{N,
+                        m_voxelSize,
+                        m_truncation,
+                        m_localBase.x(),
+                        m_localBase.y(),
+                        m_localBase.z(),
+                        cameraPos.x(),
+                        cameraPos.y(),
+                        cameraPos.z()};
+        m_integrateKernel->Args(ipc).DispatchElements(N);
+        const auto t3 = Clock::now();
+
+        m_stats.beginFrameMs = msBetween(t0, t1);
+        m_stats.ensureResidentMs = msBetween(t1, t2);
+        m_stats.integrateMs = msBetween(t2, t3);
     }
 
     void DirectionalTSDF::updateOverlapRatio() {
