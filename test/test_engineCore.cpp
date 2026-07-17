@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/Context.h"
+#include "Engine/Core/Image.h"
 #include "Engine/Core/OneShotCommands.h"
 
 #include <numeric>
@@ -81,4 +82,16 @@ TEST(BufferTest, DownloadBeyondCapacityThrows) {
 
     std::vector<uint8_t> dst(64);
     EXPECT_THROW(buffer.Download(dst.data(), 64), std::runtime_error);
+}
+
+TEST(ImageTest, CreateDepth2DProducesValidHandles) {
+    Context ctx;
+    Image image(ctx, ImageDescriptor::Depth2D({256, 256}));
+
+    EXPECT_TRUE(image.Valid());
+    EXPECT_TRUE(image.HasView());
+    EXPECT_EQ(image.Format(), VK_FORMAT_D32_SFLOAT);
+    EXPECT_EQ(image.AspectMask(), static_cast<VkImageAspectFlags>(VK_IMAGE_ASPECT_DEPTH_BIT));
+    EXPECT_TRUE(image.Matches({256, 256}, VK_FORMAT_D32_SFLOAT));
+    EXPECT_FALSE(image.Matches({512, 512}));
 }
