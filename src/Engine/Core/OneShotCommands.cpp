@@ -33,7 +33,12 @@ namespace Engine::Core {
             throw std::runtime_error("SubmitOneShot: failed to begin command buffer");
         }
 
-        record(cmd);
+        try {
+            record(cmd);
+        } catch (...) {
+            vkFreeCommandBuffers(context.device, pool, 1, &cmd);
+            throw;
+        }
 
         if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
             vkFreeCommandBuffers(context.device, pool, 1, &cmd);
