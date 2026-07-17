@@ -27,7 +27,8 @@ add_library(EngineRender STATIC ${ENGINE_RENDER_SOURCES})
 add_library(Engine::Render ALIAS EngineRender)
 
 target_link_libraries(EngineRender
-        PUBLIC Engine::Core Vulkan::Vulkan)
+        PUBLIC Engine::Core Vulkan::Vulkan
+        PRIVATE glfw)
 
 target_include_directories(EngineRender
         PUBLIC
