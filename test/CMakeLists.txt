@@ -12,6 +12,7 @@ target_link_libraries(vkspatial_tests
         vkSpatial::vkSpatial
         Engine::Core
         Engine::Spatial
+        Engine::Compute
         Engine::Render
         GTest::gtest
         GTest::gtest_main)

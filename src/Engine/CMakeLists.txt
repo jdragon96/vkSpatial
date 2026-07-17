@@ -37,13 +37,29 @@ target_include_directories(EngineRender
         PRIVATE
             "${VULKAN_SDK}/include")
 
+file(GLOB_RECURSE ENGINE_COMPUTE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Compute/*.cpp")
+
+add_library(EngineCompute STATIC ${ENGINE_COMPUTE_SOURCES})
+add_library(Engine::Compute ALIAS EngineCompute)
+
+target_link_libraries(EngineCompute
+        PUBLIC Engine::Core Vulkan::Vulkan)
+
+target_include_directories(EngineCompute
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/lib>
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/lib/vma>
+        PRIVATE
+            "${VULKAN_SDK}/include")
+
 file(GLOB_RECURSE ENGINE_SPATIAL_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Spatial/*.cpp")
 
 add_library(EngineSpatial STATIC ${ENGINE_SPATIAL_SOURCES})
 add_library(Engine::Spatial ALIAS EngineSpatial)
 
 target_link_libraries(EngineSpatial
-        PUBLIC Engine::Core Vulkan::Vulkan)
+        PUBLIC Engine::Core Engine::Compute Vulkan::Vulkan)
 
 target_include_directories(EngineSpatial
         PUBLIC
