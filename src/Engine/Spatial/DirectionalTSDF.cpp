@@ -123,6 +123,15 @@ namespace Engine::Spatial {
                 .Bind(2, *m_poolVoxels)
                 .Bind(3, *m_metaBuffer);
 
+        m_extractKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
+        m_extractKernel->Build("directional_tsdf_extract.comp")
+                .Bind(0, *m_slotListBuffer) // reused as the recompute-group list
+                .Bind(1, *m_metaBuffer)
+                .Bind(2, *m_poolVoxels)
+                .Bind(3, *m_indexGrid)
+                .Bind(4, *m_candidateBuffer)
+                .Bind(5, *m_candidateCounter);
+
         m_pointCloud.clear();
 
         // classify reads every slot's meta, so never-used slots must read as invalid.
@@ -392,9 +401,132 @@ namespace Engine::Spatial {
         m_integrateKernel->Args(ipc).DispatchElements(N);
         const auto t3 = Clock::now();
 
+        // recomputeMask is SPATIAL (design doc §14): re-extract every resident direction
+        // layer at the written spatial locations, otherwise other-layer surface points
+        // at those locations would be dropped by the old-point merge and never rebuilt.
+        std::unordered_set<uint64_t> recomputeSpatial;
+        for (const auto &k : writeSet)
+            recomputeSpatial.insert(spatialKey(k.gx, k.gy, k.gz));
+
+        std::vector<uint32_t> groupSlots;
+        for (const auto &entry : m_residentIndex)
+            if (recomputeSpatial.count(
+                        spatialKey(entry.first.gx, entry.first.gy, entry.first.gz)) > 0)
+                groupSlots.push_back(entry.second);
+
+        uint32_t candidateCount = 0;
+        if (!groupSlots.empty()) {
+            m_slotListBuffer->Upload(groupSlots.data(),
+                                     uint32_t(groupSlots.size() * sizeof(uint32_t)));
+            const uint32_t zero = 0;
+            m_candidateCounter->Upload(&zero, sizeof(zero));
+            ExtractPC epc{uint32_t(groupSlots.size()),
+                          m_voxelSize,
+                          m_maxCandidates,
+                          m_localBase.x(),
+                          m_localBase.y(),
+                          m_localBase.z()};
+            m_extractKernel->Args(epc).DispatchElements(
+                    uint32_t(groupSlots.size()) * kVoxelsPerGroup);
+            m_candidateCounter->Download(&candidateCount, sizeof(candidateCount));
+            candidateCount = std::min(candidateCount, m_maxCandidates);
+        }
+        std::vector<DirectionalCandidate> candidates(candidateCount);
+        if (candidateCount > 0)
+            m_candidateBuffer->Download(candidates.data(),
+                                        candidateCount * sizeof(DirectionalCandidate));
+        const auto t4 = Clock::now();
+
+        // Candidate merge + old-point replacement (§14/§15, invariant #9).
+        std::vector<ExtractedPoint> fresh = mergeCandidates(candidates);
+        m_pointCloud.erase(
+                std::remove_if(m_pointCloud.begin(), m_pointCloud.end(),
+                               [&](const ExtractedPoint &pt) {
+                                   return recomputeSpatial.count(spatialKey(
+                                                  pt.ownerGx, pt.ownerGy, pt.ownerGz)) > 0;
+                               }),
+                m_pointCloud.end());
+        m_pointCloud.insert(m_pointCloud.end(), fresh.begin(), fresh.end());
+        const auto t5 = Clock::now();
+
         m_stats.beginFrameMs = msBetween(t0, t1);
         m_stats.ensureResidentMs = msBetween(t1, t2);
         m_stats.integrateMs = msBetween(t2, t3);
+        m_stats.extractMs = msBetween(t3, t4);
+        m_stats.mergeMs = msBetween(t4, t5);
+    }
+
+    std::vector<ExtractedPoint> DirectionalTSDF::mergeCandidates(
+            const std::vector<DirectionalCandidate> &candidates) const {
+        struct Cluster {
+            Eigen::Vector3f posSum = Eigen::Vector3f::Zero();
+            Eigen::Vector3f nSum = Eigen::Vector3f::Zero();
+            int count = 0;
+            uint8_t dirMask = 0;
+            int32_t gx = 0, gy = 0, gz = 0;
+        };
+        auto voxelKey = [](int x, int y, int z) {
+            return (uint64_t(uint32_t(x) & 0x1FFFFFu) << 42) |
+                   (uint64_t(uint32_t(y) & 0x1FFFFFu) << 21) |
+                   uint64_t(uint32_t(z) & 0x1FFFFFu);
+        };
+        const float posThresh = 0.6f * m_voxelSize; // positionMergeThreshold (§15)
+        const float cosThresh = 0.866f;             // normalMergeThreshold = 30° (§15)
+
+        std::unordered_map<uint64_t, std::vector<Cluster>> buckets;
+        for (const auto &c : candidates) {
+            Eigen::Vector3f pos(c.px, c.py, c.pz);
+            Eigen::Vector3f nrm(c.nx, c.ny, c.nz);
+            const int vx = int(std::floor(pos.x() / m_voxelSize));
+            const int vy = int(std::floor(pos.y() / m_voxelSize));
+            const int vz = int(std::floor(pos.z() / m_voxelSize));
+            auto &clusters = buckets[voxelKey(vx, vy, vz)];
+            bool merged = false;
+            for (auto &cl : clusters) {
+                const Eigen::Vector3f mean = cl.posSum / float(cl.count);
+                const Eigen::Vector3f meanN = cl.nSum.normalized();
+                if ((pos - mean).norm() < posThresh && nrm.dot(meanN) > cosThresh) {
+                    cl.posSum += pos;
+                    cl.nSum += nrm;
+                    cl.count++;
+                    cl.dirMask |= uint8_t(1u << c.direction);
+                    merged = true;
+                    break;
+                }
+            }
+            if (!merged && clusters.size() < kNumDirections)
+                clusters.push_back({pos, nrm, 1, uint8_t(1u << c.direction),
+                                    c.gx, c.gy, c.gz});
+        }
+
+        std::vector<ExtractedPoint> out;
+        for (auto &bucket : buckets)
+            for (auto &cl : bucket.second) {
+                ExtractedPoint pt;
+                pt.position = cl.posSum / float(cl.count);
+                pt.normal = cl.nSum.normalized();
+                pt.ownerGx = cl.gx;
+                pt.ownerGy = cl.gy;
+                pt.ownerGz = cl.gz;
+                pt.dirMask = cl.dirMask;
+                out.push_back(pt);
+            }
+        return out;
+    }
+
+    void DirectionalTSDF::ExportPointCloud(const std::string &path) const {
+        std::ofstream f(path);
+        if (!f.is_open())
+            throw std::runtime_error("DirectionalTSDF::ExportPointCloud: cannot open " + path);
+
+        f << "ply\nformat ascii 1.0\n"
+          << "element vertex " << m_pointCloud.size() << "\n"
+          << "property float x\nproperty float y\nproperty float z\n"
+          << "property float nx\nproperty float ny\nproperty float nz\n"
+          << "end_header\n";
+        for (const auto &pt : m_pointCloud)
+            f << pt.position.x() << ' ' << pt.position.y() << ' ' << pt.position.z() << ' '
+              << pt.normal.x() << ' ' << pt.normal.y() << ' ' << pt.normal.z() << '\n';
     }
 
     void DirectionalTSDF::updateOverlapRatio() {

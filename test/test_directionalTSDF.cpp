@@ -448,3 +448,70 @@ TEST(DirectionalTSDFPhase3Test, IntegrationWritesSignedBandAndMarksDirty) {
     tsdf.BeginFrame(Eigen::Vector3f(80.0f, 0.0f, 0.0f));
     EXPECT_GT(tsdf.DebugLastClassifyCounts().writeBack, 0u);
 }
+
+TEST(DirectionalTSDFPhase3Test, SinglePlaneExtractsSurfacePoints) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 4096);
+
+    std::vector<Eigen::Vector3f> points, normals;
+    makePlane(0.0f, 0.5f, 0.05f, Eigen::Vector3f(1, 0, 0), points, normals);
+    tsdf.Integrate(points, normals, Eigen::Vector3f(2, 0, 0), Eigen::Vector3f::Zero());
+
+    const auto &cloud = tsdf.PointCloud();
+    ASSERT_GT(cloud.size(), 50u);
+    for (const auto &pt : cloud) {
+        EXPECT_NEAR(pt.position.x(), 0.0f, 0.15f);
+        EXPECT_GT(pt.normal.x(), 0.7f); // gradient points toward the camera (+X)
+    }
+}
+
+// The doc's core quality claim (§2): two opposing surfaces 0.4 apart with truncation
+// 0.3 have overlapping bands in [-0.1, 0.1] — a single SDF field cancels there, but
+// separate direction layers must keep both surfaces intact.
+TEST(DirectionalTSDFPhase3Test, OpposingSurfacesRemainSeparate) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 4096);
+
+    std::vector<Eigen::Vector3f> lp, ln, rp, rn;
+    makePlane(-0.2f, 0.4f, 0.05f, Eigen::Vector3f(1, 0, 0), lp, ln);  // left, faces +X
+    makePlane(+0.2f, 0.4f, 0.05f, Eigen::Vector3f(-1, 0, 0), rp, rn); // right, faces -X
+
+    tsdf.Integrate(lp, ln, Eigen::Vector3f(3, 0, 0), Eigen::Vector3f::Zero());
+    tsdf.Integrate(rp, rn, Eigen::Vector3f(-3, 0, 0), Eigen::Vector3f::Zero());
+
+    int nearLeft = 0, nearRight = 0;
+    for (const auto &pt : tsdf.PointCloud()) {
+        if (std::fabs(pt.position.x() + 0.2f) < 0.1f) {
+            ++nearLeft;
+            EXPECT_GT(pt.normal.x(), 0.5f);
+        }
+        if (std::fabs(pt.position.x() - 0.2f) < 0.1f) {
+            ++nearRight;
+            EXPECT_LT(pt.normal.x(), -0.5f);
+        }
+    }
+    EXPECT_GT(nearLeft, 30);
+    EXPECT_GT(nearRight, 30);
+}
+
+TEST(DirectionalTSDFPhase3Test, ReintegrationDoesNotDuplicatePoints) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 4096);
+
+    std::vector<Eigen::Vector3f> points, normals;
+    makePlane(0.0f, 0.5f, 0.05f, Eigen::Vector3f(1, 0, 0), points, normals);
+
+    tsdf.Integrate(points, normals, Eigen::Vector3f(2, 0, 0), Eigen::Vector3f::Zero());
+    const size_t count1 = tsdf.PointCloud().size();
+    ASSERT_GT(count1, 0u);
+
+    tsdf.Integrate(points, normals, Eigen::Vector3f(2, 0, 0), Eigen::Vector3f::Zero());
+    const size_t count2 = tsdf.PointCloud().size();
+
+    // recomputeMask replaces old points instead of accumulating them (invariant #9).
+    EXPECT_GT(count2, count1 / 2);
+    EXPECT_LT(count2, count1 * 3 / 2);
+}

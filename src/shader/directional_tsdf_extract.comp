@@ -1,0 +1,115 @@
+#version 460
+layout(local_size_x = 256) in;
+
+// Direction-layer point extraction (design doc §15). One thread per voxel of each
+// recompute group. Sign crossings are compared ONLY within the same direction layer
+// (invariant #10). Candidates carry a finite-difference gradient normal.
+
+#define LOCAL_GRID 50
+
+struct ActiveGroupMeta { int gx; int gy; int gz; uint packed; };
+struct GpuVoxel { int sumDW; uint sumW; };
+struct Candidate {
+    float px; float py; float pz;
+    float nx; float ny; float nz;
+    int gx; int gy; int gz;
+    uint direction;
+};
+
+layout(push_constant) uniform PC {
+    uint  g_numGroups;
+    float g_voxelSize;
+    uint  g_maxCandidates;
+    int   g_baseX;
+    int   g_baseY;
+    int   g_baseZ;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer GroupList { uint g_groupSlots[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Meta { ActiveGroupMeta g_meta[]; };
+layout(std430, set = 0, binding = 2) readonly buffer Pool { GpuVoxel g_pool[]; };
+layout(std430, set = 0, binding = 3) readonly buffer IndexGrid { uint g_indexGrid[]; };
+layout(std430, set = 0, binding = 4) buffer Candidates { Candidate g_candidates[]; };
+layout(std430, set = 0, binding = 5) buffer Counter { uint g_candidateCount; };
+
+bool fetchValue(ivec3 v, uint dir, out float value) {
+    ivec3 g = v >> 3;
+    int lx = g.x - g_baseX;
+    int ly = g.y - g_baseY;
+    int lz = g.z - g_baseZ;
+    value = 0.0;
+    if (lx < 0 || ly < 0 || lz < 0 ||
+        lx >= LOCAL_GRID || ly >= LOCAL_GRID || lz >= LOCAL_GRID)
+        return false;
+    uint cell = ((uint(lz) * uint(LOCAL_GRID) + uint(ly)) * uint(LOCAL_GRID) + uint(lx)) * 6u + dir;
+    uint poolIndex = g_indexGrid[cell];
+    if (poolIndex == 0xFFFFFFFFu) return false;
+    ivec3 lv = v & 7;
+    uint addr = poolIndex * 512u + (uint(lv.z) * 8u + uint(lv.y)) * 8u + uint(lv.x);
+    GpuVoxel vox = g_pool[addr];
+    if (vox.sumW == 0u) return false;
+    value = float(vox.sumDW) / float(vox.sumW);
+    return true;
+}
+
+void main() {
+    uint k = gl_GlobalInvocationID.x;
+    if (k >= g_numGroups * 512u) return;
+    uint slotIdx = k / 512u;
+    uint voxelIdx = k % 512u;
+    uint poolIndex = g_groupSlots[slotIdx];
+    ActiveGroupMeta m = g_meta[poolIndex];
+    uint dir = m.packed & 0xFFu;
+
+    ivec3 lv = ivec3(int(voxelIdx & 7u), int((voxelIdx >> 3u) & 7u), int(voxelIdx >> 6u));
+    ivec3 v = ivec3(m.gx, m.gy, m.gz) * 8 + lv;
+
+    GpuVoxel center = g_pool[poolIndex * 512u + voxelIdx];
+    if (center.sumW == 0u) return;
+    float c = float(center.sumDW) / float(center.sumW);
+
+    // Zero crossings against the three +axis neighbours (same layer only).
+    vec3 posSum = vec3(0.0);
+    int crossings = 0;
+    for (int axis = 0; axis < 3; axis++) {
+        ivec3 nv = v;
+        nv[axis] += 1;
+        float nVal;
+        if (!fetchValue(nv, dir, nVal)) continue;
+        if ((c > 0.0) == (nVal > 0.0)) continue;
+        if (c == nVal) continue;
+        float t = c / (c - nVal);
+        vec3 crossPos = (vec3(v) + vec3(0.5)) * g_voxelSize;
+        crossPos[axis] += t * g_voxelSize;
+        posSum += crossPos;
+        crossings++;
+    }
+    if (crossings == 0) return;
+
+    // Normal: central-difference gradient in the same layer (one-sided fallback).
+    vec3 grad = vec3(0.0);
+    for (int axis = 0; axis < 3; axis++) {
+        ivec3 vp = v; vp[axis] += 1;
+        ivec3 vm = v; vm[axis] -= 1;
+        float fp, fm;
+        bool hp = fetchValue(vp, dir, fp);
+        bool hm = fetchValue(vm, dir, fm);
+        if (hp && hm) grad[axis] = (fp - fm) * 0.5;
+        else if (hp) grad[axis] = fp - c;
+        else if (hm) grad[axis] = c - fm;
+    }
+    float len = length(grad);
+    if (len < 1e-6) return;
+
+    uint idx = atomicAdd(g_candidateCount, 1u);
+    if (idx >= g_maxCandidates) return;
+
+    Candidate cand;
+    vec3 pos = posSum / float(crossings);
+    vec3 n = grad / len;
+    cand.px = pos.x; cand.py = pos.y; cand.pz = pos.z;
+    cand.nx = n.x;   cand.ny = n.y;   cand.nz = n.z;
+    cand.gx = m.gx;  cand.gy = m.gy;  cand.gz = m.gz;
+    cand.direction = dir;
+    g_candidates[idx] = cand;
+}
