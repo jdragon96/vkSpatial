@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Engine/Eval/RmseMetrics.h"
+#include "Engine/Eval/ScanSampler.h"
 #include "Engine/Eval/SyntheticSurface.h"
 
 #include <cmath>
@@ -44,4 +45,36 @@ TEST(SyntheticSurfaceTest, PlaneDistanceAndDenseSampling) {
         EXPECT_LE(std::abs(p.x()), 2.0f + 1e-4f);
         EXPECT_LE(std::abs(p.y()), 3.0f + 1e-4f);
     }
+}
+
+TEST(SyntheticSurfaceTest, SphereDistanceAndDenseSampling) {
+    SphereSurface sphere(Eigen::Vector3f(0, 0, 0), 1.0f);
+    EXPECT_NEAR(sphere.Distance(Eigen::Vector3f(2, 0, 0)), 1.0f, 1e-6f);    // outside
+    EXPECT_NEAR(sphere.Distance(Eigen::Vector3f(0.5f, 0, 0)), 0.5f, 1e-6f); // inside
+    auto dense = sphere.SampleDense(2000);
+    ASSERT_EQ(dense.size(), 2000u);
+    for (const auto &p : dense) EXPECT_NEAR(p.norm(), 1.0f, 1e-4f); // on the unit sphere
+}
+
+TEST(ScanSamplerTest, SphereScanCoversAllSamplesAcrossViews) {
+    SphereSurface sphere(Eigen::Vector3f(0, 0, 0), 1.0f);
+    OrbitParams params;
+    params.surfaceSamples = sphere.SampleDense(300); // small: the coverage check below is O(frames×samples²)
+    params.cameraRadius = 3.0f;
+
+    auto frames = GenerateOrbitScan(sphere, params);
+    ASSERT_FALSE(frames.empty());
+
+    // Every frame's samples must face their camera, and the union over all frames must
+    // cover (nearly) every surface sample — a sphere is fully visible across the orbit.
+    std::vector<bool> seen(params.surfaceSamples.size(), false);
+    for (const auto &f : frames) {
+        ASSERT_EQ(f.points.size(), f.normals.size());
+        for (size_t i = 0; i < params.surfaceSamples.size(); ++i)
+            for (const auto &pt : f.points)
+                if ((pt - params.surfaceSamples[i]).squaredNorm() < 1e-10f) seen[i] = true;
+    }
+    size_t covered = 0;
+    for (bool b : seen) covered += b ? 1 : 0;
+    EXPECT_GT(covered, params.surfaceSamples.size() * 95 / 100); // ≥95% covered
 }

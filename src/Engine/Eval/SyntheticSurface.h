@@ -60,4 +60,41 @@ namespace Engine::Eval {
         float m_uExtent, m_vExtent;
     };
 
+    // Sphere centred at `center` with radius `radius`.
+    class SphereSurface : public Surface {
+    public:
+        SphereSurface(const Eigen::Vector3f &center, float radius)
+            : m_center(center), m_radius(radius) {}
+
+        float Distance(const Eigen::Vector3f &p) const override {
+            return std::abs((p - m_center).norm() - m_radius);
+        }
+
+        Eigen::Vector3f NormalAt(const Eigen::Vector3f &p) const override {
+            const Eigen::Vector3f d = p - m_center;
+            const float n = d.norm();
+            return n > 1e-8f ? Eigen::Vector3f(d / n) : Eigen::Vector3f(0, 0, 1);
+        }
+
+        // Roughly uniform surface sampling via the Fibonacci sphere.
+        std::vector<Eigen::Vector3f> SampleDense(uint32_t approxCount) const override {
+            const uint32_t n = std::max<uint32_t>(4, approxCount);
+            std::vector<Eigen::Vector3f> out;
+            out.reserve(n);
+            const float golden = float(M_PI) * (3.0f - std::sqrt(5.0f)); // golden angle
+            for (uint32_t i = 0; i < n; ++i) {
+                const float y = 1.0f - 2.0f * (float(i) + 0.5f) / float(n); // (-1, 1)
+                const float r = std::sqrt(std::max(0.0f, 1.0f - y * y));
+                const float theta = golden * float(i);
+                out.push_back(m_center + m_radius * Eigen::Vector3f(std::cos(theta) * r, y,
+                                                                    std::sin(theta) * r));
+            }
+            return out;
+        }
+
+    private:
+        Eigen::Vector3f m_center;
+        float m_radius;
+    };
+
 } // namespace Engine::Eval
