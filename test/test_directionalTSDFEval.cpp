@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include "Engine/Core/Context.h"
 #include "Engine/Eval/RmseMetrics.h"
 #include "Engine/Eval/ScanSampler.h"
 #include "Engine/Eval/SyntheticSurface.h"
+#include "Engine/Spatial/DirectionalTSDF.h"
 
 #include <cmath>
 #include <limits>
@@ -77,4 +79,46 @@ TEST(ScanSamplerTest, SphereScanCoversAllSamplesAcrossViews) {
     size_t covered = 0;
     for (bool b : seen) covered += b ? 1 : 0;
     EXPECT_GT(covered, params.surfaceSamples.size() * 95 / 100); // ≥95% covered
+}
+
+namespace {
+    // Scans `surface` on an orbit, reconstructs with DirectionalTSDF, returns recon positions.
+    std::vector<Eigen::Vector3f> reconstruct(const Surface &surface, float cameraRadius,
+                                             const Eigen::Vector3f &orbitCenter) {
+        OrbitParams params;
+        params.surfaceSamples = surface.SampleDense(4000);
+        params.cameraRadius = cameraRadius;
+        params.orbitCenter = orbitCenter;
+        auto frames = GenerateOrbitScan(surface, params);
+
+        Engine::Core::Context ctx;
+        Engine::Spatial::DirectionalTSDF tsdf;
+        tsdf.Build(ctx, 0.1f, 0.3f);
+        for (const auto &fr : frames)
+            tsdf.Integrate(fr.points, fr.normals, fr.cameraPos, fr.aabbCenterHint);
+
+        std::vector<Eigen::Vector3f> recon;
+        recon.reserve(tsdf.PointCloud().size());
+        for (const auto &pt : tsdf.PointCloud()) recon.push_back(pt.position);
+        return recon;
+    }
+} // namespace
+
+// Thresholds derived from the directional_tsdf_eval example run (measured × ~2 headroom):
+//   sphere accuracy 0.0228 → 0.05, sphere completeness 0.0464 → 0.08, plane accuracy 0.0084 → 0.02.
+TEST(DirectionalTSDFEvalTest, SphereAccuracyAndCompletenessWithinTolerance) {
+    SphereSurface sphere(Eigen::Vector3f(0, 0, 0), 1.0f);
+    const auto recon = reconstruct(sphere, 3.0f, Eigen::Vector3f(0, 0, 0));
+    ASSERT_GT(recon.size(), 1000u); // reconstruction actually produced points
+
+    const auto gt = sphere.SampleDense(8000);
+    EXPECT_LT(AccuracyRMSE(recon, sphere), 0.05f);
+    EXPECT_LT(CompletenessRMSE(gt, recon), 0.08f);
+}
+
+TEST(DirectionalTSDFEvalTest, PlaneAccuracyWithinTolerance) {
+    PlaneSurface plane(Eigen::Vector3f(0, 0, 0), Eigen::Vector3f(0, 0, 1), 1.0f, 1.0f);
+    const auto recon = reconstruct(plane, 3.0f, Eigen::Vector3f(0, 0, 1.5f));
+    ASSERT_GT(recon.size(), 500u);
+    EXPECT_LT(AccuracyRMSE(recon, plane), 0.02f);
 }
