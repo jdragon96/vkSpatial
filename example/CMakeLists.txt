@@ -9,10 +9,6 @@ target_link_libraries(voxel_wang_mc PRIVATE vkSpatial::vkSpatial)
 # may need it if they call Build() directly in the future.
 target_compile_definitions(voxel_wang_mc PRIVATE VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")
 
-add_executable(voxel_tsdf_mc voxel_tsdf_mc.cpp)
-target_link_libraries(voxel_tsdf_mc PRIVATE vkSpatial::vkSpatial)
-target_compile_definitions(voxel_tsdf_mc PRIVATE VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")
-
 add_executable(wide_bvh_radius wide_bvh_radius.cpp)
 target_link_libraries(wide_bvh_radius PRIVATE vkSpatial::vkSpatial)
 target_compile_definitions(wide_bvh_radius PRIVATE VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")

@@ -1,14 +1,15 @@
 #pragma once
 
-#include "vkCommon/vkComputeBase.h"
-#include "vkCommon/vkContext.h"
-#include "vkCommon/vkGPUMemory.h"
+#include "Engine/Core/Buffer.h"
+#include "Engine/Core/ComputePipeline.h"
+#include "Engine/Core/Context.h"
 
 #include <Eigen/Core>
+#include <memory>
 #include <string>
 #include <vector>
 
-namespace vkSpatial {
+namespace Engine::Spatial {
 
     // Fixed-point scale for TSDF values stored in the hash table.
     // sumDW / sumW recovers the float SDF in metres.
@@ -21,13 +22,13 @@ namespace vkSpatial {
         uint32_t pad;  // alignment
     };
 
-    class vkTSDF {
+    class SimpleTSDF {
     public:
-        explicit vkTSDF();
+        explicit SimpleTSDF();
 
         // Build the GPU structures.
         // truncation: TSDF truncation band in world units (same as voxelSize unit).
-        void Build(vkCommon::VkContext *ctx,
+        void Build(Engine::Core::Context &ctx,
                    float voxelSize = 0.1f,
                    float truncation = 0.3f,
                    uint32_t hashCapacity = 1u << 20,
@@ -49,16 +50,16 @@ namespace vkSpatial {
         uint32_t FilledCount() const;
 
     private:
-        vkCommon::VkContext *m_ctx = nullptr;
+        Engine::Core::Context *m_ctx = nullptr;
         float m_voxelSize = 0.1f;
         float m_truncation = 0.3f;
         uint32_t m_hashCapacity = 0;
         uint32_t m_maxPoints = 0;
 
-        vkCommon::vkGPUMemory::SharedPtr m_hashBuffer;
-        vkCommon::vkGPUMemory::SharedPtr m_pointBuffer;
-        vkCommon::vkGPUMemory::SharedPtr m_statBuffer;
-        vkCommon::vkComputeBase::SharedPtr m_kernel;
+        std::unique_ptr<Engine::Core::Buffer> m_hashBuffer;
+        std::unique_ptr<Engine::Core::Buffer> m_pointBuffer;
+        std::unique_ptr<Engine::Core::Buffer> m_statBuffer;
+        std::unique_ptr<Engine::Core::ComputePipeline> m_kernel;
     };
 
-} // namespace vkSpatial
+} // namespace Engine::Spatial

@@ -31,3 +31,18 @@ target_include_directories(EngineRender
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
         PRIVATE
             "${VULKAN_SDK}/include")
+
+file(GLOB_RECURSE ENGINE_SPATIAL_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Spatial/*.cpp")
+
+add_library(EngineSpatial STATIC ${ENGINE_SPATIAL_SOURCES})
+add_library(Engine::Spatial ALIAS EngineSpatial)
+
+target_link_libraries(EngineSpatial
+        PUBLIC Engine::Core Vulkan::Vulkan)
+
+target_include_directories(EngineSpatial
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
+            /opt/homebrew/opt/eigen/include/eigen3
+        PRIVATE
+            "${VULKAN_SDK}/include")

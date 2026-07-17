@@ -1,5 +1,5 @@
-#include "vkCommon/vkContext.h"
-#include "vkSpatial/vkTSDF.h"
+#include "Engine/Core/Context.h"
+#include "Engine/Spatial/SimpleTSDF.h"
 
 #include <Eigen/Core>
 #include <cmath>
@@ -20,8 +20,7 @@ static void savePointsPLY(const std::string &path,
 }
 
 int main() {
-    vkCommon::VkContext ctx;
-    ctx.init();
+    Engine::Core::Context ctx;
 
     constexpr float voxelSize = 0.1f;
     constexpr float truncation = 0.3f;
@@ -46,8 +45,8 @@ int main() {
     savePointsPLY("tsdf_sphere_points.ply", surfacePoints);
 
     {
-        vkSpatial::vkTSDF tsdf;
-        tsdf.Build(&ctx, voxelSize, truncation, hashCapacity, maxPoints);
+        Engine::Spatial::SimpleTSDF tsdf;
+        tsdf.Build(ctx, voxelSize, truncation, hashCapacity, maxPoints);
 
         // ── Spiral camera orbit ──────────────────────────────────────────────────
         // Camera sweeps numElevation latitude rings × numAzimuth positions each.
@@ -100,6 +99,5 @@ int main() {
         std::cout << "Exported mesh  : tsdf_sphere_mc.ply\n";
     }
 
-    ctx.shutdown();
     return 0;
 }
