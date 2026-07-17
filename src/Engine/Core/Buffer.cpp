@@ -67,6 +67,8 @@ namespace Engine::Core {
 
         VkBuffer dstBuffer = m_buffer;
         try {
+            if (vmaFlushAllocation(m_context.allocator, stagingAllocation, 0, bytes) != VK_SUCCESS)
+                throw std::runtime_error("Buffer::Upload: failed to flush staging allocation");
             SubmitOneShot(m_context, role, [&](VkCommandBuffer cmd) {
                 VkBufferCopy region{};
                 region.size = bytes;
@@ -108,6 +110,8 @@ namespace Engine::Core {
                 region.size = bytes;
                 vkCmdCopyBuffer(cmd, srcBuffer, stagingBuffer, 1, &region);
             });
+            if (vmaInvalidateAllocation(m_context.allocator, stagingAllocation, 0, bytes) != VK_SUCCESS)
+                throw std::runtime_error("Buffer::Download: failed to invalidate staging allocation");
         } catch (...) {
             vmaDestroyBuffer(m_context.allocator, stagingBuffer, stagingAllocation);
             throw;
