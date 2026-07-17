@@ -111,6 +111,8 @@ namespace Engine::Render {
         if (vkBeginCommandBuffer(m_commandBuffer, &beginInfo) != VK_SUCCESS)
             throw std::runtime_error("Renderer failed to begin command buffer");
 
+        TransitionForRendering();
+
         m_frameActive = true;
         return true;
     }
@@ -135,8 +137,6 @@ namespace Engine::Render {
         RenderGraph *graph = view.GetRenderGraph();
         if (!graph || graph->Empty())
             return;
-
-        TransitionForRendering();
 
         RenderContext renderContext{};
         renderContext.context = m_context;
