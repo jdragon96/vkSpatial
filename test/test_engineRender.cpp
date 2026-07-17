@@ -3,6 +3,10 @@
 #include "Engine/Render/Camera.h"
 #include "Engine/Render/Scene.h"
 #include "Engine/Render/View.h"
+#include "Engine/Render/RenderGraph.h"
+
+#include <memory>
+#include <vector>
 
 using namespace Engine::Render;
 
@@ -51,4 +55,35 @@ TEST(ViewTest, BindsSceneCameraAndGraph) {
     EXPECT_EQ(view.GetScene(), &scene);
     EXPECT_EQ(view.GetCamera(), &camera);
     EXPECT_EQ(view.GetRenderGraph(), nullptr);
+}
+
+namespace {
+    class RecordingPass : public RenderPass {
+    public:
+        RecordingPass(std::vector<int> &order, int id) : m_order(order), m_id(id) {}
+        const char *Name() const override { return "RecordingPass"; }
+        void Execute(RenderContext &) override { m_order.push_back(m_id); }
+
+    private:
+        std::vector<int> &m_order;
+        int m_id;
+    };
+} // namespace
+
+TEST(RenderGraphTest, ExecutesPassesInAddedOrder) {
+    std::vector<int> order;
+    RenderGraph graph;
+    graph.AddPass(std::make_unique<RecordingPass>(order, 1));
+    graph.AddPass(std::make_unique<RecordingPass>(order, 2));
+    EXPECT_FALSE(graph.Empty());
+    EXPECT_EQ(graph.PassCount(), 2u);
+
+    RenderContext ctx{};
+    graph.Execute(ctx);
+    EXPECT_EQ(order, (std::vector<int>{1, 2}));
+}
+
+TEST(RenderGraphTest, AddNullPassThrows) {
+    RenderGraph graph;
+    EXPECT_THROW(graph.AddPass(nullptr), std::runtime_error);
 }
