@@ -49,6 +49,10 @@ namespace Engine::Core {
         void Dispatch(uint32_t gridX, uint32_t gridY = 1, uint32_t gridZ = 1);
         void DispatchElements(uint32_t numElements);
 
+        // Records pipeline bind + push constants + dispatch into a caller-owned command
+        // buffer without submitting. Ensures the pipeline and descriptors are built first.
+        void RecordDispatch(VkCommandBuffer cmd, uint32_t gridX, uint32_t gridY = 1, uint32_t gridZ = 1);
+
         // Retained for call-site compatibility with the vkComputeBase API this replaces.
         // Dispatch() already blocks via SubmitOneShot, so this is a no-op safety net, not
         // a required call.
@@ -83,6 +87,7 @@ namespace Engine::Core {
         void destroyShaderResources();
         void ensurePipeline();
         void updateDescriptors();
+        void recordInto(VkCommandBuffer cmd, uint32_t gridX, uint32_t gridY, uint32_t gridZ);
         void submit(uint32_t gridX, uint32_t gridY, uint32_t gridZ);
         void reflectLocalSize(const std::vector<uint32_t> &spv);
 

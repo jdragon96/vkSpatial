@@ -346,20 +346,25 @@ namespace Engine::Core {
         m_dirty = false;
     }
 
-    void ComputePipeline::submit(uint32_t gridX, uint32_t gridY, uint32_t gridZ) {
-        VkPipeline pipeline = m_pipeline;
-        VkPipelineLayout layout = m_pipelineLayout;
-        VkDescriptorSet descSet = m_descSet;
-        const std::vector<uint8_t> &pushData = m_pushData;
+    void ComputePipeline::recordInto(VkCommandBuffer cmd, uint32_t gridX, uint32_t gridY, uint32_t gridZ) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, &m_descSet, 0, nullptr);
+        if (!m_pushData.empty())
+            vkCmdPushConstants(cmd, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               static_cast<uint32_t>(m_pushData.size()), m_pushData.data());
+        vkCmdDispatch(cmd, gridX, gridY, gridZ);
+    }
 
+    void ComputePipeline::submit(uint32_t gridX, uint32_t gridY, uint32_t gridZ) {
         SubmitOneShot(m_context, QueueRole::Compute, [&](VkCommandBuffer cmd) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &descSet, 0, nullptr);
-            if (!pushData.empty())
-                vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                   static_cast<uint32_t>(pushData.size()), pushData.data());
-            vkCmdDispatch(cmd, gridX, gridY, gridZ);
+            recordInto(cmd, gridX, gridY, gridZ);
         });
+    }
+
+    void ComputePipeline::RecordDispatch(VkCommandBuffer cmd, uint32_t gridX, uint32_t gridY, uint32_t gridZ) {
+        ensurePipeline();
+        if (m_dirty) updateDescriptors();
+        recordInto(cmd, gridX, gridY, gridZ);
     }
 
     std::vector<uint32_t> ComputePipeline::loadSPIRV(const std::string &path) {

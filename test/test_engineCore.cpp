@@ -140,3 +140,40 @@ TEST(ComputePipelineTest, DispatchSimpleShaderProducesExpectedOutput) {
 
     EXPECT_EQ(result, 50005000u);
 }
+
+TEST(ComputePipelineTest, RecordDispatchIntoExternalCommandBufferProducesSameResult) {
+    Context ctx;
+
+    constexpr uint32_t N = 4096u;
+    std::vector<uint32_t> input(N, 3u);
+
+    Buffer inputBuffer(ctx, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    inputBuffer.Allocate(N * sizeof(uint32_t));
+    inputBuffer.Upload(input.data(), N * sizeof(uint32_t));
+
+    static const char *kShader = R"(
+        #version 450
+        layout(local_size_x = 256) in;
+        layout(binding = 0) buffer Buf { uint v[]; } b;
+        layout(push_constant) uniform PC { uint count; } pc;
+        void main() {
+            uint i = gl_GlobalInvocationID.x;
+            if (i >= pc.count) return;
+            b.v[i] = b.v[i] * 2u;
+        }
+    )";
+    struct PC { uint32_t count; };
+
+    ComputePipeline pipe(ctx);
+    pipe.Build(kShader, ShaderInput::GlslSrc).Bind(0, inputBuffer).Args(PC{N});
+
+    // Drive submission ourselves via a one-shot command buffer + RecordDispatch.
+    const uint32_t gridX = (N + pipe.GetLocalSize().width - 1) / pipe.GetLocalSize().width;
+    SubmitOneShot(ctx, QueueRole::Compute, [&](VkCommandBuffer cmd) {
+        pipe.RecordDispatch(cmd, gridX);
+    });
+
+    std::vector<uint32_t> result(N, 0u);
+    inputBuffer.Download(result.data(), N * sizeof(uint32_t));
+    for (uint32_t i = 0; i < N; ++i) EXPECT_EQ(result[i], 6u) << "index " << i;
+}
