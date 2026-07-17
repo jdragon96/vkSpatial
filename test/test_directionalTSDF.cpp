@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include "Engine/Core/Context.h"
 #include "Engine/Spatial/DirectionalHostStore.h"
+#include "Engine/Spatial/DirectionalTSDF.h"
 #include "Engine/Spatial/DirectionalTSDFTypes.h"
 
 #include <stdexcept>
@@ -94,4 +96,24 @@ TEST(DirectionalHostStoreTest, KeysWithDifferentDirectionsAreDistinct) {
     EXPECT_EQ(store.Size(), 2u);
     EXPECT_FLOAT_EQ(store.Get(DirectionalGroupKey{3, 3, 3, 0})[0].value, 0.1f);
     EXPECT_FLOAT_EQ(store.Get(DirectionalGroupKey{3, 3, 3, 1})[0].value, 0.9f);
+}
+
+TEST(DirectionalTSDFTest, BeginFrameResetsIndexGridAndComputesLocalBase) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, /*poolCapacity=*/256);
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+
+    // groupWorldSize = 0.1 * 8 = 0.8; floor(0/0.8) - 25 = -25 per axis.
+    EXPECT_EQ(tsdf.LocalBase().x(), -25);
+    EXPECT_EQ(tsdf.LocalBase().y(), -25);
+    EXPECT_EQ(tsdf.LocalBase().z(), -25);
+    EXPECT_FLOAT_EQ(tsdf.GroupWorldSize(), 0.8f);
+
+    auto grid = tsdf.DebugDownloadIndexGrid();
+    ASSERT_EQ(grid.size(), kIndexGridCells);
+    size_t invalid = 0;
+    for (uint32_t v : grid)
+        if (v == kInvalidPoolIndex) ++invalid;
+    EXPECT_EQ(invalid, grid.size());
 }
