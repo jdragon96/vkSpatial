@@ -9,8 +9,9 @@ target_link_libraries(EngineCore
 
 target_include_directories(EngineCore
         PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/lib>
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/lib/vma>
         PRIVATE
             "${VULKAN_SDK}/include")
 
