@@ -117,3 +117,97 @@ TEST(DirectionalTSDFTest, BeginFrameResetsIndexGridAndComputesLocalBase) {
         if (v == kInvalidPoolIndex) ++invalid;
     EXPECT_EQ(invalid, grid.size());
 }
+
+TEST(DirectionalTSDFTest, SingleFrameUploadRegistersIndexGrid) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, /*poolCapacity=*/256);
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+
+    std::vector<DirectionalGroupKey> required = {
+            {0, 0, 0, 0},
+            {0, 0, 0, 3}, // same spatial group, different direction → separate slot
+            {-1, 4, 2, 5},
+    };
+    tsdf.EnsureResident(required);
+
+    auto grid = tsdf.DebugDownloadIndexGrid();
+    std::unordered_set<uint32_t> slots;
+    for (const auto &key : required) {
+        uint32_t lx = uint32_t(key.gx - tsdf.LocalBase().x());
+        uint32_t ly = uint32_t(key.gy - tsdf.LocalBase().y());
+        uint32_t lz = uint32_t(key.gz - tsdf.LocalBase().z());
+        uint32_t poolIndex = grid[IndexGridOffset(lx, ly, lz, key.direction)];
+        EXPECT_NE(poolIndex, kInvalidPoolIndex);
+        EXPECT_LT(poolIndex, 256u);
+        slots.insert(poolIndex);
+    }
+    EXPECT_EQ(slots.size(), required.size()); // invariant #1: no duplicate slots
+
+    // A key never requested stays invalid.
+    EXPECT_EQ(tsdf.DebugQueryPoolIndex({5, 5, 5, 1}), kInvalidPoolIndex);
+
+    auto stats = tsdf.LastFrameStats();
+    EXPECT_EQ(stats.missingCount, 3u);
+    EXPECT_EQ(stats.residentCount, 3u);
+    EXPECT_EQ(stats.h2dBytes, uint32_t(3u * kVoxelsPerGroup * sizeof(GpuTsdfVoxel)));
+}
+
+TEST(DirectionalTSDFTest, EnsureResidentSkipsAlreadyResidentKeys) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 64);
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+
+    DirectionalGroupKey key{1, 1, 1, 0};
+    tsdf.EnsureResident({key});
+    uint32_t slotBefore = tsdf.DebugQueryPoolIndex(key);
+
+    tsdf.EnsureResident({key}); // second call: nothing new to upload
+    EXPECT_EQ(tsdf.DebugQueryPoolIndex(key), slotBefore);
+    EXPECT_EQ(tsdf.LastFrameStats().missingCount, 1u);
+    EXPECT_EQ(tsdf.LastFrameStats().residentCount, 1u);
+}
+
+TEST(DirectionalTSDFTest, HostStoreValuesRoundTripThroughGpuPool) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 64);
+
+    DirectionalGroupKey key{1, 2, 3, 4};
+    DirectionalHostStore::Group group{};
+    group[7] = {0.5f, 2.0f};
+    group[200] = {-0.75f, 4.0f};
+    tsdf.HostStore().Put(key, group);
+
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+    tsdf.EnsureResident({key});
+
+    auto out = tsdf.DebugDownloadGroupVoxels(key);
+    EXPECT_NEAR(out[7].value, 0.5f, 1e-3f);
+    EXPECT_NEAR(out[7].weight, 2.0f, 1e-3f);
+    EXPECT_NEAR(out[200].value, -0.75f, 1e-3f);
+    EXPECT_NEAR(out[200].weight, 4.0f, 1e-3f);
+    EXPECT_EQ(out[0].weight, 0.0f);
+}
+
+TEST(DirectionalTSDFTest, PoolExhaustionThrows) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, /*poolCapacity=*/2);
+    tsdf.BeginFrame(Eigen::Vector3f::Zero());
+
+    std::vector<DirectionalGroupKey> required = {
+            {0, 0, 0, 0}, {0, 0, 0, 1}, {0, 0, 0, 2}};
+    EXPECT_THROW(tsdf.EnsureResident(required), std::runtime_error);
+}
+
+TEST(DirectionalTSDFTest, KeyOutsideLocalWindowThrows) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 64);
+    tsdf.BeginFrame(Eigen::Vector3f::Zero()); // window covers groups [-25, 25)
+
+    EXPECT_THROW(tsdf.EnsureResident({DirectionalGroupKey{100, 0, 0, 0}}),
+                 std::runtime_error);
+}
