@@ -13,6 +13,10 @@ add_executable(directional_tsdf_eval directional_tsdf_eval.cpp)
 target_link_libraries(directional_tsdf_eval PRIVATE Engine::Spatial)
 target_compile_definitions(directional_tsdf_eval PRIVATE VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")
 
+add_executable(bvh_benchmark bvh_benchmark.cpp)
+target_link_libraries(bvh_benchmark PRIVATE Engine::Spatial)
+target_compile_definitions(bvh_benchmark PRIVATE VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")
+
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
 if (GLSLC_EXECUTABLE)
     set(CUBE_RENDER2_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
