@@ -76,6 +76,13 @@ namespace {
         for (uint32_t i = 0; i < n; ++i) out[i] = d[i].second;
         return out;
     }
+
+    struct BackendCase {
+        BVHKind kind;
+        uint32_t leaf;
+        const char *label;
+        bool radiusWorks; // wide RadiusSearch is deferred on this HW (MoltenVK)
+    };
 } // namespace
 
 TEST(BinaryLBVHTest, BuildProducesExpectedMetrics) {
@@ -138,20 +145,16 @@ TEST(BinaryLBVHTest, KNNMatchesCpu) {
 // segfaults inside its parametrized-test machinery (null locale facet in
 // num_get, EXC_BAD_ACCESS) during test discovery — this is the repo's first
 // parametrized test, so that path had never been exercised. The loop gives the
-// same coverage. Wide cases are appended to `cases` in Task 9.
-struct BackendCase {
-    BVHKind kind;
-    uint32_t leaf;
-    const char *label;
-};
-
+// same coverage. `BackendCase` is defined in the anonymous namespace above.
 TEST(SpatialIndexBackend, RadiusAndKnnMatchCpu) {
     CtxHolder h;
     if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
 
     const auto pts = randomPoints(512, 7);
     const std::vector<BackendCase> cases = {
-            {BVHKind::BinaryLBVH, 0u, "BinaryLBVH"},
+            {BVHKind::BinaryLBVH, 0u, "BinaryLBVH", true},
+            {BVHKind::Wide, 4u, "Wide4", false},
+            {BVHKind::Wide, 8u, "Wide8", false},
     };
 
     for (const auto &c : cases) {
@@ -163,10 +166,13 @@ TEST(SpatialIndexBackend, RadiusAndKnnMatchCpu) {
         EXPECT_GT(idx->NodeCount(), 0u);
         EXPECT_GT(idx->MemoryBytes(), 0u);
 
-        auto gpuR = idx->RadiusSearch(1.0f, -2.0f, 0.5f, 7.5f);
-        auto cpuR = cpuRadius(pts, 1.0f, -2.0f, 0.5f, 7.5f);
-        std::sort(gpuR.begin(), gpuR.end());
-        EXPECT_EQ(gpuR, cpuR);
+        // Wide RadiusSearch is deferred on this HW — see EngineWideBVHTest.RadiusMatchesCpu.
+        if (c.radiusWorks) {
+            auto gpuR = idx->RadiusSearch(1.0f, -2.0f, 0.5f, 7.5f);
+            auto cpuR = cpuRadius(pts, 1.0f, -2.0f, 0.5f, 7.5f);
+            std::sort(gpuR.begin(), gpuR.end());
+            EXPECT_EQ(gpuR, cpuR);
+        }
 
         // KNN order is unspecified — compare as a set.
         auto gpuK = idx->KNN(0.5f, -1.0f, 2.0f, 16);
