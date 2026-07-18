@@ -284,8 +284,30 @@ namespace Engine::Spatial {
         return out;
     }
 
-    std::vector<uint32_t> WideBVH::KNN(float, float, float, int) {
-        return {}; // implemented in Task 8
+    std::vector<uint32_t> WideBVH::KNN(float cx, float cy, float cz, int k) {
+        if (!m_built)
+            throw std::runtime_error("WideBVH: Build() must be called first");
+        if (!std::isfinite(cx) || !std::isfinite(cy) || !std::isfinite(cz))
+            throw std::runtime_error("WideBVH: KNN arguments are invalid");
+        if (k <= 0 || static_cast<uint32_t>(k) > MAX_K)
+            throw std::runtime_error("WideBVH: KNN k must be in [1, 64]");
+
+        const uint32_t uk = static_cast<uint32_t>(k);
+        const QueryState zero{0u, 0u};
+        m_knnStateBuf->Upload(&zero, sizeof(zero));
+
+        const KNNPC pc{cx, cy, cz, uk};
+        m_knnKernel->Args(pc).Dispatch(1);
+
+        QueryState state{};
+        m_knnStateBuf->Download(&state, sizeof(state));
+        if (state.status != 0u)
+            throw std::runtime_error("WideBVH: KNN traversal stack overflow");
+
+        std::vector<uint32_t> indices(uk);
+        m_knnResultBuf->Download(indices.data(), uk * static_cast<uint32_t>(sizeof(uint32_t)));
+        indices.erase(std::remove(indices.begin(), indices.end(), INVALID_IDX), indices.end());
+        return indices;
     }
 
 } // namespace Engine::Spatial

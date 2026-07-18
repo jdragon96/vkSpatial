@@ -208,3 +208,21 @@ TEST(EngineWideBVHTest, RadiusMatchesCpu) {
     GTEST_SKIP() << "wide RadiusSearch: pre-existing MoltenVK bug (see comment); "
                     "old vkWideBVH RadiusMatchesCpuReference fails identically";
 }
+
+TEST(EngineWideBVHTest, KNNMatchesCpu) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+
+    const auto pts = randomPoints(400, 99);
+    WideBVH bvh(*h.ctx, 4);
+    bvh.Build(pts);
+
+    // KNN order is unspecified — compare as a set.
+    auto gpu = bvh.KNN(0.5f, -1.0f, 2.0f, 32);
+    auto cpu = cpuKNN(pts, 0.5f, -1.0f, 2.0f, 32);
+    std::sort(gpu.begin(), gpu.end());
+    std::sort(cpu.begin(), cpu.end());
+    EXPECT_EQ(gpu, cpu);
+    EXPECT_THROW(bvh.KNN(0.0f, 0.0f, 0.0f, 0), std::runtime_error);
+    EXPECT_THROW(bvh.KNN(0.0f, 0.0f, 0.0f, 65), std::runtime_error);
+}
