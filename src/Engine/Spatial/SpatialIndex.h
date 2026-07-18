@@ -29,7 +29,11 @@ namespace Engine::Spatial {
             BuildFromPrimitives(prims);
         }
 
+        // Indices of primitives whose centre lies within radius r of (cx,cy,cz). Unordered.
         virtual std::vector<uint32_t> RadiusSearch(float cx, float cy, float cz, float r) = 0;
+        // The k nearest primitive indices to (cx,cy,cz); k in [1,64]. Returns the correct
+        // k-nearest SET, but the result ORDER is unspecified (backends may return heap or
+        // traversal order, not sorted by distance). Compare as a set, not by position.
         virtual std::vector<uint32_t> KNN(float cx, float cy, float cz, int k) = 0;
 
         virtual uint32_t Length() const = 0;       // primitive count
