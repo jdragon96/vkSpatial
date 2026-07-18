@@ -19,6 +19,8 @@ namespace Engine::Spatial {
     // hierarchy (up to maxLeafPrimitives per leaf). Query kernels cached at Build().
     // Reuses src/shader/bvh_wide_*.comp + cmd_knn_wide/cmd_radiusSearch_wide.
     // Ray/path tracing is NOT implemented (future RayTraceable capability).
+    // KNOWN ISSUE (this HW): RadiusSearch returns empty on Apple/MoltenVK
+    // (cmd_radiusSearch_wide.comp); build/KNN/memory are unaffected.
     class WideBVH : public SpatialIndex {
     public:
         explicit WideBVH(Engine::Core::Context &ctx, uint32_t maxLeafPrimitives = 4);

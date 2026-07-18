@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <random>
 #include <utility>
 #include <vector>
@@ -231,4 +232,21 @@ TEST(EngineWideBVHTest, KNNMatchesCpu) {
     EXPECT_EQ(gpu, cpu);
     EXPECT_THROW(bvh.KNN(0.0f, 0.0f, 0.0f, 0), std::runtime_error);
     EXPECT_THROW(bvh.KNN(0.0f, 0.0f, 0.0f, 65), std::runtime_error);
+}
+
+// The wide-radius traversal is deferred on this HW, but RadiusSearch's CPU-side
+// guard clauses run before any GPU dispatch and are safe to verify.
+TEST(EngineWideBVHTest, RadiusSearchGuardsRejectInvalidArgs) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+
+    WideBVH unbuilt(*h.ctx, 4);
+    EXPECT_THROW(unbuilt.RadiusSearch(0.0f, 0.0f, 0.0f, 1.0f), std::runtime_error);
+
+    const auto pts = randomPoints(256, 5);
+    WideBVH bvh(*h.ctx, 4);
+    bvh.Build(pts);
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_THROW(bvh.RadiusSearch(nan, 0.0f, 0.0f, 1.0f), std::runtime_error);
+    EXPECT_THROW(bvh.RadiusSearch(0.0f, 0.0f, 0.0f, -1.0f), std::runtime_error);
 }
