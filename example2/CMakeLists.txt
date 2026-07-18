@@ -18,6 +18,9 @@ if (GLSLC_EXECUTABLE)
     set(CUBE_RENDER2_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
     set(CUBE_RENDER2_VERT_SPV "${CUBE_RENDER2_SHADER_OUTPUT_DIR}/cube.vert.spv")
     set(CUBE_RENDER2_FRAG_SPV "${CUBE_RENDER2_SHADER_OUTPUT_DIR}/cube.frag.spv")
+    set(SHADOW_MAP_DEPTH_SPV "${CUBE_RENDER2_SHADER_OUTPUT_DIR}/realtime_shadow_depth.vert.spv")
+    set(SHADOW_MAP_SCENE_VERT_SPV "${CUBE_RENDER2_SHADER_OUTPUT_DIR}/realtime_shadow_scene.vert.spv")
+    set(SHADOW_MAP_SCENE_FRAG_SPV "${CUBE_RENDER2_SHADER_OUTPUT_DIR}/realtime_shadow_scene.frag.spv")
 
     add_custom_command(
             OUTPUT "${CUBE_RENDER2_VERT_SPV}"
@@ -40,6 +43,39 @@ if (GLSLC_EXECUTABLE)
     add_custom_target(cube_render2_shaders
             DEPENDS "${CUBE_RENDER2_VERT_SPV}" "${CUBE_RENDER2_FRAG_SPV}")
 
+    add_custom_command(
+            OUTPUT "${SHADOW_MAP_DEPTH_SPV}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CUBE_RENDER2_SHADER_OUTPUT_DIR}"
+            COMMAND ${GLSLC_EXECUTABLE}
+                    "${CMAKE_SOURCE_DIR}/example/realtime_shadow_depth.vert"
+                    -o "${SHADOW_MAP_DEPTH_SPV}"
+            DEPENDS "${CMAKE_SOURCE_DIR}/example/realtime_shadow_depth.vert"
+            VERBATIM)
+
+    add_custom_command(
+            OUTPUT "${SHADOW_MAP_SCENE_VERT_SPV}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CUBE_RENDER2_SHADER_OUTPUT_DIR}"
+            COMMAND ${GLSLC_EXECUTABLE}
+                    "${CMAKE_SOURCE_DIR}/example/realtime_shadow_scene.vert"
+                    -o "${SHADOW_MAP_SCENE_VERT_SPV}"
+            DEPENDS "${CMAKE_SOURCE_DIR}/example/realtime_shadow_scene.vert"
+            VERBATIM)
+
+    add_custom_command(
+            OUTPUT "${SHADOW_MAP_SCENE_FRAG_SPV}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CUBE_RENDER2_SHADER_OUTPUT_DIR}"
+            COMMAND ${GLSLC_EXECUTABLE}
+                    "${CMAKE_SOURCE_DIR}/example/realtime_shadow_scene.frag"
+                    -o "${SHADOW_MAP_SCENE_FRAG_SPV}"
+            DEPENDS "${CMAKE_SOURCE_DIR}/example/realtime_shadow_scene.frag"
+            VERBATIM)
+
+    add_custom_target(shadow_map_shaders
+            DEPENDS
+                "${SHADOW_MAP_DEPTH_SPV}"
+                "${SHADOW_MAP_SCENE_VERT_SPV}"
+                "${SHADOW_MAP_SCENE_FRAG_SPV}")
+
     add_executable(cube_render2
             cube_render.cpp
             CubePass.cpp
@@ -49,6 +85,13 @@ if (GLSLC_EXECUTABLE)
     target_link_libraries(cube_render2 PRIVATE Engine::Render Engine::Core)
     target_compile_definitions(cube_render2 PRIVATE
             CUBE_RENDER2_SHADER_DIR=\"${CUBE_RENDER2_SHADER_OUTPUT_DIR}\")
+
+    add_executable(shadow_map
+            ShadowMap.cpp)
+    add_dependencies(shadow_map shadow_map_shaders)
+    target_link_libraries(shadow_map PRIVATE Engine::Render Engine::Core)
+    target_compile_definitions(shadow_map PRIVATE
+            SHADOW_MAP_SHADER_DIR=\"${CUBE_RENDER2_SHADER_OUTPUT_DIR}\")
 else ()
     message(WARNING "cube_render2 example skipped because glslc was not found")
 endif ()
