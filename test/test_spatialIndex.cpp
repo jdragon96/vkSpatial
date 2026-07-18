@@ -148,9 +148,6 @@ TEST(BinaryLBVHTest, KNNMatchesCpu) {
 // parametrized test, so that path had never been exercised. The loop gives the
 // same coverage. `BackendCase` is defined in the anonymous namespace above.
 TEST(SpatialIndexBackend, RadiusAndKnnMatchCpu) {
-    CtxHolder h;
-    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
-
     const auto pts = randomPoints(512, 7);
     const std::vector<BackendCase> cases = {
             {BVHKind::BinaryLBVH, 0u, "BinaryLBVH", true},
@@ -160,6 +157,11 @@ TEST(SpatialIndexBackend, RadiusAndKnnMatchCpu) {
 
     for (const auto &c : cases) {
         SCOPED_TRACE(c.label);
+        // Fresh Context per backend: keep this authoritative correctness test out of the
+        // shared-Context, repeated-build regime that Engine::Core degrades under (see
+        // docs/KNOWN_ISSUES_engine_core_large_n.md) so it stays deterministic.
+        CtxHolder h;
+        if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
         auto idx = MakeSpatialIndex(*h.ctx, c.kind, BVHParams{c.leaf});
         idx->Build(pts);
 
