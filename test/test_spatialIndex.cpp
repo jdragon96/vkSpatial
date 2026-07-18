@@ -131,3 +131,47 @@ TEST(BinaryLBVHTest, KNNMatchesCpu) {
     EXPECT_THROW(bvh.KNN(0.0f, 0.0f, 0.0f, 0), std::runtime_error);
     EXPECT_THROW(bvh.KNN(0.0f, 0.0f, 0.0f, 65), std::runtime_error);
 }
+
+// ── Correctness across every registered backend ───────────────────────────────
+// Implemented as a plain loop (not TEST_P): the anaconda-built GTest 1.11.0
+// segfaults inside its parametrized-test machinery (null locale facet in
+// num_get, EXC_BAD_ACCESS) during test discovery — this is the repo's first
+// parametrized test, so that path had never been exercised. The loop gives the
+// same coverage. Wide cases are appended to `cases` in Task 9.
+struct BackendCase {
+    BVHKind kind;
+    uint32_t leaf;
+    const char *label;
+};
+
+TEST(SpatialIndexBackend, RadiusAndKnnMatchCpu) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+
+    const auto pts = randomPoints(512, 7);
+    const std::vector<BackendCase> cases = {
+            {BVHKind::BinaryLBVH, 0u, "BinaryLBVH"},
+    };
+
+    for (const auto &c : cases) {
+        SCOPED_TRACE(c.label);
+        auto idx = MakeSpatialIndex(*h.ctx, c.kind, BVHParams{c.leaf});
+        idx->Build(pts);
+
+        EXPECT_EQ(idx->Length(), 512u);
+        EXPECT_GT(idx->NodeCount(), 0u);
+        EXPECT_GT(idx->MemoryBytes(), 0u);
+
+        auto gpuR = idx->RadiusSearch(1.0f, -2.0f, 0.5f, 7.5f);
+        auto cpuR = cpuRadius(pts, 1.0f, -2.0f, 0.5f, 7.5f);
+        std::sort(gpuR.begin(), gpuR.end());
+        EXPECT_EQ(gpuR, cpuR);
+
+        // KNN order is unspecified — compare as a set.
+        auto gpuK = idx->KNN(0.5f, -1.0f, 2.0f, 16);
+        auto cpuK = cpuKNN(pts, 0.5f, -1.0f, 2.0f, 16);
+        std::sort(gpuK.begin(), gpuK.end());
+        std::sort(cpuK.begin(), cpuK.end());
+        EXPECT_EQ(gpuK, cpuK);
+    }
+}
