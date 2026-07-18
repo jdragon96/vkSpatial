@@ -172,8 +172,20 @@ namespace Engine::Spatial {
         return out;
     }
 
-    std::vector<uint32_t> BinaryLBVH::KNN(float, float, float, int) {
-        return {}; // implemented in Task 4
+    std::vector<uint32_t> BinaryLBVH::KNN(float cx, float cy, float cz, int k) {
+        if (!m_built)
+            throw std::runtime_error("BinaryLBVH: Build() must be called first");
+        if (k <= 0 || static_cast<uint32_t>(k) > MAX_K)
+            throw std::runtime_error("BinaryLBVH: KNN k must be in [1, 64]");
+
+        const uint32_t uk = static_cast<uint32_t>(k);
+        const KNNPC pc{cx, cy, cz, uk};
+        m_knnKernel->Args(pc).Dispatch(1);
+
+        std::vector<uint32_t> indices(uk);
+        m_knnResultBuf->Download(indices.data(), uk * static_cast<uint32_t>(sizeof(uint32_t)));
+        indices.erase(std::remove(indices.begin(), indices.end(), INVALID_IDX), indices.end());
+        return indices;
     }
 
 } // namespace Engine::Spatial

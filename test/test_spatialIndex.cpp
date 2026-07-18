@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <random>
+#include <utility>
 #include <vector>
 
 using namespace Engine::Spatial;
@@ -59,6 +60,21 @@ namespace {
         }
         return out;
     }
+
+    std::vector<uint32_t> cpuKNN(const std::vector<PointPrim> &pts,
+                                 float cx, float cy, float cz, uint32_t k) {
+        std::vector<std::pair<float, uint32_t>> d;
+        d.reserve(pts.size());
+        for (uint32_t i = 0; i < pts.size(); ++i) {
+            const float dx = pts[i].x - cx, dy = pts[i].y - cy, dz = pts[i].z - cz;
+            d.emplace_back(dx * dx + dy * dy + dz * dz, i);
+        }
+        std::sort(d.begin(), d.end());
+        const uint32_t n = std::min<uint32_t>(k, static_cast<uint32_t>(d.size()));
+        std::vector<uint32_t> out(n);
+        for (uint32_t i = 0; i < n; ++i) out[i] = d[i].second;
+        return out;
+    }
 } // namespace
 
 TEST(BinaryLBVHTest, BuildProducesExpectedMetrics) {
@@ -94,4 +110,24 @@ TEST(BinaryLBVHTest, RadiusMatchesCpu) {
     auto cpu = cpuRadius(pts, 1.0f, -2.0f, 0.5f, 7.5f);
     std::sort(gpu.begin(), gpu.end());
     EXPECT_EQ(gpu, cpu);
+}
+
+TEST(BinaryLBVHTest, KNNMatchesCpu) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+
+    const auto pts = randomPoints(400, 99);
+    BinaryLBVH bvh(*h.ctx);
+    bvh.Build(pts);
+
+    // KNN returns the correct k-nearest SET; internal order is unspecified
+    // (cmd_knn.comp emits its max-heap array), so compare as sets by sorting
+    // both sides by index — matching the reference test/test_bvhKNN.cpp.
+    auto gpu = bvh.KNN(0.5f, -1.0f, 2.0f, 32);
+    auto cpu = cpuKNN(pts, 0.5f, -1.0f, 2.0f, 32);
+    std::sort(gpu.begin(), gpu.end());
+    std::sort(cpu.begin(), cpu.end());
+    EXPECT_EQ(gpu, cpu);
+    EXPECT_THROW(bvh.KNN(0.0f, 0.0f, 0.0f, 0), std::runtime_error);
+    EXPECT_THROW(bvh.KNN(0.0f, 0.0f, 0.0f, 65), std::runtime_error);
 }
