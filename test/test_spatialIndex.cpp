@@ -4,6 +4,7 @@
 #include "Engine/Spatial/BVHTypes.h"
 #include "Engine/Spatial/BinaryLBVH.h"
 #include "Engine/Spatial/SpatialIndex.h"
+#include "Engine/Spatial/WideBVH.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -174,4 +175,26 @@ TEST(SpatialIndexBackend, RadiusAndKnnMatchCpu) {
         std::sort(cpuK.begin(), cpuK.end());
         EXPECT_EQ(gpuK, cpuK);
     }
+}
+
+TEST(EngineWideBVHTest, BuildProducesFewerNodesThanBinary) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+
+    const auto pts = randomPoints(1024, 7);
+    WideBVH bvh(*h.ctx, 4);
+    bvh.Build(pts);
+
+    EXPECT_EQ(bvh.Length(), 1024u);
+    EXPECT_EQ(bvh.MaxLeafPrimitives(), 4u);
+    EXPECT_GT(bvh.NodeCount(), 0u);
+    EXPECT_LT(bvh.NodeCount(), 2u * 1024u - 1u);
+    EXPECT_GT(bvh.MemoryBytes(), 0u);
+}
+
+TEST(EngineWideBVHTest, RejectsInvalidLeafSize) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+    EXPECT_THROW(WideBVH(*h.ctx, 0), std::runtime_error);
+    EXPECT_THROW(WideBVH(*h.ctx, 65), std::runtime_error);
 }
