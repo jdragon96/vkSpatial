@@ -152,8 +152,24 @@ namespace Engine::Spatial {
         return m_nodeBuf ? m_nodeBuf->Size() : 0u;
     }
 
-    std::vector<uint32_t> BinaryLBVH::RadiusSearch(float, float, float, float) {
-        return {}; // implemented in Task 3
+    std::vector<uint32_t> BinaryLBVH::RadiusSearch(float cx, float cy, float cz, float r) {
+        if (!m_built)
+            throw std::runtime_error("BinaryLBVH: Build() must be called first");
+
+        const uint32_t zero = 0;
+        m_radiusCountBuf->Upload(&zero, sizeof(uint32_t));
+
+        const RadiusPC pc{cx, cy, cz, r, m_count};
+        m_radiusKernel->Args(pc).Dispatch(1);
+
+        uint32_t count = 0;
+        m_radiusCountBuf->Download(&count, sizeof(uint32_t));
+        if (count == 0) return {};
+
+        const uint32_t n = std::min(count, m_count);
+        std::vector<uint32_t> out(n);
+        m_radiusResultBuf->Download(out.data(), n * static_cast<uint32_t>(sizeof(uint32_t)));
+        return out;
     }
 
     std::vector<uint32_t> BinaryLBVH::KNN(float, float, float, int) {

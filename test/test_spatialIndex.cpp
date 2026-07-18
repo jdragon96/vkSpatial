@@ -48,6 +48,17 @@ namespace {
         }
         return pts;
     }
+
+    std::vector<uint32_t> cpuRadius(const std::vector<PointPrim> &pts,
+                                    float cx, float cy, float cz, float r) {
+        const float r2 = r * r;
+        std::vector<uint32_t> out;
+        for (uint32_t i = 0; i < pts.size(); ++i) {
+            const float dx = pts[i].x - cx, dy = pts[i].y - cy, dz = pts[i].z - cz;
+            if (dx * dx + dy * dy + dz * dz <= r2) out.push_back(i);
+        }
+        return out;
+    }
 } // namespace
 
 TEST(BinaryLBVHTest, BuildProducesExpectedMetrics) {
@@ -69,4 +80,18 @@ TEST(BinaryLBVHTest, RejectsFewerThanTwoPrimitives) {
     BinaryLBVH bvh(*h.ctx);
     std::vector<PointPrim> one{{0.0f, 0.0f, 0.0f}};
     EXPECT_THROW(bvh.Build(one), std::runtime_error);
+}
+
+TEST(BinaryLBVHTest, RadiusMatchesCpu) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+
+    const auto pts = randomPoints(512, 42);
+    BinaryLBVH bvh(*h.ctx);
+    bvh.Build(pts);
+
+    auto gpu = bvh.RadiusSearch(1.0f, -2.0f, 0.5f, 7.5f);
+    auto cpu = cpuRadius(pts, 1.0f, -2.0f, 0.5f, 7.5f);
+    std::sort(gpu.begin(), gpu.end());
+    EXPECT_EQ(gpu, cpu);
 }
