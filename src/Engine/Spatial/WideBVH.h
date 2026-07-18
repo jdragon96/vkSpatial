@@ -44,6 +44,7 @@ namespace Engine::Spatial {
         std::string m_name;
         uint32_t m_count = 0;
         uint32_t m_nodeCount = 0;
+        uint32_t m_leafCount = 0;
         bool m_built = false;
 
         std::unique_ptr<Engine::Core::Buffer> m_primitiveBuf;  // Primitive[]
