@@ -83,11 +83,18 @@ TEST(IntegrationQuality, StrongSplitKeepsPerpendicularSurfaces) {
     for (int i = -4; i <= 4; ++i)
         for (int j = -4; j <= 4; ++j) { p.emplace_back(0.02f, i*0.05f, j*0.05f); n.emplace_back(1,0,0); }
     tsdf.Integrate(p, n, Eigen::Vector3f(1,0,1), Eigen::Vector3f::Zero());
-    // expect points carrying BOTH a +Z-ish and +X-ish normal to survive (not merged into one blurred normal)
-    bool hasZ=false, hasX=false;
+    // Discriminating check — scope to the shared CORNER only. Near (|x|,|z| small) a +Z
+    // candidate (~(0,0,0.02)) and a +X candidate (~(0.02,0,0)) sit ~0.028 apart, i.e. within
+    // posThresh (0.6*0.1=0.06), so the merge actually decides whether to fuse them. Correct
+    // behavior keeps them as separate ~+Z and ~+X normals; a broken split would blur them to
+    // a ~45° normal (neither component > 0.7). Far-field points on each patch are excluded so
+    // they cannot mask a corner-merge regression (the flaw the global check had).
+    bool cornerZ=false, cornerX=false;
     for (auto &pt : tsdf.PointCloud()) {
-        if (pt.normal.z() > 0.7f) hasZ = true;
-        if (pt.normal.x() > 0.7f) hasX = true;
+        if (std::abs(pt.position.x()) > 0.08f || std::abs(pt.position.z()) > 0.08f) continue;
+        if (pt.normal.z() > 0.7f) cornerZ = true;
+        if (pt.normal.x() > 0.7f) cornerX = true;
     }
-    EXPECT_TRUE(hasZ && hasX) << "perpendicular surfaces were merged into a blurred normal";
+    EXPECT_TRUE(cornerZ && cornerX)
+        << "position-close perpendicular candidates at the corner were blurred into one normal";
 }
