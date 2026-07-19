@@ -1,7 +1,7 @@
 #include "Engine/Spatial/DirectionalTSDF.h"
 
 #include "Engine/Core/OneShotCommands.h"
-#include "Engine/Spatial/StreamingResidencyBackend.h"
+#include "Engine/Spatial/IResidencyBackend.h" // MakeResidencyBackend (backend selection: Task 5)
 
 #include <algorithm>
 #include <chrono>
@@ -56,19 +56,19 @@ namespace Engine::Spatial {
                                 float truncation,
                                 uint32_t poolCapacity,
                                 uint32_t maxPoints,
-                                uint32_t maxCandidates) {
+                                uint32_t maxCandidates,
+                                ResidencyMode residency) {
         m_ctx = &ctx;
         m_voxelSize = voxelSize;
         m_truncation = truncation;
         m_maxPoints = maxPoints;
         m_maxCandidates = maxCandidates;
 
-        // Phase 1 hardcodes the streaming backend directly (Task 5 replaces this with
-        // MakeResidencyBackend once ResidencyMode selection exists). Built via the concrete
-        // type so the kernels below can bind its buffers before it's stored behind the
-        // IResidencyBackend interface.
-        auto be = std::make_unique<StreamingResidencyBackend>();
-        be->Build(ctx, poolCapacity);
+        // Backend selection delegated to the factory (Task 5): env override, then the
+        // explicit `residency` arg, then (Auto) memory-topology probing. `residency`
+        // defaults to Streaming so every existing caller (which passes nothing new here)
+        // keeps today's characterized behavior on all platforms, including UMA.
+        m_backend = MakeResidencyBackend(ctx, poolCapacity, residency);
 
         m_pointBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
         m_candidateBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
@@ -98,24 +98,22 @@ namespace Engine::Spatial {
         m_integrateKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         m_integrateKernel->Build("directional_tsdf_integrate.comp")
                 .Bind(0, *m_pointBuffer)
-                .Bind(1, be->IndexGridBuffer(), indexGridBytes)
-                .Bind(2, be->PoolVoxelBuffer(), poolVoxelsBytes)
-                .Bind(3, be->MetaBuffer(), metaBytes);
+                .Bind(1, m_backend->IndexGridBuffer(), indexGridBytes)
+                .Bind(2, m_backend->PoolVoxelBuffer(), poolVoxelsBytes)
+                .Bind(3, m_backend->MetaBuffer(), metaBytes);
 
         m_extractKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         m_extractKernel->Build("directional_tsdf_extract.comp")
                 .Bind(0, *m_groupSlotListBuffer) // recompute-group list (core-owned)
-                .Bind(1, be->MetaBuffer(), metaBytes)
-                .Bind(2, be->PoolVoxelBuffer(), poolVoxelsBytes)
-                .Bind(3, be->IndexGridBuffer(), indexGridBytes)
+                .Bind(1, m_backend->MetaBuffer(), metaBytes)
+                .Bind(2, m_backend->PoolVoxelBuffer(), poolVoxelsBytes)
+                .Bind(3, m_backend->IndexGridBuffer(), indexGridBytes)
                 .Bind(4, *m_candidateBuffer)
                 .Bind(5, *m_candidateCounter);
 
         m_pointCloud.clear();
         m_stats = {};
         m_lastCounts = {};
-
-        m_backend = std::move(be);
     }
 
     void DirectionalTSDF::BeginFrame(const Eigen::Vector3f &aabbCenterHint) {

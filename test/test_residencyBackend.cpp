@@ -86,3 +86,21 @@ TEST(ResidencyBackend, UnifiedKeepsGroupsResidentZeroCopy) {
     be.EnsureResident({k});
     EXPECT_EQ(be.DebugQueryPoolIndex(k), slot);
 }
+
+#include "Engine/Spatial/IResidencyBackend.h"
+#include <cstdlib>
+
+TEST(ResidencyBackend, FactoryHonorsOverride) {
+    Engine::Core::Context ctx;
+#ifdef _WIN32
+    _putenv_s("VKLBVH_RESIDENCY", "streaming");
+#else
+    setenv("VKLBVH_RESIDENCY", "streaming", 1);
+#endif
+    auto be = MakeResidencyBackend(ctx, 1024);
+    ASSERT_NE(be, nullptr);
+    EXPECT_FALSE(be->IsUnified());
+#ifndef _WIN32
+    unsetenv("VKLBVH_RESIDENCY");
+#endif
+}

@@ -57,7 +57,8 @@ namespace Engine::Spatial {
                    float truncation = 0.3f,
                    uint32_t poolCapacity = 32768,
                    uint32_t maxPoints = 1u << 15,
-                   uint32_t maxCandidates = 1u << 16);
+                   uint32_t maxCandidates = 1u << 16,
+                   ResidencyMode residency = ResidencyMode::Streaming);
 
         // Starts a frame: recomputes the local base (window centred on the hint, snapped to
         // the group grid) and resets the indexGrid to kInvalidPoolIndex.
