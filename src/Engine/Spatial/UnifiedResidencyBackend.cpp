@@ -21,6 +21,12 @@ namespace Engine::Spatial {
         if (vmaCreateBuffer(m_ctx->allocator, &bi, &ai, &b.buffer, &b.alloc, &info) != VK_SUCCESS)
             throw std::runtime_error("UnifiedResidencyBackend: coherent alloc failed");
         b.mapped = info.pMappedData; // non-null because MAPPED_BIT was set
+        // VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT only *prefers* HOST_COHERENT (it may
+        // pick HOST_CACHED, which on some UMA devices is host-visible-but-not-coherent). Query
+        // what we actually got so flushIfNeeded knows whether an explicit flush is required.
+        VkMemoryPropertyFlags props = 0;
+        vmaGetAllocationMemoryProperties(m_ctx->allocator, b.alloc, &props);
+        b.coherent = (props & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
         std::memset(b.mapped, 0, bytes);
         return b;
     }
@@ -28,6 +34,13 @@ namespace Engine::Spatial {
     void UnifiedResidencyBackend::freeBuffer(MappedBuffer &b) {
         if (b.buffer) vmaDestroyBuffer(m_ctx->allocator, b.buffer, b.alloc);
         b = {};
+    }
+
+    void UnifiedResidencyBackend::flushIfNeeded(const MappedBuffer &b) const {
+        // No-op on HOST_COHERENT memory: the next vkQueueSubmit makes prior host writes
+        // visible to the device automatically. Only non-coherent memory needs the flush.
+        if (!b.coherent)
+            vmaFlushAllocation(m_ctx->allocator, b.alloc, 0, VK_WHOLE_SIZE);
     }
 
     UnifiedResidencyBackend::~UnifiedResidencyBackend() {
@@ -72,6 +85,10 @@ namespace Engine::Spatial {
                 ++m_stats.reusableCount;
             }
         }
+        // The indexGrid reset + relabel and the meta rewrites above are CPU writes the GPU
+        // integrate/extract kernels will read this frame; make them visible before any submit.
+        flushIfNeeded(m_indexGrid);
+        flushIfNeeded(m_meta);
     }
 
     void UnifiedResidencyBackend::EnsureResident(const std::vector<DirectionalGroupKey> &required) {
@@ -91,6 +108,10 @@ namespace Engine::Spatial {
                 m_slotOf.emplace(k, slot);
                 std::memset(pool + size_t(slot) * kVoxelsPerGroup, 0,
                             sizeof(GpuTsdfVoxel) * kVoxelsPerGroup); // zero-fill on first touch
+                // Count keys first made resident this frame (BeginFrame already counted the
+                // prior-resident slots it re-registered), so residentCount == total resident,
+                // matching StreamingResidencyBackend::RecordResidency's residentIndex.size().
+                ++m_stats.residentCount;
             } else {
                 slot = it->second;
             }
@@ -101,6 +122,11 @@ namespace Engine::Spatial {
         // Zero-copy: no H2D bytes, nothing "missing".
         m_stats.h2dBytes = 0;
         m_stats.missingCount = 0;
+        // Pool zero-fills, indexGrid registrations and meta writes above are all CPU writes
+        // the GPU integrate/extract kernels read; flush them before DirectionalTSDF submits.
+        flushIfNeeded(m_pool);
+        flushIfNeeded(m_indexGrid);
+        flushIfNeeded(m_meta);
     }
 
     std::vector<uint32_t> UnifiedResidencyBackend::DebugDownloadIndexGrid() {

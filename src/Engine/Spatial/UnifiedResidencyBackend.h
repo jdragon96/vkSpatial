@@ -51,9 +51,16 @@ namespace Engine::Spatial {
             VkBuffer buffer = VK_NULL_HANDLE;
             VmaAllocation alloc = VK_NULL_HANDLE;
             void *mapped = nullptr;
+            bool coherent = true; // actual HOST_COHERENT-ness of the backing memory (queried in Build)
         };
         MappedBuffer allocCoherent(uint32_t bytes, VkBufferUsageFlags usage);
         void freeBuffer(MappedBuffer &b);
+        // Make CPU writes through `b.mapped` visible to the GPU before a queue submit. On
+        // HOST_COHERENT memory (the M4 Max UMA case) the submit's implicit host-write
+        // visibility already covers it, so this is a no-op; on HOST_CACHED-but-not-coherent
+        // memory (which VMA may still hand back for HOST_ACCESS_RANDOM) an explicit flush is
+        // required by the Vulkan spec. Called after every CPU write to pool/indexGrid/meta.
+        void flushIfNeeded(const MappedBuffer &b) const;
         uint32_t offsetOf(const Eigen::Vector3i &g, uint8_t dir) const; // indexGrid cell, or kInvalidPoolIndex if outside window
 
         Engine::Core::Context *m_ctx = nullptr;
