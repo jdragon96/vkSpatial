@@ -32,3 +32,13 @@ TEST(IntegrationQuality, DiagonalK2SplitsAcrossTwoLayers) {
     uint8_t a = out[0].direction, b = out[1].direction;
     EXPECT_TRUE((a == 0u && b == 4u) || (a == 4u && b == 0u));
 }
+
+TEST(IntegrationQuality, NonDominantTieHonorsXYZOrder) {
+    IntegrationQuality q; q.maxDirections = 2;
+    DirWeight out[6];
+    // |x|=|y|=1 tied, |z|=2 dominant. Tie must resolve x before y.
+    int cnt = TopKDirections(Eigen::Vector3f(1, 1, 2), q, out);
+    ASSERT_EQ(cnt, 2);
+    EXPECT_EQ(out[0].direction, 4u); // +Z dominant
+    EXPECT_EQ(out[1].direction, 0u); // +X wins the tie over +Y
+}

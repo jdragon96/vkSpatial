@@ -27,10 +27,13 @@ namespace Engine::Spatial {
         const uint8_t dz = n.z() >= 0.0f ? 4u : 5u;
         // candidates in tie order x,y,z, sorted by |component| desc via 3 comparisons
         DirWeight c[3] = {{dx, ax}, {dy, ay}, {dz, az}};
-        // stable sort desc by relWeight-field-as-|component| (only 3, keep x>y>z on ties)
-        for (int i = 0; i < 3; ++i)
-            for (int j = i + 1; j < 3; ++j)
-                if (c[j].relWeight > c[i].relWeight) std::swap(c[i], c[j]);
+        // stable insertion sort desc by relWeight-field-as-|component| (only 3, keeps x>y>z on ties)
+        for (int i = 1; i < 3; ++i) {
+            DirWeight key = c[i];
+            int j = i - 1;
+            while (j >= 0 && c[j].relWeight < key.relWeight) { c[j + 1] = c[j]; --j; }
+            c[j + 1] = key;
+        }
         const float rmax = ipow(c[0].relWeight, q.dirExponent);
         int cnt = 0;
         const uint32_t K = q.maxDirections < 1 ? 1u : q.maxDirections;
