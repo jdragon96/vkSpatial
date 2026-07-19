@@ -1,6 +1,7 @@
 #include "Engine/Spatial/DirectionalTSDF.h"
 
 #include "Engine/Core/OneShotCommands.h"
+#include "Engine/Spatial/DirectionalIntegrationQuality.h" // TopKDirections (shared direction selector)
 #include "Engine/Spatial/IResidencyBackend.h" // MakeResidencyBackend (backend selection: Task 5)
 
 #include <algorithm>
@@ -177,7 +178,8 @@ namespace Engine::Spatial {
             float depth = diff.norm();
             if (depth < 1e-6f) continue;
             Eigen::Vector3f dir = diff / depth;
-            const uint8_t d = dominantAxisOf(normals[i]);
+            DirWeight dw[6];
+            const int nd = TopKDirections(normals[i], m_quality, dw);
             const float band = m_truncation + m_voxelSize;
             Eigen::Vector3f a = points[i] - dir * band;
             Eigen::Vector3f b = points[i] + dir * band;
@@ -191,7 +193,8 @@ namespace Engine::Spatial {
             for (int gz = vmin.z() >> 3; gz <= (vmax.z() >> 3); ++gz)
                 for (int gy = vmin.y() >> 3; gy <= (vmax.y() >> 3); ++gy)
                     for (int gx = vmin.x() >> 3; gx <= (vmax.x() >> 3); ++gx)
-                        writeSet.insert({gx, gy, gz, d});
+                        for (int di = 0; di < nd; ++di)
+                            writeSet.insert({gx, gy, gz, dw[di].direction});
         }
 
         // ResidentRequiredSet = writeSet + 1-group halo (extraction neighbourhood, §7).
