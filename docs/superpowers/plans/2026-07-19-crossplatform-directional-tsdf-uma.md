@@ -373,11 +373,74 @@ git commit -m "refactor(spatial): extract streaming residency behind IResidencyB
 
 ---
 
-## Task 4: `UnifiedResidencyBackend` (UMA coherent pool)
+## Task 4: Make `IResidencyBackend` sufficient for `Integrate`, then add `UnifiedResidencyBackend`
+
+> **Why this task grew (Task 2+3 review finding):** the Task-3 refactor kept `DirectionalTSDF::Integrate`'s hot path coupled to a concrete `StreamingResidencyBackend*` (`m_streaming`), because the frozen `IResidencyBackend` cannot express what `Integrate` needs: the batched residency-record (`recordResidency` folded into the shared `CommandBatch`), resident-slot iteration (`ResidentIndex`), and the `gpuSubmits`/classify counters. That is a null-deref landmine the moment the backend is Unified. **Part A expands the interface and decouples the core (verified by the unchanged streaming suite); Part B then implements `UnifiedResidencyBackend` against the complete interface**, so Task 6's cross-backend `Integrate` works without any concrete-type branching.
+
+### Part A: Expand `IResidencyBackend` + decouple `DirectionalTSDF` from the concrete backend
+
+**Files:**
+- Modify: `src/Engine/Spatial/IResidencyBackend.h`, `src/Engine/Spatial/StreamingResidencyBackend.h`, `src/Engine/Spatial/StreamingResidencyBackend.cpp`, `src/Engine/Spatial/DirectionalTSDF.h`, `src/Engine/Spatial/DirectionalTSDF.cpp`
+
+**A1. Expand the interface** (`IResidencyBackend.h`):
+- Add includes: `#include "Engine/Compute/CommandBatch.h"` and `#include <unordered_map>`.
+- Extend `ResidencyStats` with the counters the core reads back (keep the existing five + `overlapRatio`):
+```cpp
+        uint32_t reusableCount = 0;   // classify: resident & inside new window
+        uint32_t cleanFreeCount = 0;  // classify: free or clean-evicted slots
+        uint32_t gpuSubmits = 0;      // queue submissions the backend made this frame
+```
+- Add two pure-virtual methods to `IResidencyBackend`:
+```cpp
+        // Fold this frame's residency work into an existing command batch (Phase-5 batched path).
+        // Streaming: stage missing groups + record copies/register into `batch`; returns slots recorded.
+        // Unified: CPU slot bookkeeping only, records nothing to `batch`; returns slots touched.
+        virtual uint32_t RecordResidency(const std::vector<DirectionalGroupKey> &required,
+                                         Engine::Compute::CommandBatch &batch) = 0;
+        // Enumerate resident (key -> pool slot) so the core can pick recompute slots for extraction.
+        virtual const std::unordered_map<DirectionalGroupKey, uint32_t, DirectionalGroupKeyHash> &
+        ResidentIndex() const = 0;
+```
+
+**A2. Make `StreamingResidencyBackend` satisfy the expanded interface** (`StreamingResidencyBackend.{h,cpp}`):
+- Its existing public `recordResidency(required, batch)` already has the exact signature — rename to `RecordResidency` and mark `override` (or add a one-line `RecordResidency` override that forwards to it).
+- Add `const std::unordered_map<DirectionalGroupKey, uint32_t, DirectionalGroupKeyHash> &ResidentIndex() const override { return m_residentIndex; }`.
+- Fold the standalone `GpuSubmits()`/`LastReusableCount()`/`LastCleanFreeCount()`/`LastWriteBackCount()` accessors added in Task 3 INTO `FrameStats()`: set `m_stats.gpuSubmits`, `m_stats.reusableCount`, `m_stats.cleanFreeCount` (and existing `writeBackCount`) at the same points those internal counters are updated, and delete the four extra public methods.
+
+**A3. Decouple `DirectionalTSDF`** (`DirectionalTSDF.{h,cpp}`):
+- Delete the `StreamingResidencyBackend *m_streaming;` field and its assignment in `Build`.
+- Route every former `m_streaming->X` call through the interface `m_backend`:
+  - `m_streaming->recordResidency(req, batch)` → `m_backend->RecordResidency(req, batch)`
+  - `m_streaming->ResidentIndex()` → `m_backend->ResidentIndex()`
+  - `m_streaming->GpuSubmits()` / `Last*Count()` → read `m_backend->FrameStats()` (`.gpuSubmits`, `.reusableCount`, `.cleanFreeCount`, `.writeBackCount`).
+  - `updateOverlapRatio()` was moved to the backend in Task 3 — it must run inside the backend's own `BeginFrame`/`RecordResidency` so `FrameStats().overlapRatio` is populated; the core reads it via `FrameStats()`, it does not call the backend's `updateOverlapRatio` directly. (If Task 3 left `updateOverlapRatio` public and core-called, move that call into the backend now.)
+- `DebugLastClassifyCounts()` builds its `ClassifyCounts` from `m_backend->FrameStats()` (`reusableCount`, `cleanFreeCount`, `writeBackCount`).
+
+**A4. Gate (behavior-preserving — identical to Task 3's gate):**
+```
+cmake -S . -B build && cmake --build build --parallel --target vkspatial_tests
+./build/test/vkspatial_tests --gtest_filter='*Directional*:*HostStore*:ResidencyBackend.*'
+```
+Expected: all PASS, unchanged (the core still runs on Streaming; only the call path changed from concrete to interface). Do NOT edit existing tests.
+
+**A5. Commit Part A** before starting Part B:
+```bash
+git add src/Engine/Spatial/IResidencyBackend.h src/Engine/Spatial/StreamingResidencyBackend.h \
+        src/Engine/Spatial/StreamingResidencyBackend.cpp src/Engine/Spatial/DirectionalTSDF.h \
+        src/Engine/Spatial/DirectionalTSDF.cpp
+git commit -m "refactor(spatial): expand IResidencyBackend so Integrate is backend-agnostic"
+```
+
+### Part B: `UnifiedResidencyBackend` (UMA coherent pool)
 
 **Files:**
 - Create: `src/Engine/Spatial/UnifiedResidencyBackend.h`, `src/Engine/Spatial/UnifiedResidencyBackend.cpp`
 - Test: `test/test_residencyBackend.cpp` (append)
+
+**Part B note:** `UnifiedResidencyBackend` implements the **expanded** interface from Part A, i.e. also `RecordResidency` and `ResidentIndex` and fills `ResidencyStats.{reusableCount,cleanFreeCount,gpuSubmits}`:
+- `RecordResidency(required, batch)` = the same CPU slot bookkeeping as `EnsureResident` (append first-seen slots, relabel indexGrid via the mapped pointers); it records **nothing** into `batch` (no GPU copy on UMA) and returns the number of slots touched. `gpuSubmits = 0`.
+- `ResidentIndex()` returns the backend's own `m_slotOf` map (its type is already `unordered_map<DirectionalGroupKey, uint32_t, DirectionalGroupKeyHash>`).
+- `FrameStats()`: `missingCount=0`, `h2dBytes=0`, `d2hBytes=0`, `writeBackCount=0`, `gpuSubmits=0`; `reusableCount` = slots re-registered inside the window this frame; `cleanFreeCount` = 0.
 
 **Interfaces:**
 - Consumes: `IResidencyBackend`, `Engine::Core::Context` (`ctx.allocator`, `ctx.physicalDevice`, `ctx.device`).
@@ -423,6 +486,7 @@ Expected: FAIL to compile — `UnifiedResidencyBackend.h` not found.
 ```cpp
 #pragma once
 
+#include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/IResidencyBackend.h"
 
@@ -443,6 +507,17 @@ namespace Engine::Spatial {
         void BeginFrame(const Eigen::Vector3i &localBase) override;
         void EnsureResident(const std::vector<DirectionalGroupKey> &required) override;
         void EndFrame() override {}
+
+        // Expanded-interface methods (Part A). On UMA the batched path is the same CPU
+        // bookkeeping as EnsureResident and records nothing into the command batch.
+        uint32_t RecordResidency(const std::vector<DirectionalGroupKey> &required,
+                                 Engine::Compute::CommandBatch &batch) override {
+            EnsureResident(required);
+            (void)batch;
+            return uint32_t(required.size());
+        }
+        const std::unordered_map<DirectionalGroupKey, uint32_t, DirectionalGroupKeyHash> &
+        ResidentIndex() const override { return m_slotOf; }
 
         VkBuffer IndexGridBuffer() const override { return m_indexGrid.buffer; }
         VkBuffer PoolVoxelBuffer() const override { return m_pool.buffer; }
