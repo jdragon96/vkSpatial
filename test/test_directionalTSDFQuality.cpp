@@ -98,3 +98,31 @@ TEST(IntegrationQuality, StrongSplitKeepsPerpendicularSurfaces) {
     EXPECT_TRUE(cornerZ && cornerX)
         << "position-close perpendicular candidates at the corner were blurred into one normal";
 }
+
+// Deterministic CI regression anchor for the §7 coverage win (the chair benchmark proves this
+// on real data but needs external scans). Two planes with ~20° off-axis normals: under K=1 both
+// fall in the +Z layer, but under K=2 each also writes its secondary ±X layer, so multi-direction
+// extracts strictly MORE surface. If multi-direction integration regressed to single, multi would
+// equal single and this fails.
+TEST(IntegrationQuality, MultiDirectionExtractsMoreSurfaceThanSingle) {
+    auto run = [](IntegrationQuality q) {
+        Engine::Core::Context ctx;
+        DirectionalTSDF tsdf; tsdf.Build(ctx); tsdf.SetIntegrationQuality(q);
+        std::vector<Eigen::Vector3f> p, n;
+        for (int i = -6; i <= 6; ++i)
+            for (int j = -6; j <= 6; ++j) {
+                Eigen::Vector3f na(0.35f, 0.0f, 0.94f); na.normalize();
+                p.emplace_back(i*0.05f, j*0.05f, 0.0f);  n.push_back(na);
+                Eigen::Vector3f nb(-0.35f, 0.0f, 0.94f); nb.normalize();
+                p.emplace_back(i*0.05f, j*0.05f, 0.12f); n.push_back(nb);
+            }
+        tsdf.Integrate(p, n, Eigen::Vector3f(0, 0, 5), Eigen::Vector3f::Zero());
+        return tsdf.PointCloud().size();
+    };
+    const size_t single = run(IntegrationQuality{1, 4, false});
+    const size_t multi  = run(IntegrationQuality{2, 4, true});
+    EXPECT_GT(single, 0u);
+    EXPECT_GT(multi, single)
+        << "multi-direction should extract more surface (off-axis normals write a 2nd layer); "
+        << "single=" << single << " multi=" << multi;
+}
