@@ -30,18 +30,18 @@ if (GLSLC_EXECUTABLE)
             OUTPUT "${CUBE_RENDER2_VERT_SPV}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CUBE_RENDER2_SHADER_OUTPUT_DIR}"
             COMMAND ${GLSLC_EXECUTABLE}
-                    "${CMAKE_SOURCE_DIR}/example/cube.vert"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/cube.vert"
                     -o "${CUBE_RENDER2_VERT_SPV}"
-            DEPENDS "${CMAKE_SOURCE_DIR}/example/cube.vert"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cube.vert"
             VERBATIM)
 
     add_custom_command(
             OUTPUT "${CUBE_RENDER2_FRAG_SPV}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CUBE_RENDER2_SHADER_OUTPUT_DIR}"
             COMMAND ${GLSLC_EXECUTABLE}
-                    "${CMAKE_SOURCE_DIR}/example/cube.frag"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/cube.frag"
                     -o "${CUBE_RENDER2_FRAG_SPV}"
-            DEPENDS "${CMAKE_SOURCE_DIR}/example/cube.frag"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cube.frag"
             VERBATIM)
 
     add_custom_target(cube_render2_shaders
@@ -51,27 +51,27 @@ if (GLSLC_EXECUTABLE)
             OUTPUT "${SHADOW_MAP_DEPTH_SPV}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CUBE_RENDER2_SHADER_OUTPUT_DIR}"
             COMMAND ${GLSLC_EXECUTABLE}
-                    "${CMAKE_SOURCE_DIR}/example/realtime_shadow_depth.vert"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/realtime_shadow_depth.vert"
                     -o "${SHADOW_MAP_DEPTH_SPV}"
-            DEPENDS "${CMAKE_SOURCE_DIR}/example/realtime_shadow_depth.vert"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/realtime_shadow_depth.vert"
             VERBATIM)
 
     add_custom_command(
             OUTPUT "${SHADOW_MAP_SCENE_VERT_SPV}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CUBE_RENDER2_SHADER_OUTPUT_DIR}"
             COMMAND ${GLSLC_EXECUTABLE}
-                    "${CMAKE_SOURCE_DIR}/example/realtime_shadow_scene.vert"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/realtime_shadow_scene.vert"
                     -o "${SHADOW_MAP_SCENE_VERT_SPV}"
-            DEPENDS "${CMAKE_SOURCE_DIR}/example/realtime_shadow_scene.vert"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/realtime_shadow_scene.vert"
             VERBATIM)
 
     add_custom_command(
             OUTPUT "${SHADOW_MAP_SCENE_FRAG_SPV}"
             COMMAND ${CMAKE_COMMAND} -E make_directory "${CUBE_RENDER2_SHADER_OUTPUT_DIR}"
             COMMAND ${GLSLC_EXECUTABLE}
-                    "${CMAKE_SOURCE_DIR}/example/realtime_shadow_scene.frag"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/realtime_shadow_scene.frag"
                     -o "${SHADOW_MAP_SCENE_FRAG_SPV}"
-            DEPENDS "${CMAKE_SOURCE_DIR}/example/realtime_shadow_scene.frag"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/realtime_shadow_scene.frag"
             VERBATIM)
 
     add_custom_target(shadow_map_shaders

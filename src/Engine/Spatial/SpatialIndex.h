@@ -51,7 +51,8 @@ namespace Engine::Spatial {
     class RayTraceable {
     public:
         virtual ~RayTraceable() = default;
-        // TODO(future): TraceRays / TracePath. See old vkSpatial::vkWideBVH for signatures.
+        // TODO(future): TraceRays / TracePath. See the cmd_*trace_wide.comp shaders for
+        // the intended interface.
     };
 
     enum class BVHKind {

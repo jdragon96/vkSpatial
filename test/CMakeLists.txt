@@ -9,7 +9,6 @@ add_executable(vkspatial_tests ${TEST_SOURCES})
 
 target_link_libraries(vkspatial_tests
         PRIVATE
-        vkSpatial::vkSpatial
         Engine::Core
         Engine::Spatial
         Engine::Compute

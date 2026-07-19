@@ -26,8 +26,7 @@ namespace Engine::Core {
             // VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME (and sets
             // VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR) internally when the extension is
             // supported, so no explicit call is needed here (verified against the fetched
-            // vk-bootstrap source and against vkCommon::VkContext's identical, already-working
-            // implementation).
+            // vk-bootstrap source).
 
             auto instRet = instanceBuilder.build();
             if (!instRet)
