@@ -220,8 +220,11 @@ float ipow(float x, uint p){ float r=1.0; for(uint i=0u;i<p;i++) r*=x; return r;
 int topK(vec3 n, out uint dirs[3], out float rel[3]) {
     float a[3] = float[](abs(n.x), abs(n.y), abs(n.z));
     uint  d[3] = uint[]( n.x>=0.0?0u:1u, n.y>=0.0?2u:3u, n.z>=0.0?4u:5u );
-    // sort desc by a[], tie order x,y,z
-    for(int i=0;i<3;i++) for(int j=i+1;j<3;j++) if(a[j]>a[i]){ float ta=a[i];a[i]=a[j];a[j]=ta; uint td=d[i];d[i]=d[j];d[j]=td; }
+    // STABLE insertion sort desc by a[], preserving x,y,z seed order on ties
+    // (must match TopKDirections in DirectionalTSDF.cpp EXACTLY — shift only on strict <).
+    for(int i=1;i<3;i++){ float ka=a[i]; uint kd=d[i]; int j=i-1;
+        while(j>=0 && a[j]<ka){ a[j+1]=a[j]; d[j+1]=d[j]; j--; }
+        a[j+1]=ka; d[j+1]=kd; }
     float rmax = ipow(a[0], g_dirExponent);
     int cnt=0; uint K = g_maxDirections<1u?1u:g_maxDirections;
     for(int i=0;i<3 && uint(cnt)<K;i++){
