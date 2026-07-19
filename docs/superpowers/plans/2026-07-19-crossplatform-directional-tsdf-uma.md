@@ -46,7 +46,8 @@
 - Produces:
   - `struct Engine::Spatial::ResidencyStats { uint32_t residentCount, missingCount, writeBackCount, h2dBytes, d2hBytes; float overlapRatio; };`
   - `class Engine::Spatial::IResidencyBackend` with the pure-virtual methods listed below.
-  - `std::unique_ptr<IResidencyBackend> Engine::Spatial::MakeResidencyBackend(Engine::Core::Context&, uint32_t poolCapacity);` (declaration only; defined in Task 5).
+  - `enum class Engine::Spatial::ResidencyMode { Auto, Streaming, Unified };`
+  - `std::unique_ptr<IResidencyBackend> Engine::Spatial::MakeResidencyBackend(Engine::Core::Context&, uint32_t poolCapacity, ResidencyMode mode = ResidencyMode::Auto);` (declaration only; defined in Task 5).
 
 - [ ] **Step 1: Write the failing test** (compile-level contract — a stub backend must satisfy the interface)
 
@@ -163,11 +164,16 @@ namespace Engine::Spatial {
         virtual DirectionalHostStore::Group DebugDownloadGroupVoxels(const DirectionalGroupKey &key) = 0;
     };
 
-    // Chooses UnifiedResidencyBackend when the device exposes a DEVICE_LOCAL|HOST_VISIBLE heap
-    // large enough for the model, else StreamingResidencyBackend. Overridable via
-    // VKLBVH_RESIDENCY=streaming|unified (defined in ResidencyBackendFactory.cpp, Task 5).
+    // Explicit backend choice. Auto probes memory topology (UMA→Unified, else Streaming).
+    enum class ResidencyMode { Auto, Streaming, Unified };
+
+    // Builds the requested backend. `Auto` chooses UnifiedResidencyBackend when the device
+    // exposes a DEVICE_LOCAL|HOST_VISIBLE heap large enough for the model, else Streaming.
+    // The env var VKLBVH_RESIDENCY=streaming|unified overrides `mode` at runtime (escape hatch;
+    // defined in ResidencyBackendFactory.cpp, Task 5).
     std::unique_ptr<IResidencyBackend>
-    MakeResidencyBackend(Engine::Core::Context &ctx, uint32_t poolCapacity);
+    MakeResidencyBackend(Engine::Core::Context &ctx, uint32_t poolCapacity,
+                         ResidencyMode mode = ResidencyMode::Auto);
 
 } // namespace Engine::Spatial
 ```
@@ -320,8 +326,8 @@ Expected: PASS. (`DirectionalTSDF.cpp` will not yet compile because its bodies w
 - Modify: `src/Engine/Spatial/DirectionalTSDF.h`, `src/Engine/Spatial/DirectionalTSDF.cpp`
 
 **Interfaces:**
-- Consumes: `IResidencyBackend`, `MakeResidencyBackend` (Task 1), `StreamingResidencyBackend` (Task 2).
-- Produces: `DirectionalTSDF` with the same public API (`Build/BeginFrame/EnsureResident/Integrate/PointCloud/...`) unchanged, now delegating residency to `m_backend`.
+- Consumes: `IResidencyBackend` (Task 1), `StreamingResidencyBackend` (Task 2).
+- Produces: `DirectionalTSDF` with the same public API (`Build/BeginFrame/EnsureResident/Integrate/PointCloud/...`) unchanged, now delegating residency to `m_backend` (hardcoded Streaming in this task).
 
 - [ ] **Step 1: Replace moved members with a backend pointer** in `DirectionalTSDF.h`
 
@@ -333,17 +339,23 @@ Keep the public `Stats`/`ClassifyCounts` structs and accessors. `HostStore()`/`L
 
 - [ ] **Step 2: Rewire the method bodies** in `DirectionalTSDF.cpp`
 
-- `Build`: after setting the algorithm params + creating integrate/extract kernels + point/candidate buffers, create the backend: `m_backend = MakeResidencyBackend(*m_ctx, poolCapacity);`
+- `Build`: after setting the algorithm params + creating integrate/extract kernels + point/candidate buffers, create the backend **directly as Streaming** (the factory is not implemented until Task 5, and Phase 1 must be behavior-preserving on every platform — auto-selecting Unified on a UMA machine like the M4 Max dev box would break the streaming-specific existing tests). Include `StreamingResidencyBackend.h` and write:
+```cpp
+        auto be = std::make_unique<StreamingResidencyBackend>();
+        be->Build(*m_ctx, poolCapacity);
+        m_backend = std::move(be);
+```
+Task 5 replaces this with `MakeResidencyBackend`.
 - `BeginFrame(hint)`: `m_backend->BeginFrame(quantizeLocalBase(hint));` (`quantizeLocalBase` stays here).
 - `EnsureResident(required)`: `m_backend->EnsureResident(required);`
 - `Integrate(...)`: same pipeline, but bind `m_backend->IndexGridBuffer()/PoolVoxelBuffer()/MetaBuffer()/PoolCapacity()/LocalBase()` where it used the old members for the integrate/extract dispatches; call `m_backend->EndFrame()` at the end. Aggregate `m_backend->FrameStats()` (a `ResidencyStats`) into `m_stats`.
 - Accessors: `LocalBase()`→`m_backend->LocalBase()`, `PoolCapacity()`→`m_backend->PoolCapacity()`, `HostStore()`→`m_backend->HostStore()`, `DebugDownloadIndexGrid/DebugQueryPoolIndex/DebugDownloadGroupVoxels`→forward.
 - `DebugLastClassifyCounts()`: map from `ResidencyStats` (residentCount/missingCount/writeBackCount) or add a `ClassifyCounts LastClassify()` to the interface if the existing tests assert exact reusable/cleanFree/writeBack; check `test_directionalTSDF.cpp` for which fields it reads and expose exactly those.
 
-- [ ] **Step 3: Build the whole project**
+- [ ] **Step 3: Build the test target**
 
-Run: `cmake --build build --parallel`
-Expected: compiles (library + tests + examples).
+Run: `cmake --build build --parallel --target vkspatial_tests`
+Expected: compiles. (Build only `vkspatial_tests`, not the whole project — `example2` is broken at HEAD, referencing an uncommitted `ShadowMap.cpp`; that is pre-existing and unrelated to this work.)
 
 - [ ] **Step 4: Run the full existing DirectionalTSDF suite — the characterization gate**
 
@@ -629,7 +641,7 @@ git commit -m "feat(spatial): add UnifiedResidencyBackend (UMA zero-copy residen
 - Consumes: `StreamingResidencyBackend`, `UnifiedResidencyBackend`.
 - Produces: definition of `MakeResidencyBackend` (declared in Task 1).
 
-**Selection rule:** env `VKLBVH_RESIDENCY` overrides (`unified`/`streaming`); otherwise pick `Unified` iff a memory heap is both `DEVICE_LOCAL` and `HOST_VISIBLE` and its size ≥ the model budget (`sizeof(GpuTsdfVoxel)*kVoxelsPerGroup*poolCapacity + indexGrid + meta`), else `Streaming`.
+**Selection rule:** env `VKLBVH_RESIDENCY` (`unified`/`streaming`) wins if set; else honor the explicit `mode` arg; else (`Auto`) pick `Unified` iff a memory heap is both `DEVICE_LOCAL` and `HOST_VISIBLE` and its size ≥ the model budget (`sizeof(GpuTsdfVoxel)*kVoxelsPerGroup*poolCapacity + indexGrid + meta`), else `Streaming`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -687,16 +699,18 @@ namespace Engine::Spatial {
     }
 
     std::unique_ptr<IResidencyBackend>
-    MakeResidencyBackend(Engine::Core::Context &ctx, uint32_t poolCapacity) {
+    MakeResidencyBackend(Engine::Core::Context &ctx, uint32_t poolCapacity, ResidencyMode mode) {
         const char *ov = std::getenv("VKLBVH_RESIDENCY");
         VkDeviceSize needed = VkDeviceSize(sizeof(GpuTsdfVoxel)) * kVoxelsPerGroup * poolCapacity +
                               VkDeviceSize(sizeof(uint32_t)) * kIndexGridCells +
                               VkDeviceSize(sizeof(ActiveGroupMeta)) * poolCapacity;
 
         bool useUnified;
-        if (ov && std::strcmp(ov, "unified") == 0)        useUnified = true;
-        else if (ov && std::strcmp(ov, "streaming") == 0) useUnified = false;
-        else useUnified = hasUnifiedHeap(ctx.physicalDevice, needed);
+        if (ov && std::strcmp(ov, "unified") == 0)         useUnified = true;   // env escape hatch wins
+        else if (ov && std::strcmp(ov, "streaming") == 0)  useUnified = false;
+        else if (mode == ResidencyMode::Unified)           useUnified = true;   // explicit request
+        else if (mode == ResidencyMode::Streaming)         useUnified = false;
+        else useUnified = hasUnifiedHeap(ctx.physicalDevice, needed);           // Auto: probe topology
 
         if (useUnified) {
             auto b = std::make_unique<UnifiedResidencyBackend>();
@@ -716,11 +730,30 @@ namespace Engine::Spatial {
 Run: `cmake --build build --parallel --target vkspatial_tests && ./build/test/vkspatial_tests --gtest_filter='ResidencyBackend.FactoryHonorsOverride'`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Wire the factory into `DirectionalTSDF::Build` behind a `ResidencyMode` arg**
+
+In `DirectionalTSDF.h`, add a trailing defaulted arg to `Build` (backward-compatible — existing callers pass nothing new):
+```cpp
+        void Build(Engine::Core::Context &ctx,
+                   float voxelSize = 0.1f, float truncation = 0.3f,
+                   uint32_t poolCapacity = 32768, uint32_t maxPoints = 1u << 15,
+                   uint32_t maxCandidates = 1u << 16,
+                   ResidencyMode residency = ResidencyMode::Streaming);
+```
+Default is **Streaming** so every existing test (which calls `Build(ctx)` or `Build(ctx, ...)`) keeps the streaming backend on all platforms — including the UMA M4 Max — with **zero test edits**. In `DirectionalTSDF.cpp::Build`, replace the hardcoded `std::make_unique<StreamingResidencyBackend>()` from Task 3 with `m_backend = MakeResidencyBackend(*m_ctx, poolCapacity, residency);` (include `IResidencyBackend.h`). The `Auto`/product-facing default can flip to `ResidencyMode::Auto` in a later plan once quality parity is proven; keeping it Streaming here preserves the refactor's characterization gate.
+
+- [ ] **Step 6: Confirm existing tests still pass unchanged (default Streaming)**
+
+Run: `cmake --build build --parallel --target vkspatial_tests && ./build/test/vkspatial_tests --gtest_filter='*Directional*:*HostStore*'`
+Expected: all PASS (default `Build` still selects Streaming; no existing test was edited).
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/Engine/Spatial/ResidencyBackendFactory.cpp src/Engine/Spatial/CMakeLists.txt test/test_residencyBackend.cpp
-git commit -m "feat(spatial): auto-select residency backend by memory topology"
+git add src/Engine/Spatial/ResidencyBackendFactory.cpp src/Engine/Spatial/CMakeLists.txt \
+        src/Engine/Spatial/DirectionalTSDF.h src/Engine/Spatial/DirectionalTSDF.cpp \
+        test/test_residencyBackend.cpp
+git commit -m "feat(spatial): auto-select residency backend + ResidencyMode on DirectionalTSDF"
 ```
 
 ---
@@ -731,7 +764,7 @@ git commit -m "feat(spatial): auto-select residency backend by memory topology"
 - Test: `test/test_residencyBackend.cpp` (append)
 
 **Interfaces:**
-- Consumes: `DirectionalTSDF` (which now takes whichever backend the factory builds), the `VKLBVH_RESIDENCY` override.
+- Consumes: `DirectionalTSDF::Build(..., ResidencyMode)` (Task 5) — selects the backend explicitly, no env needed.
 
 **Contract:** For identical input and parameters, the reconstruction is identical (within ε) whichever backend is used. This is what proves the residency abstraction is sound.
 
@@ -753,15 +786,10 @@ void makePlane(std::vector<Eigen::Vector3f> &pts, std::vector<Eigen::Vector3f> &
         }
 }
 
-std::vector<Engine::Spatial::ExtractedPoint> runWith(const char *mode) {
-#ifndef _WIN32
-    setenv("VKLBVH_RESIDENCY", mode, 1);
-#else
-    _putenv_s("VKLBVH_RESIDENCY", mode);
-#endif
+std::vector<Engine::Spatial::ExtractedPoint> runWith(Engine::Spatial::ResidencyMode mode) {
     Engine::Core::Context ctx;
     Engine::Spatial::DirectionalTSDF tsdf;
-    tsdf.Build(ctx);
+    tsdf.Build(ctx, 0.1f, 0.3f, 32768, 1u << 15, 1u << 16, mode);
     std::vector<Eigen::Vector3f> pts, nrm;
     makePlane(pts, nrm);
     tsdf.Integrate(pts, nrm, Eigen::Vector3f(0, 0, 1), Eigen::Vector3f::Zero());
@@ -773,35 +801,35 @@ std::vector<Engine::Spatial::ExtractedPoint> runWith(const char *mode) {
     });
     return pc;
 }
+
+// Build a DirectionalTSDF forcing Unified; false if the device has no UMA heap.
+bool unifiedAvailable() {
+    Engine::Core::Context ctx;
+    try {
+        Engine::Spatial::DirectionalTSDF t;
+        t.Build(ctx, 0.1f, 0.3f, 32768, 1u << 15, 1u << 16,
+                Engine::Spatial::ResidencyMode::Unified);
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
 } // namespace
 
 TEST(ResidencyBackend, CrossBackendReconstructionMatches) {
-    // Requires a UMA device for the "unified" run; skip if unavailable.
-    Engine::Core::Context probe;
-    { // reuse factory's own probe by forcing unified and catching failure
-#ifndef _WIN32
-        setenv("VKLBVH_RESIDENCY", "unified", 1);
-#else
-        _putenv_s("VKLBVH_RESIDENCY", "unified");
-#endif
-        try {
-            Engine::Spatial::DirectionalTSDF t; t.Build(probe);
-        } catch (...) {
-            GTEST_SKIP() << "no UMA heap on this device; cross-backend test needs unified support";
-        }
-    }
+    if (!unifiedAvailable())
+        GTEST_SKIP() << "no UMA heap on this device; cross-backend test needs unified support";
 
-    auto a = runWith("streaming");
-    auto b = runWith("unified");
+    // Explicit modes — no env. (If VKLBVH_RESIDENCY is set it would override; the
+    // FactoryHonorsOverride test clears it, so nothing leaks into this run.)
+    auto a = runWith(Engine::Spatial::ResidencyMode::Streaming);
+    auto b = runWith(Engine::Spatial::ResidencyMode::Unified);
     ASSERT_EQ(a.size(), b.size());
     const float eps = 1e-3f; // ε: positions match to 1 micron at 0.1mm voxel scale
     for (size_t i = 0; i < a.size(); ++i) {
         EXPECT_LT((a[i].position - b[i].position).norm(), eps) << "point " << i;
         EXPECT_LT((a[i].normal - b[i].normal).norm(), eps) << "point " << i;
     }
-#ifndef _WIN32
-    unsetenv("VKLBVH_RESIDENCY");
-#endif
 }
 ```
 
