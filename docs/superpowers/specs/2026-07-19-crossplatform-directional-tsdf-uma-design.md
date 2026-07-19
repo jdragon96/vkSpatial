@@ -232,3 +232,12 @@ config(env/flag)로 강제 override 가능 (UMA에서 Streaming 강제 → cross
 | MoltenVK가 `DEVICE_LOCAL|HOST_VISIBLE` 큰 힙을 기대대로 노출 안 함 | init probe에서 실패 시 StreamingBackend로 폴백(자동 선택이 이미 이 폴백을 포함) |
 | cross-backend ε 불일치(부동소수·atomic 순서) | fixed-point 누적으로 순서 무관성 확보, ε는 정량 threshold로 명문화 |
 | Engine::Core large-N 버그 | 임계 이하에서 먼저 검증, 별도 이슈로 추적(`docs/KNOWN_ISSUES_engine_core_large_n.md`) |
+| **Unified 시딩 경로 미구현** (아래 참고) | 현재 `Build` 기본값 Streaming으로 완전히 gated. `Auto` 기본값 전환 전 반드시 해소 |
+
+## 알려진 제약 (Phase 1~3 구현 후 최종 리뷰에서 확인)
+
+**Unified 백엔드의 host-store 시딩 경로가 Streaming과 갈린다.** `UnifiedResidencyBackend`는 authoritative store가 pool 자체이므로(§4.1), first-touch에서 slot을 **zero-fill**하고 `HostStore()`가 반환하는 placeholder(`m_storeView`)를 읽지 않는다. 반면 `StreamingResidencyBackend`는 `RecordResidency`에서 `m_hostStore.GetOrCreate(key)`로 시딩된 voxel을 업로드한다.
+
+- **영향**: `HostStore().Put(key, group)` → `EnsureResident({key})` → 시딩 값 기대, 이 워크플로우는 **Streaming에서만** 정확하다. 기존 `test_directionalTSDF.cpp`의 여러 테스트가 이 경로를 쓰며, `Build` 기본값이 `ResidencyMode::Streaming`이라 통과한다.
+- **cross-backend 등가 증명의 범위**: `CrossBackendReconstructionMatches`는 **`Integrate` 경로**(GPU가 voxel을 직접 write하므로 시딩 무관)만 커버한다. 시딩 경로의 등가는 증명되지 않았다.
+- **전제 조건**: 향후 계획에서 `Build` 기본값을 `ResidencyMode::Auto`로 뒤집으려면(= UMA 머신에서 자동으로 Unified 선택) 먼저 이 갈림을 해소해야 한다. 선택지: (a) Unified가 first-touch 시 `m_storeView` 내용을 pool로 복사, (b) 시딩 경로에 대한 cross-backend 테스트 추가, (c) Unified `HostStore()`/시딩을 명시적 unsupported로 만들고 `IResidencyBackend::HostStore()` doc 코멘트 수정. 이 항목은 8B fixed-point 통일과 함께 후속 계획으로 이관한다.
