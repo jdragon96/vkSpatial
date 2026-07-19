@@ -2,6 +2,9 @@
 #include <gtest/gtest.h>
 using namespace Engine::Spatial;
 
+#include "Engine/Core/Context.h"
+#include "Engine/Spatial/DirectionalTSDF.h"
+
 TEST(IntegrationQuality, K1MatchesDominantAxis) {
     IntegrationQuality q; // {1,4,false}
     DirWeight out[6];
@@ -41,4 +44,22 @@ TEST(IntegrationQuality, NonDominantTieHonorsXYZOrder) {
     ASSERT_EQ(cnt, 2);
     EXPECT_EQ(out[0].direction, 4u); // +Z dominant
     EXPECT_EQ(out[1].direction, 0u); // +X wins the tie over +Y
+}
+
+TEST(IntegrationQuality, MultiDirectionWritesTwoLayers) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf; tsdf.Build(ctx);
+    IntegrationQuality q; q.maxDirections = 2; tsdf.SetIntegrationQuality(q);
+    // one sample near origin, normal at 45° between +X and +Z
+    std::vector<Eigen::Vector3f> p{Eigen::Vector3f(0, 0, 0)};
+    std::vector<Eigen::Vector3f> n{Eigen::Vector3f(1, 0, 1).normalized()};
+    tsdf.Integrate(p, n, Eigen::Vector3f(0, 0, 5), Eigen::Vector3f::Zero());
+    // the group containing the origin voxel should have nonzero weight in BOTH +X and +Z layers
+    Eigen::Vector3i b = tsdf.LocalBase();
+    // owner group of voxel (0,0,0): g=(0,0,0)
+    auto gx = tsdf.DebugDownloadGroupVoxels({0,0,0,0}); // +X
+    auto gz = tsdf.DebugDownloadGroupVoxels({0,0,0,4}); // +Z
+    auto anyWeighted = [](const auto &grp){ for (auto &v : grp) if (v.weight > 0.0f) return true; return false; };
+    EXPECT_TRUE(anyWeighted(gx)) << "+X layer got no contribution";
+    EXPECT_TRUE(anyWeighted(gz)) << "+Z layer got no contribution";
 }

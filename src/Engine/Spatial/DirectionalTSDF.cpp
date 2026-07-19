@@ -26,6 +26,9 @@ namespace Engine::Spatial {
             float camX;
             float camY;
             float camZ;
+            uint32_t maxDirections;
+            uint32_t dirExponent;
+            uint32_t viewAngleWeight;
         };
 
         struct ExtractPC {
@@ -235,7 +238,9 @@ namespace Engine::Spatial {
             batch.Barrier();
             const Eigen::Vector3i localBase = m_backend->LocalBase();
             IntegratePC ipc{N, m_voxelSize, m_truncation, localBase.x(), localBase.y(),
-                            localBase.z(), cameraPos.x(), cameraPos.y(), cameraPos.z()};
+                            localBase.z(), cameraPos.x(), cameraPos.y(), cameraPos.z(),
+                            m_quality.maxDirections, m_quality.dirExponent,
+                            uint32_t(m_quality.viewAngleWeight ? 1 : 0)};
             m_integrateKernel->Args(ipc);
             batch.DispatchElements(*m_integrateKernel, N);
             batch.Submit();

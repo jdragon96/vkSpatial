@@ -23,6 +23,9 @@ layout(push_constant) uniform PC {
     float g_camX;
     float g_camY;
     float g_camZ;
+    uint  g_maxDirections;
+    uint  g_dirExponent;
+    uint  g_viewAngleWeight;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer Points { PointSample g_points[]; };
@@ -31,11 +34,35 @@ layout(std430, set = 0, binding = 2) buffer Pool { GpuVoxel g_pool[]; };
 layout(std430, set = 0, binding = 3) buffer Meta { ActiveGroupMeta g_meta[]; };
 
 // Must match dominantAxisOf() in DirectionalTSDF.cpp exactly (comparison order + ties).
+// Kept for reference; superseded by topK() below (which reduces to this for K=1).
 uint dominantAxis(vec3 n) {
     vec3 a = abs(n);
     if (a.x >= a.y && a.x >= a.z) return n.x >= 0.0 ? 0u : 1u;
     if (a.y >= a.x && a.y >= a.z) return n.y >= 0.0 ? 2u : 3u;
     return n.z >= 0.0 ? 4u : 5u;
+}
+
+// integer power via repeated multiply (matches CPU ipow exactly)
+float ipow(float x, uint p){ float r=1.0; for(uint i=0u;i<p;i++) r*=x; return r; }
+
+// returns count; fills dirs[]/rel[]. Mirrors TopKDirections() in DirectionalTSDF.cpp.
+int topK(vec3 n, out uint dirs[3], out float rel[3]) {
+    float a[3] = float[](abs(n.x), abs(n.y), abs(n.z));
+    uint  d[3] = uint[]( n.x>=0.0?0u:1u, n.y>=0.0?2u:3u, n.z>=0.0?4u:5u );
+    // STABLE insertion sort desc by a[], preserving x,y,z seed order on ties
+    // (must match TopKDirections in DirectionalTSDF.cpp EXACTLY — shift only on strict <).
+    for(int i=1;i<3;i++){ float ka=a[i]; uint kd=d[i]; int j=i-1;
+        while(j>=0 && a[j]<ka){ a[j+1]=a[j]; d[j+1]=d[j]; j--; }
+        a[j+1]=ka; d[j+1]=kd; }
+    float rmax = ipow(a[0], g_dirExponent);
+    int cnt=0; uint K = g_maxDirections<1u?1u:g_maxDirections;
+    for(int i=0;i<3 && uint(cnt)<K;i++){
+        float rd = ipow(a[i], g_dirExponent);
+        float r = rmax>0.0 ? rd/rmax : 0.0;
+        if(i==0){ dirs[cnt]=d[0]; rel[cnt]=1.0; cnt++; continue; }
+        if(r>=0.05){ dirs[cnt]=d[i]; rel[cnt]=r; cnt++; }
+    }
+    return cnt;
 }
 
 void main() {
@@ -50,7 +77,11 @@ void main() {
     float depth = length(diff);
     if (depth < 1e-6) return;
     vec3 rayDir = diff / depth;
-    uint dir = dominantAxis(vec3(s.nx, s.ny, s.nz));
+
+    vec3 nrm = vec3(s.nx, s.ny, s.nz);
+    uint dirs[3]; float rel[3];
+    int nd = topK(nrm, dirs, rel);
+    float viewFactor = (g_viewAngleWeight != 0u) ? max(0.0, dot(nrm, -rayDir)) : 1.0;
 
     int steps = int(ceil(g_truncation / g_voxelSize)) + 1;
     for (int t = -steps; t <= steps; t++) {
@@ -69,17 +100,19 @@ void main() {
             lx >= LOCAL_GRID || ly >= LOCAL_GRID || lz >= LOCAL_GRID)
             continue;
 
-        uint cell = ((uint(lz) * uint(LOCAL_GRID) + uint(ly)) * uint(LOCAL_GRID) + uint(lx)) * 6u + dir;
-        uint poolIndex = g_indexGrid[cell];
-        if (poolIndex == 0xFFFFFFFFu) continue; // not resident → not in the write set
-
-        ivec3 lv = v & 7;
-        uint voxelIdx = (uint(lv.z) * 8u + uint(lv.y)) * 8u + uint(lv.x);
-        uint addr = poolIndex * 512u + voxelIdx;
-
         float newValue = clamp(sdf / g_truncation, -1.0, 1.0);
-        atomicAdd(g_pool[addr].sumDW, int(newValue * TSDF_SCALE));
-        atomicAdd(g_pool[addr].sumW, uint(TSDF_SCALE));
-        atomicOr(g_meta[poolIndex].packed, 1u << 16); // dirty flag
+
+        for (int di = 0; di < nd; di++) {
+            uint dir = dirs[di];
+            uint cell = (((uint(lz)*uint(LOCAL_GRID)+uint(ly))*uint(LOCAL_GRID)+uint(lx))*6u) + dir;
+            uint poolIndex = g_indexGrid[cell];
+            if (poolIndex == 0xFFFFFFFFu) continue; // not resident → not in the write set
+            ivec3 lv = v & 7;
+            uint addr = poolIndex*512u + (uint(lv.z)*8u+uint(lv.y))*8u+uint(lv.x);
+            float w = viewFactor * rel[di];
+            atomicAdd(g_pool[addr].sumDW, int(newValue * w * TSDF_SCALE));
+            atomicAdd(g_pool[addr].sumW,  uint(w * TSDF_SCALE));
+            atomicOr(g_meta[poolIndex].packed, 1u << 16);
+        }
     }
 }
