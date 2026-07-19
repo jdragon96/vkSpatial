@@ -63,3 +63,31 @@ TEST(IntegrationQuality, MultiDirectionWritesTwoLayers) {
     EXPECT_TRUE(anyWeighted(gx)) << "+X layer got no contribution";
     EXPECT_TRUE(anyWeighted(gz)) << "+Z layer got no contribution";
 }
+
+// Two surfaces at the same voxel neighbourhood, normals 90° apart, must remain
+// distinct points (never blurred into one averaged normal). NOTE: the brief's original
+// sample set was two 1D lines of 9 points each; that under-samples the GPU marching
+// extraction (directional_tsdf_extract.comp requires an axis-adjacent sign crossing
+// within a single direction layer, built up from overlapping ray writes) and yields
+// ZERO raw candidates regardless of the merge logic, so it can't exercise this guard.
+// Widened to small 2D patches (matching the density existing extraction tests use,
+// e.g. makePlane) so real candidates reach mergeCandidates.
+TEST(IntegrationQuality, StrongSplitKeepsPerpendicularSurfaces) {
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf; tsdf.Build(ctx);
+    IntegrationQuality q; q.maxDirections = 2; tsdf.SetIntegrationQuality(q);
+    // a thin corner: +X-facing and +Z-facing patches meeting near a shared voxel
+    std::vector<Eigen::Vector3f> p, n;
+    for (int i = -4; i <= 4; ++i)
+        for (int j = -4; j <= 4; ++j) { p.emplace_back(j*0.05f, i*0.05f, 0.02f); n.emplace_back(0,0,1); }
+    for (int i = -4; i <= 4; ++i)
+        for (int j = -4; j <= 4; ++j) { p.emplace_back(0.02f, i*0.05f, j*0.05f); n.emplace_back(1,0,0); }
+    tsdf.Integrate(p, n, Eigen::Vector3f(1,0,1), Eigen::Vector3f::Zero());
+    // expect points carrying BOTH a +Z-ish and +X-ish normal to survive (not merged into one blurred normal)
+    bool hasZ=false, hasX=false;
+    for (auto &pt : tsdf.PointCloud()) {
+        if (pt.normal.z() > 0.7f) hasZ = true;
+        if (pt.normal.x() > 0.7f) hasX = true;
+    }
+    EXPECT_TRUE(hasZ && hasX) << "perpendicular surfaces were merged into a blurred normal";
+}

@@ -343,6 +343,7 @@ namespace Engine::Spatial {
         };
         const float posThresh = 0.6f * m_voxelSize; // positionMergeThreshold (§15)
         const float cosThresh = 0.866f;             // normalMergeThreshold = 30° (§15)
+        const float strongSplitCos = 0.5f;          // 60° — never merge beyond this (§7)
 
         std::unordered_map<uint64_t, std::vector<Cluster>> buckets;
         for (const auto &c : candidates) {
@@ -356,6 +357,7 @@ namespace Engine::Spatial {
             for (auto &cl : clusters) {
                 const Eigen::Vector3f mean = cl.posSum / float(cl.count);
                 const Eigen::Vector3f meanN = cl.nSum.normalized();
+                if (nrm.dot(meanN) < strongSplitCos) continue; // strong split: cannot merge (§7)
                 if ((pos - mean).norm() < posThresh && nrm.dot(meanN) > cosThresh) {
                     cl.posSum += pos;
                     cl.nSum += nrm;
