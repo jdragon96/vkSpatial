@@ -130,7 +130,10 @@ std::vector<Engine::Spatial::ExtractedPoint> runWith(Engine::Spatial::ResidencyM
     std::sort(pc.begin(), pc.end(), [](auto &a, auto &b) {
         if (a.position.x() != b.position.x()) return a.position.x() < b.position.x();
         if (a.position.y() != b.position.y()) return a.position.y() < b.position.y();
-        return a.position.z() < b.position.z();
+        if (a.position.z() != b.position.z()) return a.position.z() < b.position.z();
+        if (a.normal.x() != b.normal.x()) return a.normal.x() < b.normal.x();
+        if (a.normal.y() != b.normal.y()) return a.normal.y() < b.normal.y();
+        return a.normal.z() < b.normal.z();
     });
     return pc;
 }
@@ -157,6 +160,7 @@ TEST(ResidencyBackend, CrossBackendReconstructionMatches) {
     // FactoryHonorsOverride test clears it, so nothing leaks into this run.)
     auto a = runWith(Engine::Spatial::ResidencyMode::Streaming);
     auto b = runWith(Engine::Spatial::ResidencyMode::Unified);
+    ASSERT_GT(a.size(), 0u) << "extraction produced no points — cross-backend test would false-green";
     ASSERT_EQ(a.size(), b.size());
     const float eps = 1e-3f; // ε: positions match to 1 micron at 0.1mm voxel scale
     for (size_t i = 0; i < a.size(); ++i) {
