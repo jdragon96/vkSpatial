@@ -104,3 +104,63 @@ TEST(ResidencyBackend, FactoryHonorsOverride) {
     unsetenv("VKLBVH_RESIDENCY");
 #endif
 }
+
+#include "Engine/Spatial/DirectionalTSDF.h"
+#include <algorithm>
+
+namespace {
+// Small synthetic frame: a planar patch of samples with +Z normals near the origin.
+void makePlane(std::vector<Eigen::Vector3f> &pts, std::vector<Eigen::Vector3f> &nrm) {
+    pts.clear(); nrm.clear();
+    for (int i = -8; i <= 8; ++i)
+        for (int j = -8; j <= 8; ++j) {
+            pts.emplace_back(i * 0.05f, j * 0.05f, 0.0f);
+            nrm.emplace_back(0.0f, 0.0f, 1.0f);
+        }
+}
+
+std::vector<Engine::Spatial::ExtractedPoint> runWith(Engine::Spatial::ResidencyMode mode) {
+    Engine::Core::Context ctx;
+    Engine::Spatial::DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 32768, 1u << 15, 1u << 16, mode);
+    std::vector<Eigen::Vector3f> pts, nrm;
+    makePlane(pts, nrm);
+    tsdf.Integrate(pts, nrm, Eigen::Vector3f(0, 0, 1), Eigen::Vector3f::Zero());
+    auto pc = tsdf.PointCloud();
+    std::sort(pc.begin(), pc.end(), [](auto &a, auto &b) {
+        if (a.position.x() != b.position.x()) return a.position.x() < b.position.x();
+        if (a.position.y() != b.position.y()) return a.position.y() < b.position.y();
+        return a.position.z() < b.position.z();
+    });
+    return pc;
+}
+
+// Build a DirectionalTSDF forcing Unified; false if the device has no UMA heap.
+bool unifiedAvailable() {
+    Engine::Core::Context ctx;
+    try {
+        Engine::Spatial::DirectionalTSDF t;
+        t.Build(ctx, 0.1f, 0.3f, 32768, 1u << 15, 1u << 16,
+                Engine::Spatial::ResidencyMode::Unified);
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+TEST(ResidencyBackend, CrossBackendReconstructionMatches) {
+    if (!unifiedAvailable())
+        GTEST_SKIP() << "no UMA heap on this device; cross-backend test needs unified support";
+
+    // Explicit modes — no env. (If VKLBVH_RESIDENCY is set it would override; the
+    // FactoryHonorsOverride test clears it, so nothing leaks into this run.)
+    auto a = runWith(Engine::Spatial::ResidencyMode::Streaming);
+    auto b = runWith(Engine::Spatial::ResidencyMode::Unified);
+    ASSERT_EQ(a.size(), b.size());
+    const float eps = 1e-3f; // ε: positions match to 1 micron at 0.1mm voxel scale
+    for (size_t i = 0; i < a.size(); ++i) {
+        EXPECT_LT((a[i].position - b[i].position).norm(), eps) << "point " << i;
+        EXPECT_LT((a[i].normal - b[i].normal).norm(), eps) << "point " << i;
+    }
+}
