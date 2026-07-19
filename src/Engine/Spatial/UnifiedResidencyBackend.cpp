@@ -6,7 +6,7 @@
 namespace Engine::Spatial {
 
     UnifiedResidencyBackend::MappedBuffer
-    UnifiedResidencyBackend::allocCoherent(uint32_t bytes, VkBufferUsageFlags usage) {
+    UnifiedResidencyBackend::allocCoherent(VkDeviceSize bytes, VkBufferUsageFlags usage) {
         VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bi.size = bytes;
         bi.usage = usage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -50,9 +50,10 @@ namespace Engine::Spatial {
     void UnifiedResidencyBackend::Build(Engine::Core::Context &ctx, uint32_t initialCapacity) {
         m_ctx = &ctx;
         m_capacity = initialCapacity;
-        m_pool = allocCoherent(uint32_t(sizeof(GpuTsdfVoxel)) * kVoxelsPerGroup * m_capacity, 0);
-        m_indexGrid = allocCoherent(uint32_t(sizeof(uint32_t)) * kIndexGridCells, 0);
-        m_meta = allocCoherent(uint32_t(sizeof(ActiveGroupMeta)) * m_capacity, 0);
+        m_pool = allocCoherent(VkDeviceSize(sizeof(GpuTsdfVoxel)) * kVoxelsPerGroup * m_capacity, 0);
+        m_indexGrid = allocCoherent(VkDeviceSize(sizeof(uint32_t)) * kIndexGridCells, 0);
+        std::memset(m_indexGrid.mapped, 0xFF, size_t(sizeof(uint32_t)) * kIndexGridCells);
+        m_meta = allocCoherent(VkDeviceSize(sizeof(ActiveGroupMeta)) * m_capacity, 0);
     }
 
     uint32_t UnifiedResidencyBackend::offsetOf(const Eigen::Vector3i &g, uint8_t dir) const {

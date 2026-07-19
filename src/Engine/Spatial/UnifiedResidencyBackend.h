@@ -53,7 +53,7 @@ namespace Engine::Spatial {
             void *mapped = nullptr;
             bool coherent = true; // actual HOST_COHERENT-ness of the backing memory (queried in Build)
         };
-        MappedBuffer allocCoherent(uint32_t bytes, VkBufferUsageFlags usage);
+        MappedBuffer allocCoherent(VkDeviceSize bytes, VkBufferUsageFlags usage);
         void freeBuffer(MappedBuffer &b);
         // Make CPU writes through `b.mapped` visible to the GPU before a queue submit. On
         // HOST_COHERENT memory (the M4 Max UMA case) the submit's implicit host-write
