@@ -836,12 +836,23 @@ git commit -m "feat(spatial): auto-select residency backend + ResidencyMode on D
 ## Task 6: Cross-backend correctness test (the abstraction contract)
 
 **Files:**
+- Modify: `src/Engine/Spatial/UnifiedResidencyBackend.h`/`.cpp` (Step 0 hardening — this is the first task where Unified drives a real GPU integrate/extract)
 - Test: `test/test_residencyBackend.cpp` (append)
 
 **Interfaces:**
 - Consumes: `DirectionalTSDF::Build(..., ResidencyMode)` (Task 5) — selects the backend explicitly, no env needed.
 
 **Contract:** For identical input and parameters, the reconstruction is identical (within ε) whichever backend is used. This is what proves the residency abstraction is sound.
+
+- [ ] **Step 0: Harden `UnifiedResidencyBackend` for real GPU use (Task 4 review carry-forward)**
+
+Until now the Unified backend was only exercised by CPU-side slot bookkeeping. This task is the first time the GPU integrate/extract kernels read its coherent buffers, so make GPU-visibility of the CPU writes explicit and correct:
+
+1. **Coherency guarantee.** The pool/indexGrid/meta are written through the mapped pointer on the CPU and read by compute shaders on the GPU. On the M4 Max all host-visible memory is `HOST_COHERENT`, so a queue submit's implicit host-write-visibility covers it — but `VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT` *prefers* `HOST_CACHED`, which on some UMA devices is host-visible-but-not-coherent, and `vmaCreateBuffer` would still succeed there. Make it robust: after `Build`'s allocations, query the actual memory property flags with `vmaGetAllocationMemoryProperties(m_ctx->allocator, alloc, &flags)` for each of `m_pool`/`m_indexGrid`/`m_meta`, store per-buffer whether `flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT`, and add a private `void flushIfNeeded(const MappedBuffer&)` that calls `vmaFlushAllocation(m_ctx->allocator, b.alloc, 0, VK_WHOLE_SIZE)` when the buffer is NOT coherent (a no-op cost on coherent memory, so calling it always is also acceptable and simpler — prefer always-flush for simplicity). Call the flush at the end of `BeginFrame` (after the indexGrid/meta relabel) and at the end of `EnsureResident`/`RecordResidency` (after pool/indexGrid/meta writes), so all CPU writes are flushed before `DirectionalTSDF::Integrate` submits the kernels.
+
+2. **`residentCount` parity.** In `EnsureResident` (and therefore `RecordResidency`, which calls it), increment `m_stats.residentCount` for each key made resident this frame, matching `StreamingResidencyBackend`'s behavior. Stats-only; no test asserts it for Unified, but it keeps `DirectionalTSDF::Stats` meaningful under a Unified backend.
+
+Rebuild and re-run the existing gate to confirm no regression: `cmake --build build --parallel --target vkspatial_tests && ./build/test/vkspatial_tests --gtest_filter='ResidencyBackend.*'` (the existing `UnifiedKeepsGroupsResidentZeroCopy` must still pass). Commit this hardening separately: `git add src/Engine/Spatial/UnifiedResidencyBackend.h src/Engine/Spatial/UnifiedResidencyBackend.cpp && git commit -m "fix(spatial): flush Unified coherent writes + residentCount parity before GPU use"`.
 
 - [ ] **Step 1: Write the test** — run the same synthetic integration through both backends and compare point clouds
 
