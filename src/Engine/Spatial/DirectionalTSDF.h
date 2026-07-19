@@ -16,14 +16,6 @@
 
 namespace Engine::Spatial {
 
-    // Forward declaration only: DirectionalTSDF hardcodes StreamingResidencyBackend as its
-    // residency backend in Phase 1 (Task 5 introduces MakeResidencyBackend/ResidencyMode
-    // selection). m_streaming is a non-owning alias to the same object as m_backend, used
-    // only for the Phase 5 combined-batch residency recording in Integrate() and for
-    // gpuSubmits/classify-count bookkeeping that ResidencyStats doesn't carry — see
-    // DirectionalTSDF.cpp for details. The full type is only needed there.
-    class StreamingResidencyBackend;
-
     // Directional TSDF with a host/GPU streaming cache
     // (docs/superpowers/specs/2026-07-17-directional-tsdf-design.md).
     //
@@ -113,7 +105,6 @@ namespace Engine::Spatial {
         float m_truncation = 0.3f;
 
         std::unique_ptr<IResidencyBackend> m_backend;
-        StreamingResidencyBackend *m_streaming = nullptr; // non-owning alias; see DirectionalTSDF.cpp
 
         std::unique_ptr<Engine::Core::Buffer> m_pointBuffer;      // PointSample[maxPoints]
         std::unique_ptr<Engine::Core::Buffer> m_candidateBuffer;  // DirectionalCandidate[maxCandidates]

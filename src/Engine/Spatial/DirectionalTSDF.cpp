@@ -115,7 +115,6 @@ namespace Engine::Spatial {
         m_stats = {};
         m_lastCounts = {};
 
-        m_streaming = be.get();
         m_backend = std::move(be);
     }
 
@@ -132,11 +131,11 @@ namespace Engine::Spatial {
         m_stats.h2dBytes = fs.h2dBytes;
         m_stats.d2hBytes = fs.d2hBytes;
         m_stats.overlapRatio = fs.overlapRatio;
-        m_stats.gpuSubmits = m_streaming->GpuSubmits();
+        m_stats.gpuSubmits = fs.gpuSubmits;
 
-        m_lastCounts.reusable = m_streaming->LastReusableCount();
-        m_lastCounts.cleanFree = m_streaming->LastCleanFreeCount();
-        m_lastCounts.writeBack = m_streaming->LastWriteBackCount();
+        m_lastCounts.reusable = fs.reusableCount;
+        m_lastCounts.cleanFree = fs.cleanFreeCount;
+        m_lastCounts.writeBack = fs.writeBackCount;
     }
 
     void DirectionalTSDF::EnsureResident(const std::vector<DirectionalGroupKey> &required) {
@@ -150,7 +149,7 @@ namespace Engine::Spatial {
         m_stats.missingCount = fs.missingCount;
         m_stats.h2dBytes = fs.h2dBytes;
         m_stats.overlapRatio = fs.overlapRatio;
-        m_stats.gpuSubmits = m_streaming->GpuSubmits();
+        m_stats.gpuSubmits = fs.gpuSubmits;
     }
 
     void DirectionalTSDF::Integrate(const std::vector<Eigen::Vector3f> &points,
@@ -221,13 +220,14 @@ namespace Engine::Spatial {
         }
 
         // Batch 2: residency (upload missing + combined register) + point upload + integrate.
-        // recordResidency is folded into this SAME batch (rather than going through
+        // RecordResidency is folded into this SAME batch (rather than going through
         // IResidencyBackend::EnsureResident, which owns its own batch/submit) to preserve
-        // the pre-refactor submit count (Phase 5 batching metric) — see the "Phase 1
-        // extensions" note in StreamingResidencyBackend.h.
+        // the pre-refactor submit count (Phase 5 batching metric). RecordResidency updates
+        // FrameStats().overlapRatio internally (backend-side), so the core just re-reads
+        // FrameStats() below — it never calls into backend overlap-ratio bookkeeping directly.
         {
             Engine::Compute::CommandBatch batch(*m_ctx);
-            m_streaming->recordResidency(required, batch);
+            m_backend->RecordResidency(required, batch);
             std::vector<VkBufferCopy> ptRegion(1);
             ptRegion[0] = {0, 0, VkDeviceSize(N) * 6u * sizeof(float)};
             batch.CopyBuffer(m_stagePoints->Handle(), m_pointBuffer->Handle(), ptRegion);
@@ -240,7 +240,6 @@ namespace Engine::Spatial {
             batch.Submit();
             ++m_stats.gpuSubmits;
         }
-        m_streaming->updateOverlapRatio();
         {
             const ResidencyStats fs = m_backend->FrameStats();
             m_stats.residentCount = fs.residentCount;
@@ -259,7 +258,7 @@ namespace Engine::Spatial {
             recomputeSpatial.insert(spatialKey(k.gx, k.gy, k.gz));
 
         std::vector<uint32_t> groupSlots;
-        for (const auto &entry : m_streaming->ResidentIndex())
+        for (const auto &entry : m_backend->ResidentIndex())
             if (recomputeSpatial.count(
                         spatialKey(entry.first.gx, entry.first.gy, entry.first.gz)) > 0)
                 groupSlots.push_back(entry.second);

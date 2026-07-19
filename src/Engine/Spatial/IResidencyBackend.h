@@ -1,11 +1,13 @@
 #pragma once
 
+#include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/DirectionalHostStore.h"
 #include "Engine/Spatial/DirectionalTSDFTypes.h"
 
 #include <Eigen/Core>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.h>
 
@@ -19,6 +21,9 @@ namespace Engine::Spatial {
         uint32_t h2dBytes = 0;
         uint32_t d2hBytes = 0;
         float overlapRatio = 0.0f;
+        uint32_t reusableCount = 0;   // classify: resident & inside new window
+        uint32_t cleanFreeCount = 0;  // classify: free or clean-evicted slots
+        uint32_t gpuSubmits = 0;      // queue submissions the backend made this frame
     };
 
     // Abstracts "where a directional group lives and how it becomes device-addressable".
@@ -34,6 +39,15 @@ namespace Engine::Spatial {
         virtual void EnsureResident(const std::vector<DirectionalGroupKey> &required) = 0;
         // End-of-frame cleanup. Streaming: dirty write-back + eviction. Unified: no-op (or cold compact).
         virtual void EndFrame() = 0;
+
+        // Fold this frame's residency work into an existing command batch (Phase-5 batched path).
+        // Streaming: stage missing groups + record copies/register into `batch`; returns slots recorded.
+        // Unified: CPU slot bookkeeping only, records nothing to `batch`; returns slots touched.
+        virtual uint32_t RecordResidency(const std::vector<DirectionalGroupKey> &required,
+                                         Engine::Compute::CommandBatch &batch) = 0;
+        // Enumerate resident (key -> pool slot) so the core can pick recompute slots for extraction.
+        virtual const std::unordered_map<DirectionalGroupKey, uint32_t, DirectionalGroupKeyHash> &
+        ResidentIndex() const = 0;
 
         // GPU buffers the integrate/extract kernels bind (owned by the backend).
         virtual VkBuffer IndexGridBuffer() const = 0;

@@ -89,10 +89,6 @@ namespace Engine::Spatial {
         m_freeSlots.clear();
         m_requiredThisFrame.clear();
         m_stats = {};
-        m_gpuSubmits = 0;
-        m_lastReusable = 0;
-        m_lastCleanFree = 0;
-        m_lastWriteBack = 0;
 
         fillIndexGridInvalid();
     }
@@ -103,7 +99,6 @@ namespace Engine::Spatial {
 
         m_localBase = localBase;
         m_stats = {};
-        m_gpuSubmits = 0;
         m_requiredThisFrame.clear();
 
         // Batch 1: reset indexGrid + counts → classify → copy counts + reusable + cleanFree
@@ -127,14 +122,13 @@ namespace Engine::Spatial {
             batch.CopyBuffer(m_reusableList->Handle(), m_stageLists->Handle(), listRegion);
             batch.CopyBuffer(m_cleanFreeList->Handle(), m_stageCleanFree->Handle(), listRegion);
             batch.Submit();
-            ++m_gpuSubmits;
+            ++m_stats.gpuSubmits;
         }
 
         uint32_t counts[3];
         std::memcpy(counts, m_stageCounts->Mapped(), sizeof(counts));
-        m_lastReusable = counts[0];
-        m_lastCleanFree = counts[1];
-        m_lastWriteBack = counts[2];
+        m_stats.reusableCount = counts[0];
+        m_stats.cleanFreeCount = counts[1];
 
         std::vector<uint32_t> reusable(counts[0]);
         if (counts[0] > 0)
@@ -157,7 +151,7 @@ namespace Engine::Spatial {
                 Engine::Compute::CommandBatch batch(*m_ctx);
                 batch.CopyBuffer(m_writeBackList->Handle(), m_stageLists->Handle(), listRegion);
                 batch.Submit();
-                ++m_gpuSubmits;
+                ++m_stats.gpuSubmits;
             }
             std::memcpy(writeBack.data(), m_stageLists->Mapped(), counts[2] * sizeof(uint32_t));
 
@@ -179,7 +173,7 @@ namespace Engine::Spatial {
                 batch.CopyBuffer(m_poolVoxels->Handle(), m_stageGroups->Handle(), voxRegions);
                 batch.CopyBuffer(m_stageMeta->Handle(), m_metaBuffer->Handle(), metaRegions);
                 batch.Submit();
-                ++m_gpuSubmits;
+                ++m_stats.gpuSubmits;
 
                 const auto *raw = static_cast<const GpuTsdfVoxel *>(m_stageGroups->Mapped());
                 for (uint32_t i = 0; i < chunk; ++i) {
@@ -198,7 +192,7 @@ namespace Engine::Spatial {
         }
 
         // Reusable slots are re-registered into the indexGrid inside the EnsureResident /
-        // Integrate batch (recordResidency), together with the missing slots, so the
+        // Integrate batch (RecordResidency), together with the missing slots, so the
         // register dispatch runs once. Missing detection uses the CPU mirror below, not the
         // GPU indexGrid — invariant #6 holds at the mirror level.
         m_residentIndex.clear();
@@ -208,7 +202,7 @@ namespace Engine::Spatial {
         m_reusableSlots.assign(reusable.begin(), reusable.end());
     }
 
-    uint32_t StreamingResidencyBackend::recordResidency(const std::vector<DirectionalGroupKey> &required,
+    uint32_t StreamingResidencyBackend::RecordResidency(const std::vector<DirectionalGroupKey> &required,
                                                         Engine::Compute::CommandBatch &batch) {
         struct Pending {
             DirectionalGroupKey key;
@@ -284,6 +278,12 @@ namespace Engine::Spatial {
             m_registerKernel->Args(rpc).Bind(0, *m_slotListBuffer);
             batch.DispatchElements(*m_registerKernel, regCount);
         }
+        // Overlap ratio depends only on m_requiredThisFrame/m_stats.missingCount, both
+        // finalized above; computing it here (rather than requiring a separate external
+        // call) keeps FrameStats().overlapRatio correct for every RecordResidency caller,
+        // including DirectionalTSDF::Integrate's combined batch which never calls
+        // EnsureResident().
+        updateOverlapRatio();
         return regCount;
     }
 
@@ -291,17 +291,16 @@ namespace Engine::Spatial {
         if (!m_ctx)
             throw std::runtime_error("StreamingResidencyBackend: Build() must be called first");
         Engine::Compute::CommandBatch batch(*m_ctx);
-        const uint32_t reg = recordResidency(required, batch);
+        const uint32_t reg = RecordResidency(required, batch);
         if (reg > 0) {
             batch.Submit();
-            ++m_gpuSubmits;
+            ++m_stats.gpuSubmits;
         }
-        updateOverlapRatio();
     }
 
     void StreamingResidencyBackend::EndFrame() {
         // Write-back is already folded into BeginFrame's classify pass (this repo's Phase 4
-        // dirty write-back/eviction, done up front on window shift) — see recordResidency
+        // dirty write-back/eviction, done up front on window shift) — see RecordResidency
         // and the write-back block in BeginFrame. Nothing left to do at end-of-frame.
     }
 

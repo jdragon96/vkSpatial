@@ -29,6 +29,14 @@ namespace Engine::Spatial {
         void EnsureResident(const std::vector<DirectionalGroupKey> &required) override;
         void EndFrame() override;
 
+        // Stages missing groups into persistent staging and records upload copies +
+        // combined (reusable + missing) register dispatch into `batch`. Does NOT submit.
+        // Returns the number of slots registered.
+        uint32_t RecordResidency(const std::vector<DirectionalGroupKey> &required,
+                                 Engine::Compute::CommandBatch &batch) override;
+        const std::unordered_map<DirectionalGroupKey, uint32_t, DirectionalGroupKeyHash> &
+        ResidentIndex() const override { return m_residentIndex; }
+
         VkBuffer IndexGridBuffer() const override { return m_indexGrid->Handle(); }
         VkBuffer PoolVoxelBuffer() const override { return m_poolVoxels->Handle(); }
         VkBuffer MetaBuffer() const override { return m_metaBuffer->Handle(); }
@@ -42,35 +50,13 @@ namespace Engine::Spatial {
         uint32_t DebugQueryPoolIndex(const DirectionalGroupKey &key) override;
         DirectionalHostStore::Group DebugDownloadGroupVoxels(const DirectionalGroupKey &key) override;
 
-        // --- Phase 1 extensions (not part of IResidencyBackend) ---
-        // DirectionalTSDF::Integrate folds residency recording into the SAME CommandBatch
-        // as the point-upload + integrate dispatch (Phase 5 batching optimization that
-        // predates this refactor); IResidencyBackend::EnsureResident owns its own batch and
-        // submit, so it can't be reused for that combined path. DirectionalTSDF hardcodes
-        // this concrete type in Task 3 and calls these directly. Revisit if/when a
-        // batching-aware interface method is worth adding (Task 5+).
-        //
-        // Stages missing groups into persistent staging and records upload copies +
-        // combined (reusable + missing) register dispatch into `batch`. Does NOT submit.
-        // Returns the number of slots registered.
-        uint32_t recordResidency(const std::vector<DirectionalGroupKey> &required,
-                                 Engine::Compute::CommandBatch &batch);
+    private:
+        // Recomputes m_stats.overlapRatio from the required/missing counts accumulated by
+        // RecordResidency this frame. Called internally at the end of RecordResidency (and
+        // by EnsureResident, which calls RecordResidency); not part of IResidencyBackend —
+        // the core reads the result via FrameStats().overlapRatio only.
         void updateOverlapRatio();
 
-        // gpuSubmits/classify-pass counts aren't part of ResidencyStats (Task 1 interface);
-        // DirectionalTSDF reads them here to reconstruct its own Stats/ClassifyCounts.
-        uint32_t GpuSubmits() const { return m_gpuSubmits; }
-        uint32_t LastReusableCount() const { return m_lastReusable; }
-        uint32_t LastCleanFreeCount() const { return m_lastCleanFree; }
-        uint32_t LastWriteBackCount() const { return m_lastWriteBack; }
-
-        // CPU mirror of slot occupancy (key -> pool slot) for every group resident this
-        // frame. DirectionalTSDF::Integrate walks this to find the pool slots overlapping
-        // the recompute mask for extraction; IResidencyBackend has no iteration accessor.
-        const std::unordered_map<DirectionalGroupKey, uint32_t, DirectionalGroupKeyHash> &
-        ResidentIndex() const { return m_residentIndex; }
-
-    private:
         Engine::Core::Context *m_ctx = nullptr;
         uint32_t m_poolCapacity = 0;
 
@@ -105,10 +91,6 @@ namespace Engine::Spatial {
         std::unordered_set<DirectionalGroupKey, DirectionalGroupKeyHash> m_requiredThisFrame;
 
         ResidencyStats m_stats;
-        uint32_t m_gpuSubmits = 0;
-        uint32_t m_lastReusable = 0;
-        uint32_t m_lastCleanFree = 0;
-        uint32_t m_lastWriteBack = 0;
 
         void fillIndexGridInvalid();
     };
