@@ -7,15 +7,22 @@
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/DirectionalHostStore.h"
 #include "Engine/Spatial/DirectionalTSDFTypes.h"
+#include "Engine/Spatial/IResidencyBackend.h"
 
 #include <Eigen/Core>
 #include <memory>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace Engine::Spatial {
+
+    // Forward declaration only: DirectionalTSDF hardcodes StreamingResidencyBackend as its
+    // residency backend in Phase 1 (Task 5 introduces MakeResidencyBackend/ResidencyMode
+    // selection). m_streaming is a non-owning alias to the same object as m_backend, used
+    // only for the Phase 5 combined-batch residency recording in Integrate() and for
+    // gpuSubmits/classify-count bookkeeping that ResidencyStats doesn't carry — see
+    // DirectionalTSDF.cpp for details. The full type is only needed there.
+    class StreamingResidencyBackend;
 
     // Directional TSDF with a host/GPU streaming cache
     // (docs/superpowers/specs/2026-07-17-directional-tsdf-design.md).
@@ -25,6 +32,10 @@ namespace Engine::Spatial {
     // into the indexGrid, and EnsureResident uploads only genuinely missing groups using
     // CleanFreeList slots. Integration/extraction (Phase 3) and dirty write-back (Phase 4)
     // come later; WriteBackList is produced but not yet consumed.
+    //
+    // Residency (where a group lives / how it becomes device-addressable) is delegated to
+    // an IResidencyBackend (see IResidencyBackend.h); this class owns only the TSDF
+    // algorithm (integrate/extract/merge) and binds its kernels to the backend's buffers.
     class DirectionalTSDF {
     public:
         struct Stats {
@@ -78,44 +89,41 @@ namespace Engine::Spatial {
         const std::vector<ExtractedPoint> &PointCloud() const { return m_pointCloud; }
         void ExportPointCloud(const std::string &path) const; // ASCII PLY with normals
 
-        DirectionalHostStore &HostStore() { return m_hostStore; }
-        Eigen::Vector3i LocalBase() const { return m_localBase; }
+        DirectionalHostStore &HostStore() { return m_backend->HostStore(); }
+        Eigen::Vector3i LocalBase() const { return m_backend->LocalBase(); }
         float VoxelSize() const { return m_voxelSize; }
         float Truncation() const { return m_truncation; }
         float GroupWorldSize() const { return m_voxelSize * float(kGroupDim); }
-        uint32_t PoolCapacity() const { return m_poolCapacity; }
+        uint32_t PoolCapacity() const { return m_backend->PoolCapacity(); }
         Stats LastFrameStats() const { return m_stats; }
 
         // Result of the most recent BeginFrame classification (test/debug).
         ClassifyCounts DebugLastClassifyCounts() const { return m_lastCounts; }
 
         // Test/debug helpers — synchronous GPU downloads, not for per-frame use.
-        std::vector<uint32_t> DebugDownloadIndexGrid();
-        uint32_t DebugQueryPoolIndex(const DirectionalGroupKey &key);
-        DirectionalHostStore::Group DebugDownloadGroupVoxels(const DirectionalGroupKey &key);
+        std::vector<uint32_t> DebugDownloadIndexGrid() { return m_backend->DebugDownloadIndexGrid(); }
+        uint32_t DebugQueryPoolIndex(const DirectionalGroupKey &key) { return m_backend->DebugQueryPoolIndex(key); }
+        DirectionalHostStore::Group DebugDownloadGroupVoxels(const DirectionalGroupKey &key) {
+            return m_backend->DebugDownloadGroupVoxels(key);
+        }
 
     private:
         Engine::Core::Context *m_ctx = nullptr;
         float m_voxelSize = 0.1f;
         float m_truncation = 0.3f;
-        uint32_t m_poolCapacity = 0;
 
-        DirectionalHostStore m_hostStore;
-        Eigen::Vector3i m_localBase = Eigen::Vector3i::Zero();
+        std::unique_ptr<IResidencyBackend> m_backend;
+        StreamingResidencyBackend *m_streaming = nullptr; // non-owning alias; see DirectionalTSDF.cpp
 
-        std::unique_ptr<Engine::Core::Buffer> m_indexGrid;      // uint32[kIndexGridCells]
-        std::unique_ptr<Engine::Core::Buffer> m_poolVoxels;     // GpuTsdfVoxel[poolCapacity*512]
-        std::unique_ptr<Engine::Core::Buffer> m_metaBuffer;     // ActiveGroupMeta[poolCapacity]
-        std::unique_ptr<Engine::Core::Buffer> m_slotListBuffer; // uint32[poolCapacity]
-        std::unique_ptr<Engine::Core::Buffer> m_reusableList;   // uint32[poolCapacity]
-        std::unique_ptr<Engine::Core::Buffer> m_cleanFreeList;  // uint32[poolCapacity]
-        std::unique_ptr<Engine::Core::Buffer> m_writeBackList;  // uint32[poolCapacity]
-        std::unique_ptr<Engine::Core::Buffer> m_countsBuffer;   // uint32[3]
         std::unique_ptr<Engine::Core::Buffer> m_pointBuffer;      // PointSample[maxPoints]
         std::unique_ptr<Engine::Core::Buffer> m_candidateBuffer;  // DirectionalCandidate[maxCandidates]
         std::unique_ptr<Engine::Core::Buffer> m_candidateCounter; // uint32
-        std::unique_ptr<Engine::Core::ComputePipeline> m_registerKernel;
-        std::unique_ptr<Engine::Core::ComputePipeline> m_classifyKernel;
+        // Recompute-group slot list bound to the extract kernel. Kept on the core side
+        // (rather than reusing the backend's internal register-list buffer) because
+        // IResidencyBackend only exposes indexGrid/poolVoxels/meta, not a scratch slot-list
+        // buffer; the two lists are populated at different points in the frame and never
+        // conflict, so this is a plain size-for-size split of the old shared buffer.
+        std::unique_ptr<Engine::Core::Buffer> m_groupSlotListBuffer; // uint32[poolCapacity]
         std::unique_ptr<Engine::Core::ComputePipeline> m_integrateKernel;
         std::unique_ptr<Engine::Core::ComputePipeline> m_extractKernel;
         uint32_t m_maxPoints = 0;
@@ -124,36 +132,17 @@ namespace Engine::Spatial {
 
         // Persistent host-visible staging (Phase 5): allocated once in Build, reused every
         // frame to back batched copies instead of per-call transient staging.
-        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageCounts;      // DST, 3*u32
-        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageLists;       // DST, poolCapacity*u32 (reusable/writeBack)
-        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageCleanFree;   // DST, poolCapacity*u32
-        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageGroups;      // SRC|DST, kStageGroupCap*groupBytes
-        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageMeta;        // SRC|DST, poolCapacity*sizeof(ActiveGroupMeta)
-        std::unique_ptr<Engine::Compute::StagingBuffer> m_stagePoints;      // SRC, maxPoints*6*f32
-        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageSlotList;    // SRC, poolCapacity*u32
-        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageCandidates;  // DST, maxCandidates*sizeof(DirectionalCandidate)
-        std::vector<uint32_t> m_reusableSlots; // reusable pool slots downloaded in BeginFrame
-
-        // CPU mirror of slot occupancy: which key each slot currently holds.
-        std::unordered_map<DirectionalGroupKey, uint32_t, DirectionalGroupKeyHash> m_residentIndex;
-        std::vector<DirectionalGroupKey> m_slotKeys;
-        std::vector<uint32_t> m_freeSlots; // rebuilt from CleanFreeList every BeginFrame
-        std::unordered_set<DirectionalGroupKey, DirectionalGroupKeyHash> m_requiredThisFrame;
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stagePoints;         // SRC, maxPoints*6*f32
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageCandidates;     // DST, maxCandidates*sizeof(DirectionalCandidate)
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageGroupSlotList;  // SRC, poolCapacity*u32
+        std::unique_ptr<Engine::Compute::StagingBuffer> m_stageCandidateCount; // DST, sizeof(uint32_t)
 
         Stats m_stats;
         ClassifyCounts m_lastCounts;
 
-        void fillIndexGridInvalid();
-        void updateOverlapRatio();
         Eigen::Vector3i quantizeLocalBase(const Eigen::Vector3f &center) const;
         std::vector<ExtractedPoint> mergeCandidates(
                 const std::vector<DirectionalCandidate> &candidates) const;
-
-        // Stages missing groups into persistent staging and records upload copies +
-        // combined (reusable + missing) register dispatch into `batch`. Does NOT submit.
-        // Returns the number of slots registered.
-        uint32_t recordResidency(const std::vector<DirectionalGroupKey> &required,
-                                 Engine::Compute::CommandBatch &batch);
     };
 
 } // namespace Engine::Spatial

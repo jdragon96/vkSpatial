@@ -37,3 +37,17 @@ TEST(ResidencyBackend, InterfaceIsImplementable) {
     EXPECT_EQ(iface.LocalBase(), Eigen::Vector3i(1, 2, 3));
     EXPECT_TRUE(iface.IsUnified());
 }
+
+#include "Engine/Core/Context.h"
+#include "Engine/Spatial/StreamingResidencyBackend.h"
+
+TEST(ResidencyBackend, StreamingBuildsAndClassifiesEmpty) {
+    Engine::Core::Context ctx;
+    StreamingResidencyBackend be;
+    be.Build(ctx, /*poolCapacity=*/1024);
+    EXPECT_FALSE(be.IsUnified());
+    EXPECT_EQ(be.PoolCapacity(), 1024u);
+    be.BeginFrame(Eigen::Vector3i(0, 0, 0));
+    be.EnsureResident({}); // nothing required → no missing
+    EXPECT_EQ(be.FrameStats().missingCount, 0u);
+}
