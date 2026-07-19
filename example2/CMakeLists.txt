@@ -13,6 +13,7 @@ endfunction()
 add_spatial_example(voxel_tsdf_mc voxel_tsdf_mc.cpp)
 add_spatial_example(directional_tsdf_demo directional_tsdf_demo.cpp)
 add_spatial_example(directional_tsdf_eval directional_tsdf_eval.cpp)
+add_spatial_example(directional_tsdf_chair_benchmark directional_tsdf_chair_benchmark.cpp)
 add_spatial_example(bvh_benchmark bvh_benchmark.cpp)
 
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
