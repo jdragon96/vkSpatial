@@ -109,11 +109,15 @@ TEST(IntegrationQuality, MultiDirectionExtractsMoreSurfaceThanSingle) {
         Engine::Core::Context ctx;
         DirectionalTSDF tsdf; tsdf.Build(ctx); tsdf.SetIntegrationQuality(q);
         std::vector<Eigen::Vector3f> p, n;
+        // ~30° off-axis: secondary relWeight (0.5/0.87)^4 = 0.109 >= 0.05 cutoff, so under
+        // K=2 each sample genuinely writes its secondary ±X layer (dominant stays +Z). At a
+        // shallower ~20° the secondary would fall below the cutoff and K would be inert — the
+        // extra coverage must come from the multi-DIRECTION write, not just view weighting.
         for (int i = -6; i <= 6; ++i)
             for (int j = -6; j <= 6; ++j) {
-                Eigen::Vector3f na(0.35f, 0.0f, 0.94f); na.normalize();
+                Eigen::Vector3f na(0.5f, 0.0f, 0.87f); na.normalize();
                 p.emplace_back(i*0.05f, j*0.05f, 0.0f);  n.push_back(na);
-                Eigen::Vector3f nb(-0.35f, 0.0f, 0.94f); nb.normalize();
+                Eigen::Vector3f nb(-0.5f, 0.0f, 0.87f); nb.normalize();
                 p.emplace_back(i*0.05f, j*0.05f, 0.12f); n.push_back(nb);
             }
         tsdf.Integrate(p, n, Eigen::Vector3f(0, 0, 5), Eigen::Vector3f::Zero());
