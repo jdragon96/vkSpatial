@@ -1,4 +1,5 @@
 #include "Engine/Registration/Downsample.h"
+#include "Engine/Registration/FeatureMatching.h"
 #include "Engine/Registration/Fpfh.h"
 #include "Engine/Registration/RegistrationTypes.h"
 #include <Eigen/Geometry>
@@ -49,4 +50,19 @@ TEST(Registration, FpfhIsApproximatelyRotationInvariant) {
     // smallest broken-implementation value observed, so it is small relative to descriptor
     // magnitude yet still discriminating.
     EXPECT_LT(maxdiff, 0.01) << "FPFH not rotation-invariant enough (max L2 " << maxdiff << ")";
+}
+
+TEST(Registration, MatchRecoversIdentityCorrespondencesUnderRotation) {
+    auto s = makeSphere(500, 20.0f);
+    Eigen::Matrix3f R = Eigen::AngleAxisf(0.5f, Eigen::Vector3f::UnitZ()).toRotationMatrix();
+    Engine::Registration::PointCloud sr = s;
+    for (auto& p : sr.points) p = R * p;
+    for (auto& n : sr.normals) n = R * n;
+    auto fs = Engine::Registration::ComputeFpfh(s,  60.0f, 100.0f);
+    auto ft = Engine::Registration::ComputeFpfh(sr, 60.0f, 100.0f);
+    auto corr = Engine::Registration::MatchFeatures(fs, ft);
+    // most correspondences should be i→i (descriptor space is symmetric under R)
+    int selfMatches = 0; for (auto& c : corr) if (c.srcIdx == c.tgtIdx) ++selfMatches;
+    EXPECT_GT(corr.size(), 100u);
+    EXPECT_GT(double(selfMatches) / corr.size(), 0.5) << selfMatches << "/" << corr.size();
 }
