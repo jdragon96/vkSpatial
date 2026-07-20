@@ -6,6 +6,7 @@
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/DirectionalHostStore.h"
+#include "Engine/Spatial/DirectionalIntegrationQuality.h"
 #include "Engine/Spatial/DirectionalTSDFTypes.h"
 #include "Engine/Spatial/IResidencyBackend.h"
 #include "Engine/Spatial/OrientedPointCloud.h"
@@ -60,6 +61,11 @@ namespace Engine::Spatial {
                    uint32_t maxPoints = 1u << 15,
                    uint32_t maxCandidates = 1u << 16,
                    ResidencyMode residency = ResidencyMode::Streaming);
+
+        // Configures the multi-direction write-set / integration quality (opt-in; default
+        // {maxDirections=1, dirExponent=4, viewAngleWeight=false} reproduces the original
+        // single-dominant-axis behavior exactly).
+        void SetIntegrationQuality(const IntegrationQuality &q) { m_quality = q; }
 
         // Starts a frame: recomputes the local base (window centred on the hint, snapped to
         // the group grid) and resets the indexGrid to kInvalidPoolIndex.
@@ -118,6 +124,7 @@ namespace Engine::Spatial {
         Engine::Core::Context *m_ctx = nullptr;
         float m_voxelSize = 0.1f;
         float m_truncation = 0.3f;
+        IntegrationQuality m_quality;
 
         std::unique_ptr<IResidencyBackend> m_backend;
 

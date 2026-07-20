@@ -1,6 +1,7 @@
 #include "Engine/Spatial/DirectionalTSDF.h"
 
 #include "Engine/Core/OneShotCommands.h"
+#include "Engine/Spatial/DirectionalIntegrationQuality.h" // TopKDirections (shared direction selector)
 #include "Engine/Spatial/IResidencyBackend.h" // MakeResidencyBackend (backend selection: Task 5)
 
 #include <algorithm>
@@ -25,6 +26,9 @@ namespace Engine::Spatial {
             float camX;
             float camY;
             float camZ;
+            uint32_t maxDirections;
+            uint32_t dirExponent;
+            uint32_t viewAngleWeight;
         };
 
         struct ExtractPC {
@@ -177,7 +181,8 @@ namespace Engine::Spatial {
             float depth = diff.norm();
             if (depth < 1e-6f) continue;
             Eigen::Vector3f dir = diff / depth;
-            const uint8_t d = dominantAxisOf(normals[i]);
+            DirWeight dw[6];
+            const int nd = TopKDirections(normals[i], m_quality, dw);
             const float band = m_truncation + m_voxelSize;
             Eigen::Vector3f a = points[i] - dir * band;
             Eigen::Vector3f b = points[i] + dir * band;
@@ -191,7 +196,8 @@ namespace Engine::Spatial {
             for (int gz = vmin.z() >> 3; gz <= (vmax.z() >> 3); ++gz)
                 for (int gy = vmin.y() >> 3; gy <= (vmax.y() >> 3); ++gy)
                     for (int gx = vmin.x() >> 3; gx <= (vmax.x() >> 3); ++gx)
-                        writeSet.insert({gx, gy, gz, d});
+                        for (int di = 0; di < nd; ++di)
+                            writeSet.insert({gx, gy, gz, dw[di].direction});
         }
 
         // ResidentRequiredSet = writeSet + 1-group halo (extraction neighbourhood, §7).
@@ -232,7 +238,9 @@ namespace Engine::Spatial {
             batch.Barrier();
             const Eigen::Vector3i localBase = m_backend->LocalBase();
             IntegratePC ipc{N, m_voxelSize, m_truncation, localBase.x(), localBase.y(),
-                            localBase.z(), cameraPos.x(), cameraPos.y(), cameraPos.z()};
+                            localBase.z(), cameraPos.x(), cameraPos.y(), cameraPos.z(),
+                            m_quality.maxDirections, m_quality.dirExponent,
+                            uint32_t(m_quality.viewAngleWeight ? 1 : 0)};
             m_integrateKernel->Args(ipc);
             batch.DispatchElements(*m_integrateKernel, N);
             batch.Submit();
@@ -335,6 +343,7 @@ namespace Engine::Spatial {
         };
         const float posThresh = 0.6f * m_voxelSize; // positionMergeThreshold (§15)
         const float cosThresh = 0.866f;             // normalMergeThreshold = 30° (§15)
+        const float strongSplitCos = 0.5f;          // 60° — never merge beyond this (§7)
 
         std::unordered_map<uint64_t, std::vector<Cluster>> buckets;
         for (const auto &c : candidates) {
@@ -348,6 +357,7 @@ namespace Engine::Spatial {
             for (auto &cl : clusters) {
                 const Eigen::Vector3f mean = cl.posSum / float(cl.count);
                 const Eigen::Vector3f meanN = cl.nSum.normalized();
+                if (nrm.dot(meanN) < strongSplitCos) continue; // strong split: cannot merge (§7)
                 if ((pos - mean).norm() < posThresh && nrm.dot(meanN) > cosThresh) {
                     cl.posSum += pos;
                     cl.nSum += nrm;
