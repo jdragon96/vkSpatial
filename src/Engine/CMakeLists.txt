@@ -67,3 +67,12 @@ target_include_directories(EngineSpatial
             /opt/homebrew/opt/eigen/include/eigen3
         PRIVATE
             "${VULKAN_SDK}/include")
+
+file(GLOB_RECURSE ENGINE_REGISTRATION_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Registration/*.cpp")
+add_library(EngineRegistration STATIC ${ENGINE_REGISTRATION_SOURCES})
+add_library(Engine::Registration ALIAS EngineRegistration)
+target_link_libraries(EngineRegistration PUBLIC Eigen3::Eigen Ceres::ceres)
+target_include_directories(EngineRegistration
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
+            /opt/homebrew/opt/eigen/include/eigen3)
