@@ -154,8 +154,10 @@ int main(int argc, char **argv) {
             if (res.valid) {
                 Tworld = Tworld * res.T;
             } else {
-                std::cout << "    WARNING: registration invalid for frame " << f
-                          << " -> " << (f - 1) << "; reusing previous world pose\n";
+                std::cout << "    WARNING: registration invalid for frame " << f << " -> "
+                          << (f - 1) << "; SKIPPING integration (untrusted alignment)\n";
+                continue; // gate: never integrate a frame whose alignment is not valid
+                          // (a stale/wrong pose would inject misplaced geometry into the TSDF)
             }
         }
 
