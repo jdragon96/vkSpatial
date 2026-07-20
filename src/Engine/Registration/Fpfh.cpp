@@ -51,9 +51,11 @@ namespace Engine::Registration {
         }
 
         // Scans the 3x3x3 block of cells (cell size == cellSize, the same size the grid
-        // was built with) around `center` and keeps candidates within `radius`. Correct
-        // as long as radius <= 1.5*cellSize (true for the normalRadius <= fpfhRadius
-        // convention this module follows; fpfhRadius itself uses cellSize == radius).
+        // was built with) around `center` and keeps candidates within `radius`. Exact ONLY
+        // when radius <= cellSize: a query at a cell edge with a neighbour `radius` away can
+        // land two cells out (unscanned) once radius > cellSize. Holds here because pass 2
+        // uses fpfhRadius == cellSize and pass 1 uses normalRadius < fpfhRadius; a caller
+        // passing radius > cellSize would silently get truncated neighbourhoods.
         void QueryRadius(const PointCloud &cloud, const Grid &grid, float cellSize,
                           const Eigen::Vector3f &center, float radius, std::vector<int> &out) {
             out.clear();
