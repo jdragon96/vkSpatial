@@ -13,6 +13,7 @@ target_link_libraries(vkspatial_tests
         Engine::Spatial
         Engine::Compute
         Engine::Render
+        Engine::Backend
         GTest::gtest
         GTest::gtest_main)
 

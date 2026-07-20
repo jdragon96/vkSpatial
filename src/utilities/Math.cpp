@@ -1,8 +1,36 @@
 #include "utilities/Math.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace vkMath {
+
+    namespace {
+
+        constexpr float kArcballEpsilon = 1e-6f;
+
+        Vec3 ProjectToArcball(double cursorX, double cursorY, int width, int height) {
+            if (width <= 0 || height <= 0)
+                return Vec3(0.0f, 0.0f, 1.0f);
+
+            const float x = static_cast<float>((width - 2.0 * cursorX) / width);
+            const float y = static_cast<float>((2.0 * cursorY - height) / height);
+            const float len2 = x * x + y * y;
+            if (len2 <= 1.0f)
+                return Vec3(x, y, std::sqrt(1.0f - len2));
+
+            const float invLen = 1.0f / std::sqrt(len2);
+            return Vec3(x * invLen, y * invLen, 0.0f);
+        }
+
+        Vec3 OrthogonalAxis(const Vec3 &vector) {
+            Vec3 axis = vector.cross(Vec3::UnitX());
+            if (axis.squaredNorm() < kArcballEpsilon)
+                axis = vector.cross(Vec3::UnitY());
+            return axis.normalized();
+        }
+
+    } // namespace
 
     Mat4 Translation(float x, float y, float z) {
         Mat4 out = Mat4::Identity();
@@ -61,8 +89,8 @@ namespace vkMath {
         const Vec3 forward = (target - eye).normalized();
         const Vec3 crossFU = forward.cross(up);
         const Vec3 right = crossFU.norm() < 1e-6f
-                                    ? Vec3(1.0f, 0.0f, 0.0f)
-                                    : crossFU.normalized();
+                                   ? Vec3(1.0f, 0.0f, 0.0f)
+                                   : crossFU.normalized();
         const Vec3 realUp = right.cross(forward);
 
         Mat4 out = Mat4::Identity();
@@ -84,15 +112,30 @@ namespace vkMath {
         return out;
     }
 
-    Vec3 MapToArcball(double cursorX, double cursorY, int width, int height) {
-        const float x = static_cast<float>((2.0 * cursorX - width) / width);
-        const float y = static_cast<float>((height - 2.0 * cursorY) / height);
-        const float len2 = x * x + y * y;
-        if (len2 <= 1.0f)
-            return Vec3(x, y, std::sqrt(1.0f - len2));
+    Quat MapToArcball(double previousCursorX, double previousCursorY,
+                      double currentCursorX, double currentCursorY,
+                      int width, int height) {
+        const Vec3 from = ProjectToArcball(previousCursorX, previousCursorY, width, height);
+        const Vec3 to = ProjectToArcball(currentCursorX, currentCursorY, width, height);
 
-        const float invLen = 1.0f / std::sqrt(len2);
-        return Vec3(x * invLen, y * invLen, 0.0f);
+        const float dot = std::clamp(from.dot(to), -1.0f, 1.0f);
+        if (dot > 1.0f - kArcballEpsilon)
+            return Quat::Identity();
+
+        Vec3 axis = from.cross(to);
+        const float axisLen2 = axis.squaredNorm();
+        if (axisLen2 < kArcballEpsilon) {
+            axis = OrthogonalAxis(from);
+            return Quat(0.0f, axis.x(), axis.y(), axis.z());
+        }
+
+        const float scale = std::sqrt((1.0f + dot) * 2.0f);
+        const float invScale = 1.0f / scale;
+        return Quat(scale * 0.5f,
+                    axis.x() * invScale,
+                    axis.y() * invScale,
+                    axis.z() * invScale)
+                .normalized();
     }
 
 } // namespace vkMath

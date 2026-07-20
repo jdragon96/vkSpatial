@@ -1,16 +1,115 @@
 #include <gtest/gtest.h>
 
+#include "Engine/Core/Descriptor.h"
+#include "Engine/Core/Sampler.h"
 #include "Engine/Render/Camera.h"
-#include "Engine/Render/Scene.h"
-#include "Engine/Render/View.h"
-#include "Engine/Render/RenderGraph.h"
+#include "Engine/Render/GraphicsPipeline.h"
 #include "Engine/Render/KeyInput.h"
 #include "Engine/Render/MouseInput.h"
+#include "Engine/Render/Object.h"
+#include "Engine/Render/RenderGraph.h"
+#include "Engine/Render/Scene.h"
+#include "Engine/Render/View.h"
 
 #include <memory>
+#include <stdexcept>
 #include <vector>
 
 using namespace Engine::Render;
+
+namespace {
+
+    struct ObjectTestVertex {
+        float position[3];
+        float color[3];
+    };
+
+    struct TestTransformConstants {
+        float data[32];
+    };
+
+    struct TestLightingConstants {
+        float data[8];
+    };
+
+} // namespace
+
+TEST(GraphicsPipelineDescriptorTest, PushConstantAllowsDisjointStagesAtSameOffset) {
+    GraphicsPipelineDescriptor descriptor;
+    descriptor.PushConstant<TestTransformConstants>(VK_SHADER_STAGE_VERTEX_BIT)
+            .PushConstant<TestLightingConstants>(VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    ASSERT_EQ(descriptor.pushConstantRanges.size(), 2u);
+    EXPECT_EQ(descriptor.pushConstantRanges[0].stageFlags, VK_SHADER_STAGE_VERTEX_BIT);
+    EXPECT_EQ(descriptor.pushConstantRanges[0].offset, 0u);
+    EXPECT_EQ(descriptor.pushConstantRanges[0].size, sizeof(TestTransformConstants));
+    EXPECT_EQ(descriptor.pushConstantRanges[1].stageFlags, VK_SHADER_STAGE_FRAGMENT_BIT);
+    EXPECT_EQ(descriptor.pushConstantRanges[1].offset, 0u);
+    EXPECT_EQ(descriptor.pushConstantRanges[1].size, sizeof(TestLightingConstants));
+}
+
+TEST(GraphicsPipelineDescriptorTest, PushConstantRejectsOverlappingSharedStageRanges) {
+    GraphicsPipelineDescriptor descriptor;
+    descriptor.PushConstant(VK_SHADER_STAGE_VERTEX_BIT, 64, 0);
+
+    EXPECT_THROW(
+            descriptor.PushConstant(VK_SHADER_STAGE_VERTEX_BIT, 16, 32),
+            std::runtime_error);
+}
+
+TEST(GraphicsPipelineDescriptorTest, PushConstantRejectsUnalignedRanges) {
+    GraphicsPipelineDescriptor descriptor;
+
+    EXPECT_THROW(
+            descriptor.PushConstant(VK_SHADER_STAGE_VERTEX_BIT, 6, 0),
+            std::runtime_error);
+    EXPECT_THROW(
+            descriptor.PushConstant(VK_SHADER_STAGE_VERTEX_BIT, 8, 2),
+            std::runtime_error);
+}
+
+TEST(DescriptorBindingTest, CombinedImageSamplerBuildsFragmentBinding) {
+    const Engine::Core::DescriptorBinding descriptor =
+            Engine::Core::DescriptorBinding::CombinedImageSampler(
+                    2,
+                    VK_SHADER_STAGE_FRAGMENT_BIT,
+                    3);
+    const VkDescriptorSetLayoutBinding binding = descriptor.Build();
+
+    EXPECT_EQ(binding.binding, 2u);
+    EXPECT_EQ(binding.descriptorType, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+    EXPECT_EQ(binding.descriptorCount, 3u);
+    EXPECT_EQ(binding.stageFlags, VK_SHADER_STAGE_FRAGMENT_BIT);
+    EXPECT_EQ(binding.pImmutableSamplers, nullptr);
+}
+
+TEST(SamplerDescriptorTest, ShadowMapManualPCFUsesNearestClampedDepthSampling) {
+    const Engine::Core::SamplerDescriptor descriptor =
+            Engine::Core::SamplerDescriptor::ShadowMapManualPCF();
+    const VkSamplerCreateInfo info = descriptor.Build();
+
+    EXPECT_EQ(info.sType, VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
+    EXPECT_EQ(info.magFilter, VK_FILTER_NEAREST);
+    EXPECT_EQ(info.minFilter, VK_FILTER_NEAREST);
+    EXPECT_EQ(info.mipmapMode, VK_SAMPLER_MIPMAP_MODE_NEAREST);
+    EXPECT_EQ(info.addressModeU, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+    EXPECT_EQ(info.addressModeV, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+    EXPECT_EQ(info.addressModeW, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+    EXPECT_EQ(info.compareEnable, VK_FALSE);
+    EXPECT_EQ(info.compareOp, VK_COMPARE_OP_ALWAYS);
+    EXPECT_FLOAT_EQ(info.maxLod, 1.0f);
+}
+
+TEST(SamplerDescriptorTest, ShadowMapCompareDefaultsToNearestHardwareDepthCompare) {
+    const Engine::Core::SamplerDescriptor descriptor =
+            Engine::Core::SamplerDescriptor::ShadowMapCompare();
+    const VkSamplerCreateInfo info = descriptor.Build();
+
+    EXPECT_EQ(info.magFilter, VK_FILTER_NEAREST);
+    EXPECT_EQ(info.minFilter, VK_FILTER_NEAREST);
+    EXPECT_EQ(info.compareEnable, VK_TRUE);
+    EXPECT_EQ(info.compareOp, VK_COMPARE_OP_LESS_OR_EQUAL);
+}
 
 TEST(SceneTest, CreateEntityAssignsDistinctIds) {
     Scene scene;
@@ -46,6 +145,107 @@ TEST(CameraTest, LookAtMatchesVkMath) {
     const vkMath::Mat4 expected = vkMath::LookAt(eye, target, {0.0f, 1.0f, 0.0f});
     EXPECT_TRUE(camera.GetViewMatrix().isApprox(expected));
     EXPECT_EQ(camera.GetEye(), eye);
+}
+
+TEST(CameraTest, OrbitSettersUpdateViewState) {
+    Camera camera;
+    const vkMath::Vec3 target(1.0f, 2.0f, 3.0f);
+    camera.SetTarget(target);
+    camera.SetDistance(4.5f);
+
+    EXPECT_TRUE(camera.GetTarget().isApprox(target));
+    EXPECT_FLOAT_EQ(camera.GetDistance(), 4.5f);
+    EXPECT_TRUE(camera.GetEye().isApprox(vkMath::Vec3(1.0f, 2.0f, 7.5f)));
+}
+
+TEST(CameraTest, OrbitOrientationProvidesStablePoleBasis) {
+    Camera camera;
+    camera.SetOrbit({0.0f, 0.0f, 0.0f}, 4.5f,
+                    vkMath::Quat(Eigen::AngleAxisf(3.14159265f * 0.5f, vkMath::Vec3::UnitX())));
+
+    EXPECT_TRUE(camera.GetEye().isApprox(vkMath::Vec3(0.0f, -4.5f, 0.0f), 1e-5f));
+    EXPECT_TRUE(camera.GetViewMatrix().allFinite());
+}
+
+TEST(CameraTest, TrackballDragUpdatesOrientation) {
+    Camera camera;
+    camera.SetOrbit({0.0f, 0.0f, 0.0f}, 4.5f);
+    ASSERT_TRUE(camera.BeginTrackballDrag(100.0, 100.0, 200, 200));
+
+    EXPECT_TRUE(camera.DragTrackball(140.0, 100.0, 200, 200));
+    EXPECT_FALSE(camera.GetOrientation().isApprox(vkMath::Quat::Identity()));
+    EXPECT_TRUE(camera.GetViewMatrix().allFinite());
+}
+
+TEST(ObjectTest, OwnsVertexAndIndexData) {
+    std::vector<ObjectTestVertex> vertices = {
+            {{0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}},
+            {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}},
+            {{0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
+    };
+    std::vector<uint32_t> indices = {0, 1, 2};
+
+    Object<ObjectTestVertex> object(vertices, indices);
+    vertices.clear();
+    indices.clear();
+
+    EXPECT_FALSE(object.Empty());
+    EXPECT_EQ(object.VertexCount(), 3u);
+    EXPECT_EQ(object.IndexCount(), 3u);
+    EXPECT_EQ(object.VertexByteSize(), 3u * sizeof(ObjectTestVertex));
+    EXPECT_EQ(object.IndexByteSize(), 3u * sizeof(uint32_t));
+    EXPECT_FLOAT_EQ(object.VertexData()[1].position[0], 1.0f);
+    EXPECT_EQ(object.IndexData()[2], 2u);
+    EXPECT_TRUE(object.Model().isApprox(vkMath::Mat4::Identity()));
+
+    const vkMath::Mat4 model = vkMath::Translation(1.0f, 2.0f, 3.0f);
+    object.SetModel(model);
+    object.SetFirstIndex(7);
+    EXPECT_TRUE(object.Model().isApprox(model));
+    EXPECT_EQ(object.FirstIndex(), 7u);
+}
+
+TEST(ObjectTest, SetGeometryReplacesData) {
+    Object<ObjectTestVertex> object;
+    EXPECT_TRUE(object.Empty());
+
+    object.SetGeometry(
+            {{{0.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 1.0f}}},
+            {0});
+
+    EXPECT_FALSE(object.Empty());
+    EXPECT_EQ(object.VertexCount(), 1u);
+    EXPECT_EQ(object.IndexCount(), 1u);
+}
+
+TEST(ObjectTest, PacksDefaultVertexObjectsForUpload) {
+    Object<> first;
+    const uint32_t a = first.AddVertex(Vertex({0.0f, 0.0f, 0.0f},
+                                              {0.0f, 1.0f, 0.0f},
+                                              {1.0f, 0.0f, 0.0f}));
+    const uint32_t b = first.AddVertex(Vertex({1.0f, 0.0f, 0.0f},
+                                              {0.0f, 1.0f, 0.0f},
+                                              {0.0f, 1.0f, 0.0f}));
+    const uint32_t c = first.AddVertex(Vertex({0.0f, 1.0f, 0.0f},
+                                              {0.0f, 1.0f, 0.0f},
+                                              {0.0f, 0.0f, 1.0f}));
+    first.AddTriangle(a, b, c);
+
+    Object<> second;
+    const uint32_t d = second.AddVertex(Vertex({0.0f, 0.0f, 1.0f},
+                                               {0.0f, 0.0f, 1.0f},
+                                               {1.0f, 1.0f, 1.0f}));
+    second.AddTriangle(d, d, d);
+
+    std::vector<Object<>> objects = {first, second};
+    const auto geometry = PackObjects(objects);
+
+    EXPECT_EQ(geometry.VertexCount(), 4u);
+    EXPECT_EQ(geometry.IndexCount(), 6u);
+    EXPECT_EQ(objects[0].FirstIndex(), 0u);
+    EXPECT_EQ(objects[1].FirstIndex(), 3u);
+    EXPECT_EQ(geometry.indices[3], 3u);
+    EXPECT_FLOAT_EQ(geometry.VertexData()[3].position[2], 1.0f);
 }
 
 TEST(ViewTest, BindsSceneCameraAndGraph) {

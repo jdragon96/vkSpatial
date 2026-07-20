@@ -67,3 +67,15 @@ target_include_directories(EngineSpatial
             /opt/homebrew/opt/eigen/include/eigen3
         PRIVATE
             "${VULKAN_SDK}/include")
+
+# SLAM backend (pose graph, loop closure, map correction). Pure Eigen math — no
+# Vulkan dependency — so it builds and unit-tests independently of the GPU stack.
+file(GLOB_RECURSE ENGINE_BACKEND_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Backend/*.cpp")
+
+add_library(EngineBackend STATIC ${ENGINE_BACKEND_SOURCES})
+add_library(Engine::Backend ALIAS EngineBackend)
+
+target_include_directories(EngineBackend
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
+            /opt/homebrew/opt/eigen/include/eigen3)

@@ -22,7 +22,9 @@ namespace vkMath {
 
     Mat4 LookAt(const Vec3 &eye, const Vec3 &target, const Vec3 &up);
 
-    // Maps a 2D cursor position within [0,width]x[0,height] onto a unit arcball/hemisphere.
-    Vec3 MapToArcball(double cursorX, double cursorY, int width, int height);
+    // Returns the arcball rotation from the previous cursor position to the current one.
+    Quat MapToArcball(double previousCursorX, double previousCursorY,
+                      double currentCursorX, double currentCursorY,
+                      int width, int height);
 
 } // namespace vkMath

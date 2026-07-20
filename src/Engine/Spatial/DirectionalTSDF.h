@@ -8,6 +8,7 @@
 #include "Engine/Spatial/DirectionalHostStore.h"
 #include "Engine/Spatial/DirectionalTSDFTypes.h"
 #include "Engine/Spatial/IResidencyBackend.h"
+#include "Engine/Spatial/OrientedPointCloud.h"
 
 #include <Eigen/Core>
 #include <memory>
@@ -81,6 +82,19 @@ namespace Engine::Spatial {
 
         const std::vector<ExtractedPoint> &PointCloud() const { return m_pointCloud; }
         void ExportPointCloud(const std::string &path) const; // ASCII PLY with normals
+
+        // Oriented surface point cloud (shared feature currency; e.g. FPFH): position + normal
+        // copied from the last extraction. Decouples feature code from the ExtractedPoint layout.
+        OrientedPointCloud ExtractOrientedCloud() const {
+            OrientedPointCloud c;
+            c.points.reserve(m_pointCloud.size());
+            c.normals.reserve(m_pointCloud.size());
+            for (const ExtractedPoint &p : m_pointCloud) {
+                c.points.push_back(p.position);
+                c.normals.push_back(p.normal);
+            }
+            return c;
+        }
 
         DirectionalHostStore &HostStore() { return m_backend->HostStore(); }
         Eigen::Vector3i LocalBase() const { return m_backend->LocalBase(); }

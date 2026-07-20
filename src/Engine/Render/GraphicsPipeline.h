@@ -106,13 +106,19 @@ namespace Engine::Render {
 
         void Bind(VkCommandBuffer commandBuffer) const;
 
+        void PushConstantsRaw(VkCommandBuffer commandBuffer,
+                              VkShaderStageFlags stageFlags,
+                              const void *data,
+                              uint32_t size,
+                              uint32_t offset = 0) const;
+
         template<typename T>
         void PushConstants(VkCommandBuffer commandBuffer,
                            VkShaderStageFlags stageFlags,
                            const T &value,
                            uint32_t offset = 0) const {
-            vkCmdPushConstants(commandBuffer, m_layout, stageFlags, offset,
-                               static_cast<uint32_t>(sizeof(T)), &value);
+            PushConstantsRaw(commandBuffer, stageFlags, &value,
+                             static_cast<uint32_t>(sizeof(T)), offset);
         }
 
         VkPipeline Pipeline() const { return m_pipeline; }
@@ -120,16 +126,24 @@ namespace Engine::Render {
         VkFormat ColorFormat(uint32_t index = 0) const;
         VkFormat DepthFormat() const { return m_depthFormat; }
         bool MatchesColorTarget(uint32_t index, VkFormat format) const;
+        const std::vector<VkPushConstantRange> &PushConstantRanges() const {
+            return m_pushConstantRanges;
+        }
 
     private:
         VkDevice m_device = VK_NULL_HANDLE;
+        uint32_t m_maxPushConstantsSize = 0;
         VkPipelineLayout m_layout = VK_NULL_HANDLE;
         VkPipeline m_pipeline = VK_NULL_HANDLE;
         std::vector<VkFormat> m_colorFormats;
+        std::vector<VkPushConstantRange> m_pushConstantRanges;
         VkFormat m_depthFormat = VK_FORMAT_UNDEFINED;
 
         static std::vector<uint32_t> LoadSPIRV(const std::string &path);
         VkShaderModule CreateShaderModule(const std::string &path) const;
+        bool HasDeclaredPushConstantRange(VkShaderStageFlags stageFlags,
+                                          uint32_t offset,
+                                          uint32_t size) const;
     };
 
 } // namespace Engine::Render

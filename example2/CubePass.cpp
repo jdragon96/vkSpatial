@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Image.h"
 #include "Engine/Render/Camera.h"
+#include "Engine/Render/Object.h"
 #include "Engine/Render/Rendering.h"
 #include "Engine/Render/SwapChain.h"
 #include "Engine/Render/View.h"
@@ -10,6 +11,8 @@
 #include "utilities/SimpleResource.h"
 
 #include <cstddef>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -28,7 +31,7 @@ CubePass::CubePass(Engine::Core::Context &context, VkFormat colorFormat, const s
     : m_vertexBuffer(context, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT),
       m_indexBuffer(context, VK_BUFFER_USAGE_INDEX_BUFFER_BIT),
       m_pipeline(context) {
-    Primitives cube = SimpleResource::CreateCube(1.0f);
+    Primitives cube = SimpleResource::CreateCube(2.0f);
     std::vector<Vertex> vertices;
     vertices.reserve(cube.vertices.size());
     for (size_t i = 0; i < cube.vertices.size(); ++i) {
@@ -39,15 +42,16 @@ CubePass::CubePass(Engine::Core::Context &context, VkFormat colorFormat, const s
                 {color.x(), color.y(), color.z()},
         });
     }
-    m_indexCount = static_cast<uint32_t>(cube.indices.size());
+    Engine::Render::Object<Vertex> cubeObject(std::move(vertices), std::move(cube.indices));
+    m_indexCount = static_cast<uint32_t>(cubeObject.IndexCount());
 
-    const uint32_t vertexBytes = static_cast<uint32_t>(vertices.size() * sizeof(Vertex));
+    const uint32_t vertexBytes = static_cast<uint32_t>(cubeObject.VertexByteSize());
     m_vertexBuffer.Allocate(vertexBytes);
-    m_vertexBuffer.Upload(vertices.data(), vertexBytes, Engine::Core::QueueRole::Graphics);
+    m_vertexBuffer.Upload(cubeObject.VertexData(), vertexBytes, Engine::Core::QueueRole::Graphics);
 
-    const uint32_t indexBytes = static_cast<uint32_t>(cube.indices.size() * sizeof(uint32_t));
+    const uint32_t indexBytes = static_cast<uint32_t>(cubeObject.IndexByteSize());
     m_indexBuffer.Allocate(indexBytes);
-    m_indexBuffer.Upload(cube.indices.data(), indexBytes, Engine::Core::QueueRole::Graphics);
+    m_indexBuffer.Upload(cubeObject.IndexData(), indexBytes, Engine::Core::QueueRole::Graphics);
 
     Engine::Render::GraphicsPipelineDescriptor descriptor;
     descriptor.VertexShader(shaderDir + "/cube.vert.spv")
@@ -70,7 +74,10 @@ void CubePass::Execute(Engine::Render::RenderContext &ctx) {
 
     const VkExtent2D extent = ctx.swapChain->Extent();
     auto renderingDescriptor = Engine::Render::RenderingDescriptor::ColorDepth(
-            extent, ctx.swapChain->ImageView(ctx.imageIndex), ctx.depthImage->View(), clear);
+            extent,
+            ctx.swapChain->ImageView(ctx.imageIndex),
+            ctx.depthImage->View(),
+            clear);
 
     Engine::Render::RenderingScope scope(ctx.commandBuffer, renderingDescriptor);
 

@@ -1,9 +1,57 @@
 #include "Engine/Render/GraphicsPipeline.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 
 namespace Engine::Render {
+
+    namespace {
+
+        uint32_t CheckedRangeEnd(uint32_t offset, uint32_t size) {
+            if (size > std::numeric_limits<uint32_t>::max() - offset)
+                throw std::runtime_error("GraphicsPipeline: push constant range overflows uint32_t");
+            return offset + size;
+        }
+
+        bool RangesOverlap(const VkPushConstantRange &a, const VkPushConstantRange &b) {
+            return a.offset < CheckedRangeEnd(b.offset, b.size) &&
+                   b.offset < CheckedRangeEnd(a.offset, a.size);
+        }
+
+        void ValidatePushConstantRange(const VkPushConstantRange &range,
+                                       uint32_t maxPushConstantsSize) {
+            if (range.stageFlags == 0)
+                throw std::runtime_error("GraphicsPipeline: push constant range requires shader stages");
+            if (range.size == 0)
+                throw std::runtime_error("GraphicsPipeline: push constant range size must be non-zero");
+            if ((range.offset % 4) != 0 || (range.size % 4) != 0)
+                throw std::runtime_error(
+                        "GraphicsPipeline: push constant offset and size must be 4-byte aligned");
+
+            const uint32_t end = CheckedRangeEnd(range.offset, range.size);
+            if (maxPushConstantsSize != 0 && end > maxPushConstantsSize)
+                throw std::runtime_error(
+                        "GraphicsPipeline: push constant range exceeds device maxPushConstantsSize");
+        }
+
+        void ValidatePushConstantRanges(const std::vector<VkPushConstantRange> &ranges,
+                                        uint32_t maxPushConstantsSize) {
+            for (size_t i = 0; i < ranges.size(); ++i) {
+                ValidatePushConstantRange(ranges[i], maxPushConstantsSize);
+                for (size_t j = 0; j < i; ++j) {
+                    const bool sharedStages =
+                            (ranges[i].stageFlags & ranges[j].stageFlags) != 0;
+                    if (sharedStages && RangesOverlap(ranges[i], ranges[j]))
+                        throw std::runtime_error(
+                                "GraphicsPipeline: overlapping push constant ranges cannot share shader stages");
+                }
+            }
+        }
+
+    } // namespace
 
     PipelineColorTarget PipelineColorTarget::Opaque(VkFormat format) {
         PipelineColorTarget target{};
@@ -103,12 +151,23 @@ namespace Engine::Render {
         range.stageFlags = stageFlags;
         range.offset = offset;
         range.size = size;
+
+        std::vector<VkPushConstantRange> ranges = pushConstantRanges;
+        ranges.push_back(range);
+        ValidatePushConstantRanges(ranges, 0);
+
         pushConstantRanges.push_back(range);
         return *this;
     }
 
     GraphicsPipeline::GraphicsPipeline(Engine::Core::Context &context)
-        : m_device(context.device) {}
+        : m_device(context.device) {
+        if (context.physicalDevice != VK_NULL_HANDLE) {
+            VkPhysicalDeviceProperties properties{};
+            vkGetPhysicalDeviceProperties(context.physicalDevice, &properties);
+            m_maxPushConstantsSize = properties.limits.maxPushConstantsSize;
+        }
+    }
 
     GraphicsPipeline::~GraphicsPipeline() {
         Destroy();
@@ -118,6 +177,8 @@ namespace Engine::Render {
             const GraphicsPipelineDescriptor &descriptor) {
         if (descriptor.shaderStages.empty())
             throw std::runtime_error("GraphicsPipeline::Build requires at least one shader");
+
+        ValidatePushConstantRanges(descriptor.pushConstantRanges, m_maxPushConstantsSize);
 
         Destroy();
 
@@ -265,6 +326,7 @@ namespace Engine::Render {
                 throw std::runtime_error("GraphicsPipeline: failed to create graphics pipeline");
 
             m_depthFormat = descriptor.depthFormat;
+            m_pushConstantRanges = descriptor.pushConstantRanges;
             destroyShaderModules();
         } catch (...) {
             destroyShaderModules();
@@ -283,6 +345,7 @@ namespace Engine::Render {
         m_pipeline = VK_NULL_HANDLE;
         m_layout = VK_NULL_HANDLE;
         m_colorFormats.clear();
+        m_pushConstantRanges.clear();
         m_depthFormat = VK_FORMAT_UNDEFINED;
     }
 
@@ -300,6 +363,47 @@ namespace Engine::Render {
 
     bool GraphicsPipeline::MatchesColorTarget(uint32_t index, VkFormat format) const {
         return ColorFormat(index) == format;
+    }
+
+    void GraphicsPipeline::PushConstantsRaw(VkCommandBuffer commandBuffer,
+                                            VkShaderStageFlags stageFlags,
+                                            const void *data,
+                                            uint32_t size,
+                                            uint32_t offset) const {
+        if (m_layout == VK_NULL_HANDLE)
+            throw std::runtime_error("GraphicsPipeline::PushConstants called before Build");
+        if (commandBuffer == VK_NULL_HANDLE)
+            throw std::runtime_error("GraphicsPipeline::PushConstants requires a command buffer");
+        if (!data)
+            throw std::runtime_error("GraphicsPipeline::PushConstants requires data");
+
+        VkPushConstantRange callRange{};
+        callRange.stageFlags = stageFlags;
+        callRange.offset = offset;
+        callRange.size = size;
+        ValidatePushConstantRange(callRange, m_maxPushConstantsSize);
+        if (!HasDeclaredPushConstantRange(stageFlags, offset, size))
+            throw std::runtime_error(
+                    "GraphicsPipeline::PushConstants range is not declared in pipeline layout");
+
+        vkCmdPushConstants(commandBuffer, m_layout, stageFlags, offset, size, data);
+    }
+
+    bool GraphicsPipeline::HasDeclaredPushConstantRange(VkShaderStageFlags stageFlags,
+                                                        uint32_t offset,
+                                                        uint32_t size) const {
+        VkShaderStageFlags missingStages = stageFlags;
+        const uint32_t end = CheckedRangeEnd(offset, size);
+
+        for (const VkPushConstantRange &range: m_pushConstantRanges) {
+            if (offset < range.offset || end > CheckedRangeEnd(range.offset, range.size))
+                continue;
+            missingStages &= ~range.stageFlags;
+            if (missingStages == 0)
+                return true;
+        }
+
+        return missingStages == 0;
     }
 
     std::vector<uint32_t> GraphicsPipeline::LoadSPIRV(const std::string &path) {

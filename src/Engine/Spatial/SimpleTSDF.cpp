@@ -1,8 +1,11 @@
 #include "Engine/Spatial/SimpleTSDF.h"
 
+#include <Eigen/Geometry> // Vector3f::cross
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace Engine::Spatial {
 
@@ -78,7 +81,7 @@ namespace Engine::Spatial {
     }
 
 
-    void SimpleTSDF::ExportMC(const std::string &path, uint32_t maxTris) const {
+    std::vector<Eigen::Vector3f> SimpleTSDF::downloadMCVertices(uint32_t maxTris) const {
         struct Vec4 {
             float x, y, z, w;
         };
@@ -111,25 +114,82 @@ namespace Engine::Spatial {
         countBuf.Download(&triCount, sizeof(uint32_t));
 
         const uint32_t downloadCount = std::min(triCount, maxTris);
-        std::vector<Vec4> verts(downloadCount * 3u);
-        vertsBuf.Download(verts.data(), downloadCount * 3u * sizeof(Vec4));
+        std::vector<Vec4> raw(downloadCount * 3u);
+        if (downloadCount > 0)
+            vertsBuf.Download(raw.data(), downloadCount * 3u * sizeof(Vec4));
+
+        std::vector<Eigen::Vector3f> verts(raw.size());
+        for (size_t i = 0; i < raw.size(); ++i)
+            verts[i] = Eigen::Vector3f(raw[i].x, raw[i].y, raw[i].z);
+        return verts;
+    }
+
+    void SimpleTSDF::ExportMC(const std::string &path, uint32_t maxTris) const {
+        const std::vector<Eigen::Vector3f> verts = downloadMCVertices(maxTris);
+        const uint32_t triCount = static_cast<uint32_t>(verts.size() / 3u);
 
         std::ofstream f(path);
         if (!f.is_open())
             throw std::runtime_error("SimpleTSDF::ExportMC: cannot open " + path);
 
         f << "ply\nformat ascii 1.0\n"
-          << "element vertex " << downloadCount * 3u << "\n"
+          << "element vertex " << verts.size() << "\n"
           << "property float x\nproperty float y\nproperty float z\n"
-          << "element face " << downloadCount << "\n"
+          << "element face " << triCount << "\n"
           << "property list uchar int vertex_indices\n"
           << "end_header\n";
 
         for (const auto &v: verts)
-            f << v.x << ' ' << v.y << ' ' << v.z << '\n';
+            f << v.x() << ' ' << v.y() << ' ' << v.z() << '\n';
 
-        for (uint32_t i = 0; i < downloadCount; i++)
+        for (uint32_t i = 0; i < triCount; i++)
             f << "3 " << i * 3 << ' ' << i * 3 + 1 << ' ' << i * 3 + 2 << '\n';
+    }
+
+    OrientedPointCloud SimpleTSDF::ExtractPointCloud(uint32_t maxTris) const {
+        const std::vector<Eigen::Vector3f> tri = downloadMCVertices(maxTris);
+        OrientedPointCloud cloud;
+        if (tri.empty()) return cloud;
+
+        // Weld coincident MC vertices (3 emitted per triangle; shared edges duplicate a
+        // position) onto a fine tolerance grid, accumulating area-weighted triangle normals.
+        const float weld = std::max(m_voxelSize * 1e-3f, 1e-6f);
+        auto key = [weld](const Eigen::Vector3f &p) -> uint64_t {
+            constexpr int64_t kBias = 1 << 20;
+            constexpr uint64_t kMask = (1ull << 21) - 1;
+            const int64_t qx = int64_t(std::llround(p.x() / weld)) + kBias;
+            const int64_t qy = int64_t(std::llround(p.y() / weld)) + kBias;
+            const int64_t qz = int64_t(std::llround(p.z() / weld)) + kBias;
+            return (uint64_t(qx) & kMask) | ((uint64_t(qy) & kMask) << 21) | ((uint64_t(qz) & kMask) << 42);
+        };
+
+        std::unordered_map<uint64_t, uint32_t> lut;
+        std::vector<Eigen::Vector3f> nAccum;
+        for (size_t t = 0; t + 2 < tri.size(); t += 3) {
+            const Eigen::Vector3f &a = tri[t], &b = tri[t + 1], &c = tri[t + 2];
+            const Eigen::Vector3f fn = (b - a).cross(c - a); // area-weighted (|fn| = 2*area)
+            for (const Eigen::Vector3f &p: {a, b, c}) {
+                const uint64_t k = key(p);
+                auto it = lut.find(k);
+                uint32_t vi;
+                if (it == lut.end()) {
+                    vi = static_cast<uint32_t>(cloud.points.size());
+                    lut.emplace(k, vi);
+                    cloud.points.push_back(p);
+                    nAccum.push_back(Eigen::Vector3f::Zero());
+                } else {
+                    vi = it->second;
+                }
+                nAccum[vi] += fn;
+            }
+        }
+
+        cloud.normals.resize(cloud.points.size());
+        for (size_t i = 0; i < cloud.points.size(); ++i) {
+            const float len = nAccum[i].norm();
+            cloud.normals[i] = len > 1e-12f ? Eigen::Vector3f(nAccum[i] / len) : Eigen::Vector3f(0, 0, 1);
+        }
+        return cloud;
     }
 
 } // namespace Engine::Spatial

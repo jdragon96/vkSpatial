@@ -31,6 +31,12 @@ CmakeSettings.json
 /private_docs/
 **/private_docs/
 
+/scanData/
+**/scanData/
+
+/data/
+**/data/
+
 # Shaders
 *.spv
 

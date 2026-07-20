@@ -3,6 +3,7 @@
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
+#include "Engine/Spatial/OrientedPointCloud.h"
 
 #include <Eigen/Core>
 #include <memory>
@@ -47,6 +48,11 @@ namespace Engine::Spatial {
         // Extract the zero-level isosurface via Marching Cubes and write a PLY mesh.
         void ExportMC(const std::string &path, uint32_t maxTris = 500000u) const;
 
+        // Oriented surface point cloud (shared feature currency; e.g. FPFH): Marching-Cubes
+        // vertices welded to unique positions, with per-vertex area-weighted normals computed
+        // from the triangles (the volume stores no normals).
+        OrientedPointCloud ExtractPointCloud(uint32_t maxTris = 500000u) const;
+
         uint32_t FilledCount() const;
 
     private:
@@ -60,6 +66,9 @@ namespace Engine::Spatial {
         std::unique_ptr<Engine::Core::Buffer> m_pointBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_statBuffer;
         std::unique_ptr<Engine::Core::ComputePipeline> m_kernel;
+
+        // Runs Marching Cubes and returns triangle vertices (3 consecutive per triangle).
+        std::vector<Eigen::Vector3f> downloadMCVertices(uint32_t maxTris) const;
     };
 
 } // namespace Engine::Spatial

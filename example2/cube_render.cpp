@@ -4,8 +4,6 @@
 #include "Engine/Render/Camera.h"
 #include "Engine/Render/Scene.h"
 
-#include "utilities/Math.h"
-
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -24,18 +22,7 @@ int main() {
         const VkExtent2D extent = app.GetSwapChain().Extent();
         const float aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
         camera.SetPerspective(60.0f * 3.14159265f / 180.0f, aspect, 0.1f, 100.0f);
-
-        vkMath::Quat orientation = vkMath::Quat::Identity();
-        vkMath::Vec3 target(0.0f, 0.0f, 0.0f);
-        float distance = 4.5f;
-        bool dragging = false;
-        vkMath::Vec3 lastBall = vkMath::Vec3::Zero();
-
-        auto updateCamera = [&]() {
-            const vkMath::Vec3 eye = target + orientation * vkMath::Vec3(0.0f, 0.0f, distance);
-            camera.LookAt(eye, target);
-        };
-        updateCamera();
+        camera.SetOrbit({0.0f, 0.0f, 0.0f}, 4.5f);
 
         const std::string shaderDir = CUBE_RENDER2_SHADER_DIR;
         Engine::Render::RenderGraph graph;
@@ -53,31 +40,26 @@ int main() {
             if (size.width == 0 || size.height == 0)
                 return;
 
-            vkMath::Vec3 current = vkMath::MapToArcball(
-                    e.x, e.y, static_cast<int>(size.width), static_cast<int>(size.height));
-            if (!dragging) {
-                dragging = true;
-                lastBall = current;
+            if (!camera.IsTrackballDragging()) {
+                camera.BeginTrackballDrag(
+                        e.x, e.y,
+                        static_cast<int>(size.width), static_cast<int>(size.height));
                 return;
             }
 
-            vkMath::Vec3 axis = lastBall.cross(current);
-            if (axis.dot(axis) > 1e-8f) {
-                const float w = std::clamp(lastBall.dot(current), -1.0f, 1.0f);
-                vkMath::Quat delta = vkMath::Quat(w, axis.x(), axis.y(), axis.z()).normalized();
-                orientation = (delta * orientation).normalized();
-                updateCamera();
-            }
-            lastBall = current;
+            camera.DragTrackball(
+                    e.x, e.y,
+                    static_cast<int>(size.width), static_cast<int>(size.height));
             e.handled = true;
         });
         trackball.Add(Engine::Render::MouseEventType::ButtonUp, [&](Engine::Render::MouseEvent &e) {
             if (e.button == Engine::Render::MouseButton::Left)
-                dragging = false;
+                camera.EndTrackballDrag();
         });
         trackball.Add(Engine::Render::MouseEventType::Scroll, [&](Engine::Render::MouseEvent &e) {
-            distance = std::clamp(distance * std::exp(static_cast<float>(-e.scrollY) * 0.08f), 2.0f, 10.0f);
-            updateCamera();
+            camera.SetDistance(
+                    std::clamp(camera.GetDistance() * std::exp(static_cast<float>(-e.scrollY) * 0.08f),
+                               2.0f, 10.0f));
             e.handled = true;
         });
 

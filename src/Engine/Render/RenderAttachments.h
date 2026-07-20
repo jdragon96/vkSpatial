@@ -70,8 +70,7 @@ namespace Engine::Render {
         DepthAttachment &Clear(float depth,
                                bool enabled = true,
                                uint32_t stencil = 0) {
-            m_info.loadOp = enabled ? VK_ATTACHMENT_LOAD_OP_CLEAR
-                                    : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            m_info.loadOp = enabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
             m_clear.depthStencil = {depth, stencil};
             return *this;
         }
