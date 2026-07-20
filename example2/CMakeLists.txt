@@ -13,6 +13,11 @@ add_spatial_example(directional_tsdf_eval directional_tsdf_eval.cpp)
 add_spatial_example(bvh_benchmark bvh_benchmark.cpp)
 add_spatial_example(scan_dataset_gen scan_dataset_gen.cpp)
 
+# Registers raw scanData/frame_*.ply frames with Engine::Registration before feeding
+# DirectionalTSDF (drops the "already pre-registered" assumption the chair benchmark makes).
+add_spatial_example(registration_chair_demo registration_chair_demo.cpp)
+target_link_libraries(registration_chair_demo PRIVATE Engine::Registration)
+
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
 if (GLSLC_EXECUTABLE)
     function(add_compiled_shaders target define)
