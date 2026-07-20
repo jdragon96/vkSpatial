@@ -5,6 +5,7 @@
 #include "Engine/Registration/RegistrationTypes.h"
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>
+#include <random>
 using namespace Engine::Registration;
 
 TEST(Registration, VoxelDownsampleReducesAndKeepsExtent) {
@@ -85,4 +86,120 @@ TEST(Registration, RansacRecoversKnownTransform) {
     float trErr  = err.block<3,1>(0,3).norm();
     EXPECT_LT(rotErr, 0.1f) << "rot err rad";       // ~6°
     EXPECT_LT(trErr, 3.0f)  << "trans err mm";      // coarse RANSAC tolerance
+}
+
+namespace {
+    // Shared "known SE(3) transform" fixture for the Ceres-refine and outlier-robustness
+    // tests below -- same shape as the fixture inlined in RansacRecoversKnownTransform above
+    // (factored out per Task 5's brief; that existing test is left untouched/unmodified).
+    // tgt = "model" (bumpy sphere); src = tgt moved by (Rgt, tgt_t). Registering src->tgt
+    // should recover T ≈ [Rgt|tgt_t]^-1, i.e. res.T * Tgt ≈ Identity.
+    void MakeKnownTransformFixture(Engine::Registration::PointCloud &src, Engine::Registration::PointCloud &tgt,
+                                    Eigen::Matrix4f &Tgt) {
+        tgt = makeSphere(600, 20.0f);
+        for (size_t i = 0; i < tgt.points.size(); ++i) tgt.points[i] *= (1.0f + 0.15f * std::sin(0.7f * i));
+        Eigen::Matrix3f Rgt =
+                Eigen::AngleAxisf(0.6f, Eigen::Vector3f(0.2f, 0.7f, 0.6f).normalized()).toRotationMatrix();
+        Eigen::Vector3f tgt_t(8.0f, -5.0f, 3.0f);
+        src = tgt;
+        for (size_t i = 0; i < src.points.size(); ++i) {
+            src.points[i] = Rgt * tgt.points[i] + tgt_t;
+            src.normals[i] = Rgt * tgt.normals[i];
+        }
+        Tgt = Eigen::Matrix4f::Identity();
+        Tgt.block<3, 3>(0, 0) = Rgt;
+        Tgt.block<3, 1>(0, 3) = tgt_t;
+    }
+} // namespace
+
+TEST(Registration, CeresRefineTightensRecovery) {
+    Engine::Registration::PointCloud src, tgt;
+    Eigen::Matrix4f Tgt;
+    MakeKnownTransformFixture(src, tgt, Tgt);
+    Engine::Registration::RegistrationConfig cfg;
+    cfg.voxelSize = 2.0f;
+    auto coarse = Engine::Registration::EstimateRansac(src, tgt, cfg);
+    auto refined = Engine::Registration::Estimate(src, tgt, cfg);
+    ASSERT_TRUE(refined.valid);
+    Eigen::Matrix4f errC = coarse.T * Tgt, errR = refined.T * Tgt;
+    float rotC = Eigen::AngleAxisf(Eigen::Matrix3f(errC.block<3, 3>(0, 0))).angle();
+    float rotR = Eigen::AngleAxisf(Eigen::Matrix3f(errR.block<3, 3>(0, 0))).angle();
+    EXPECT_LT(rotR, 0.03f) << "refined rot err rad (~1.7°)";
+    EXPECT_LE(rotR, rotC + 1e-4f) << "Ceres refine should not worsen the coarse estimate";
+}
+
+// Task-4's RansacRecoversKnownTransform fixture is noise-free (an exact rigid transform of
+// tgt's own points/normals), so every FPFH match is correct and RANSAC's outlier rejection is
+// never actually exercised (fitness=1.0). This test corrupts a fraction of src *points*
+// (gross random position + random normal, before registering) so a chunk of the resulting
+// FPFH matches are wrong, then checks two things:
+//   1. Engine::Registration::Estimate (RANSAC + Ceres) still recovers the known transform.
+//   2. A "no-RANSAC" baseline -- SolveRigidUmeyama over ALL matched correspondences from the
+//      SAME corrupted cloud pair, with no outlier rejection at all -- does NOT recover it.
+// (2) is the discriminating half: it proves RANSAC's max-inlier search (not just Ceres's
+// Cauchy loss) is doing real work, by showing what happens without it.
+TEST(Registration, EstimateRecoversUnderOutlierCorruptionButNaiveBaselineFails) {
+    Engine::Registration::PointCloud src, tgt;
+    Eigen::Matrix4f Tgt;
+    MakeKnownTransformFixture(src, tgt, Tgt);
+
+    // Corrupt a fraction of src points with gross outliers (random position well outside the
+    // model's ~20mm-radius extent + random unit normal). Deterministic RNG seed.
+    std::mt19937 rng(777u);
+    std::uniform_real_distribution<float> coordDist(-100.0f, 100.0f);
+    std::uniform_real_distribution<float> unitDist(-1.0f, 1.0f);
+    std::uniform_real_distribution<float> frac01(0.0f, 1.0f);
+    constexpr float kOutlierFrac = 0.40f;
+    int numCorrupted = 0;
+    for (size_t i = 0; i < src.points.size(); ++i) {
+        if (frac01(rng) < kOutlierFrac) {
+            src.points[i] = Eigen::Vector3f(coordDist(rng), coordDist(rng), coordDist(rng));
+            Eigen::Vector3f n(unitDist(rng), unitDist(rng), unitDist(rng));
+            if (n.norm() < 1e-6f) n = Eigen::Vector3f::UnitZ();
+            src.normals[i] = n.normalized();
+            ++numCorrupted;
+        }
+    }
+    ASSERT_GT(numCorrupted, 0);
+
+    Engine::Registration::RegistrationConfig cfg;
+    cfg.voxelSize = 2.0f;
+
+    // (1) RANSAC + Ceres should still recover the transform.
+    auto refined = Engine::Registration::Estimate(src, tgt, cfg);
+    ASSERT_TRUE(refined.valid) << numCorrupted << "/" << src.points.size() << " src points corrupted";
+    Eigen::Matrix4f errR = refined.T * Tgt;
+    float rotR = Eigen::AngleAxisf(Eigen::Matrix3f(errR.block<3, 3>(0, 0))).angle();
+    float trR = errR.block<3, 1>(0, 3).norm();
+    EXPECT_LT(rotR, 0.1f) << "RANSAC+Ceres rot err rad under outlier corruption (" << numCorrupted
+                          << " corrupted)";
+    EXPECT_LT(trR, 3.0f) << "RANSAC+Ceres trans err mm under outlier corruption";
+
+    // (2) No-RANSAC baseline: re-run downsample/FPFH/match on the SAME corrupted clouds, but
+    // Umeyama-fit ALL matched correspondences directly (no RANSAC outlier rejection).
+    const auto srcDs = Engine::Registration::DownsampleVoxel(src, cfg.voxelSize);
+    const auto tgtDs = Engine::Registration::DownsampleVoxel(tgt, cfg.voxelSize);
+    const float normalRadius = cfg.normalRadiusGain * cfg.voxelSize;
+    const float fpfhRadius = cfg.fpfhRadiusGain * cfg.voxelSize;
+    auto srcF = Engine::Registration::ComputeFpfh(srcDs, normalRadius, fpfhRadius);
+    auto tgtF = Engine::Registration::ComputeFpfh(tgtDs, normalRadius, fpfhRadius);
+    auto corr = Engine::Registration::MatchFeatures(srcF, tgtF, 0.95f, cfg.numMaxCorr);
+    ASSERT_GE(corr.size(), 3u);
+
+    std::vector<Eigen::Vector3f> allSrc, allDst;
+    allSrc.reserve(corr.size());
+    allDst.reserve(corr.size());
+    for (auto &c: corr) {
+        allSrc.push_back(srcDs.points[c.srcIdx]);
+        allDst.push_back(tgtDs.points[c.tgtIdx]);
+    }
+    Eigen::Matrix4f baselineT = Engine::Registration::SolveRigidUmeyama(allSrc, allDst);
+    Eigen::Matrix4f errB = baselineT * Tgt;
+    float rotB = Eigen::AngleAxisf(Eigen::Matrix3f(errB.block<3, 3>(0, 0))).angle();
+    float trB = errB.block<3, 1>(0, 3).norm();
+
+    EXPECT_GT(rotB, 0.3f) << "no-RANSAC baseline should be dragged far from the truth by outlier "
+                             "correspondences (rot err rad="
+                          << rotB << ", trans err mm=" << trB << ") -- if this fails, RANSAC's "
+                          "max-inlier rejection isn't actually needed for this fixture";
 }
