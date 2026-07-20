@@ -1,6 +1,7 @@
 #include "Engine/Registration/Downsample.h"
 #include "Engine/Registration/FeatureMatching.h"
 #include "Engine/Registration/Fpfh.h"
+#include "Engine/Registration/GlobalRegistration.h"
 #include "Engine/Registration/RegistrationTypes.h"
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>
@@ -65,4 +66,23 @@ TEST(Registration, MatchRecoversIdentityCorrespondencesUnderRotation) {
     int selfMatches = 0; for (auto& c : corr) if (c.srcIdx == c.tgtIdx) ++selfMatches;
     EXPECT_GT(corr.size(), 100u);
     EXPECT_GT(double(selfMatches) / corr.size(), 0.5) << selfMatches << "/" << corr.size();
+}
+
+TEST(Registration, RansacRecoversKnownTransform) {
+    auto tgt = makeSphere(600, 20.0f);           // "model"
+    // bumpy sphere so FPFH isn't degenerate: perturb radius by a hash
+    for (size_t i = 0; i < tgt.points.size(); ++i) tgt.points[i] *= (1.0f + 0.15f*std::sin(0.7f*i));
+    Eigen::Matrix3f Rgt = Eigen::AngleAxisf(0.6f, Eigen::Vector3f(0.2f,0.7f,0.6f).normalized()).toRotationMatrix();
+    Eigen::Vector3f tgt_t(8.0f, -5.0f, 3.0f);
+    Engine::Registration::PointCloud src = tgt;   // src = model moved by Tgt
+    for (size_t i = 0; i < src.points.size(); ++i) { src.points[i] = Rgt*tgt.points[i] + tgt_t; src.normals[i] = Rgt*tgt.normals[i]; }
+    Engine::Registration::RegistrationConfig cfg; cfg.voxelSize = 2.0f;
+    auto res = Engine::Registration::EstimateRansac(src, tgt, cfg);  // aligns src→tgt ⇒ T ≈ [Rgt|tgt_t]^-1
+    ASSERT_TRUE(res.valid);
+    Eigen::Matrix4f Tgt = Eigen::Matrix4f::Identity(); Tgt.block<3,3>(0,0)=Rgt; Tgt.block<3,1>(0,3)=tgt_t;
+    Eigen::Matrix4f err = res.T * Tgt;   // should be ≈ identity
+    float rotErr = Eigen::AngleAxisf(Eigen::Matrix3f(err.block<3,3>(0,0))).angle();
+    float trErr  = err.block<3,1>(0,3).norm();
+    EXPECT_LT(rotErr, 0.1f) << "rot err rad";       // ~6°
+    EXPECT_LT(trErr, 3.0f)  << "trans err mm";      // coarse RANSAC tolerance
 }
