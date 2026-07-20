@@ -1,5 +1,7 @@
 #include "Engine/Registration/Downsample.h"
+#include "Engine/Registration/Fpfh.h"
 #include "Engine/Registration/RegistrationTypes.h"
+#include <Eigen/Geometry>
 #include <gtest/gtest.h>
 using namespace Engine::Registration;
 
@@ -16,4 +18,35 @@ TEST(Registration, VoxelDownsampleReducesAndKeepsExtent) {
     EXPECT_EQ(out.normals.size(), out.points.size());
     // normals preserved (all +Z)
     for (auto& n : out.normals) EXPECT_NEAR(n.z(), 1.0f, 1e-3f);
+}
+
+static Engine::Registration::PointCloud makeSphere(int n, float r) {
+    Engine::Registration::PointCloud c;
+    for (int i = 0; i < n; ++i) {
+        float a = 2.399963f * i, z = 1.0f - 2.0f * (i + 0.5f) / n;
+        float rr = std::sqrt(std::max(0.0f, 1 - z*z));
+        Eigen::Vector3f d(rr*std::cos(a), rr*std::sin(a), z);
+        c.points.push_back(r * d); c.normals.push_back(d); // outward normals
+    }
+    return c;
+}
+
+TEST(Registration, FpfhIsApproximatelyRotationInvariant) {
+    auto s = makeSphere(600, 20.0f);
+    Eigen::Matrix3f R = Eigen::AngleAxisf(0.7f, Eigen::Vector3f(0.3f,0.8f,0.5f).normalized()).toRotationMatrix();
+    Engine::Registration::PointCloud sr = s;
+    for (auto& p : sr.points) p = R * p;
+    for (auto& nrm : sr.normals) nrm = R * nrm;
+    auto f0 = Engine::Registration::ComputeFpfh(s,  60.0f, 100.0f);
+    auto f1 = Engine::Registration::ComputeFpfh(sr, 60.0f, 100.0f);
+    // point i maps to point i under R (same ordering), so descriptors should be close
+    double maxdiff = 0;
+    for (size_t i = 0; i < f0.size(); ++i) maxdiff = std::max<double>(maxdiff, (f0[i]-f1[i]).norm());
+    // Tuned from the measured value (~1.2e-7, floating-point-level agreement for a correct
+    // implementation) vs. deliberately-broken Darboux-frame variants tried during
+    // development, which measured ~0.033-0.039 (mean per-point descriptor norm ~0.65-1.2).
+    // 0.01 sits ~4 orders of magnitude above the measured noise floor and ~3x below the
+    // smallest broken-implementation value observed, so it is small relative to descriptor
+    // magnitude yet still discriminating.
+    EXPECT_LT(maxdiff, 0.01) << "FPFH not rotation-invariant enough (max L2 " << maxdiff << ")";
 }
