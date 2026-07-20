@@ -15,6 +15,11 @@ add_spatial_example(directional_tsdf_demo directional_tsdf_demo.cpp)
 add_spatial_example(directional_tsdf_eval directional_tsdf_eval.cpp)
 add_spatial_example(bvh_benchmark bvh_benchmark.cpp)
 
+# Registers raw scanData/frame_*.ply frames with Engine::Registration before feeding
+# DirectionalTSDF (drops the "already pre-registered" assumption the chair benchmark makes).
+add_spatial_example(registration_chair_demo registration_chair_demo.cpp)
+target_link_libraries(registration_chair_demo PRIVATE Engine::Registration)
+
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
 if (GLSLC_EXECUTABLE)
     # Compiles the given GLSL shaders (relative to this dir) to SPIR-V in a build folder,
