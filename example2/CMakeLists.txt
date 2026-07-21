@@ -17,6 +17,7 @@ add_spatial_example(scan_dataset_gen scan_dataset_gen.cpp)
 # Registers raw scanData/frame_*.ply frames with Engine::Registration before feeding
 # DirectionalTSDF (drops the "already pre-registered" assumption the chair benchmark makes).
 add_spatial_example(registration_chair_demo registration_chair_demo.cpp)
+add_spatial_example(tsdf_slice_debug tsdf_slice_debug.cpp)
 target_link_libraries(registration_chair_demo PRIVATE Engine::Registration)
 
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
