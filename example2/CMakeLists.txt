@@ -20,6 +20,10 @@ add_spatial_example(registration_chair_demo registration_chair_demo.cpp)
 add_spatial_example(tsdf_slice_debug tsdf_slice_debug.cpp)
 target_link_libraries(registration_chair_demo PRIVATE Engine::Registration)
 
+# Headless SimpleTSDF-vs-DirectionalTSDF feature-preservation error metric (Task 2).
+add_spatial_example(tsdf_feature_compare tsdf_feature_compare.cpp)
+target_link_libraries(tsdf_feature_compare PRIVATE Engine::Core)
+
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
 if (GLSLC_EXECUTABLE)
     function(add_compiled_shaders target define)
