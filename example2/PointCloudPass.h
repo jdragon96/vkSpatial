@@ -49,7 +49,6 @@ private:
         bool visible = true;
     };
 
-    Engine::Core::Context &m_context;
     // Engine::Core::Buffer is move/copy-disabled, so PointSet can't live in a std::vector
     // (libc++'s vector::reserve requires Cpp17MoveInsertable even when no reallocation
     // ever actually happens). unique_ptr sidesteps that: each slot is heap-allocated once

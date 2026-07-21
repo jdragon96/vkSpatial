@@ -22,7 +22,7 @@ namespace {
 
 PointCloudPass::PointCloudPass(Engine::Core::Context &context, VkFormat colorFormat,
                                const std::string &shaderDir)
-    : m_context(context), m_pipeline(context) {
+    : m_pipeline(context) {
     for (int i = 0; i < kMaxSets; ++i)
         m_sets[static_cast<size_t>(i)] = std::make_unique<PointSet>(context);
 

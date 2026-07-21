@@ -59,12 +59,125 @@ namespace {
         return 0;
     }
 
-    std::vector<PointVertex> ToWhitePointVertices(const std::vector<Eigen::Vector3f> &points) {
-        std::vector<PointVertex> vertices;
-        vertices.reserve(points.size());
-        for (const Eigen::Vector3f &p : points)
-            vertices.push_back({{p.x(), p.y(), p.z()}, {255, 255, 255, 255}});
-        return vertices;
+    // Initial scene: --scene plane|interproximal (default plane). 0 = plane, 1 = interproximal.
+    int ParseSceneArg(int argc, char **argv) {
+        for (int i = 1; i < argc; ++i) {
+            const std::string arg = argv[i];
+            if (arg == "--scene" && i + 1 < argc)
+                return std::string(argv[i + 1]) == "interproximal" ? 1 : 0;
+        }
+        return 0;
+    }
+
+    // Debug overrides for the initial ViewerState so the quality/color rebuild paths can be
+    // exercised headlessly (the UI can still change them interactively afterwards):
+    //   --maxdir N   initial IntegrationQuality.maxDirections
+    //   --viewangle  enable view-angle weighting
+    int ParseIntArg(int argc, char **argv, const char *name, int fallback) {
+        for (int i = 1; i < argc; ++i)
+            if (std::string(argv[i]) == name && i + 1 < argc)
+                return std::stoi(argv[i + 1]);
+        return fallback;
+    }
+
+    bool ParseFlag(int argc, char **argv, const char *name) {
+        for (int i = 1; i < argc; ++i)
+            if (std::string(argv[i]) == name)
+                return true;
+        return false;
+    }
+
+    constexpr float kVoxelSize = 0.1f;
+    constexpr float kTruncation = 0.3f;
+
+    // Rebuilds the whole TSDF + all point sets from the current ViewerState. MUST be called
+    // between frames (never inside a RenderPass::Execute): Integrate()/PointCloud() and the
+    // slice readback all submit their own GPU work / read back from the device.
+    //
+    // DirectionalTSDF has no Reset/Clear and re-integrating into a used volume accumulates,
+    // so each rebuild constructs a fresh volume for a clean field. Prints the resulting stats
+    // to stdout (the numeric cross-check oracle, since the visuals aren't capturable).
+    void Rebuild(ViewerState &state, Engine::Core::Context &ctx,
+                 std::unique_ptr<Engine::Spatial::DirectionalTSDF> &tsdf, PointCloudPass &pass) {
+        using namespace Engine::Spatial;
+
+        tsdf = std::make_unique<DirectionalTSDF>();
+        tsdf->Build(ctx, kVoxelSize, kTruncation);
+
+        IntegrationQuality quality;
+        quality.maxDirections = static_cast<uint32_t>(state.maxDirections < 1 ? 1 : state.maxDirections);
+        quality.dirExponent = 4;
+        quality.viewAngleWeight = state.viewAngle;
+        tsdf->SetIntegrationQuality(quality);
+
+        std::vector<Eigen::Vector3f> inputPoints;
+        float sliceZHalf = 0.0f;
+        if (state.scene == 1) {
+            const tsdf_fixtures::InterproximalFixture fx = tsdf_fixtures::MakeInterproximalFixture();
+            // Two separate integrate passes, one per camera (matches tsdf_slice_debug).
+            tsdf->Integrate(fx.pB, fx.nB, Eigen::Vector3f(0, 0, 5), Eigen::Vector3f::Zero());
+            tsdf->Integrate(fx.pA, fx.nA, Eigen::Vector3f(0, 0, -5), Eigen::Vector3f::Zero());
+            inputPoints = fx.allPoints;
+            sliceZHalf = 0.5f; // matches tsdf_slice_debug's interproximal slice half-extent
+        } else {
+            const tsdf_fixtures::PlaneFixture plane = tsdf_fixtures::MakePlaneFixture();
+            tsdf->Integrate(plane.points, plane.normals, Eigen::Vector3f(0, 0, 5),
+                            Eigen::Vector3f::Zero());
+            inputPoints = plane.points;
+            sliceZHalf = 2.0f * kTruncation; // matches tsdf_slice_debug's plane slice half-extent
+        }
+
+        // Set 0: INPUT (white).
+        std::vector<PointVertex> inputVerts;
+        inputVerts.reserve(inputPoints.size());
+        for (const Eigen::Vector3f &p : inputPoints)
+            inputVerts.push_back({{p.x(), p.y(), p.z()}, {255, 255, 255, 255}});
+        pass.SetPointSet(0, inputVerts);
+
+        // Set 1: EXTRACTED (by direction bitmask or flat green).
+        std::vector<PointVertex> extractedVerts;
+        const std::vector<ExtractedPoint> &cloud = tsdf->PointCloud();
+        extractedVerts.reserve(cloud.size());
+        float sumAbsZ = 0.0f;
+        for (const ExtractedPoint &e : cloud) {
+            const tsdf_fixtures::Rgb c = state.extractColor == 0
+                                                 ? tsdf_fixtures::dirColor(e.dirMask)
+                                                 : tsdf_fixtures::Rgb{40, 220, 40};
+            extractedVerts.push_back(
+                    {{e.position.x(), e.position.y(), e.position.z()}, {c.r, c.g, c.b, 255}});
+            sumAbsZ += std::fabs(e.position.z());
+        }
+        pass.SetPointSet(1, extractedVerts);
+
+        // Sets 2/3: SLICE +Z (dir 4) / SLICE -Z (dir 5) of the TSDF field at y=0.
+        const tsdf_fixtures::SliceResult sliceP =
+                tsdf_fixtures::BuildSlice(*tsdf, 4, kVoxelSize, 2.0f, sliceZHalf);
+        const tsdf_fixtures::SliceResult sliceN =
+                tsdf_fixtures::BuildSlice(*tsdf, 5, kVoxelSize, 2.0f, sliceZHalf);
+        pass.SetPointSet(2, sliceP.points);
+        pass.SetPointSet(3, sliceN.points);
+
+        // Visibility from the show* flags.
+        pass.SetVisible(0, state.showInput);
+        pass.SetVisible(1, state.showExtracted);
+        pass.SetVisible(2, state.showSliceP);
+        pass.SetVisible(3, state.showSliceN);
+
+        // Stats.
+        state.nInput = inputPoints.size();
+        state.nExtracted = cloud.size();
+        state.extractedZMean = cloud.empty() ? 0.0f : sumAbsZ / static_cast<float>(cloud.size());
+        state.crossP = sliceP.crossZ;
+        state.crossN = sliceN.crossZ;
+        state.dirty = false;
+
+        std::cout << "[rebuild] scene=" << (state.scene == 1 ? "interproximal" : "plane")
+                  << " maxDir=" << quality.maxDirections
+                  << " viewAngle=" << (quality.viewAngleWeight ? 1 : 0)
+                  << " extractColor=" << (state.extractColor == 0 ? "dir" : "green")
+                  << " | nInput=" << state.nInput << " nExtracted=" << state.nExtracted
+                  << " |z|mean=" << state.extractedZMean << " crossP(dir4)=" << state.crossP
+                  << " crossN(dir5)=" << state.crossN << std::endl;
     }
 
 } // namespace
@@ -84,15 +197,16 @@ int main(int argc, char **argv) {
         camera.SetPerspective(60.0f * 3.14159265f / 180.0f, aspect, 0.05f, 100.0f);
         camera.SetOrbit({0.0f, 0.0f, 0.0f}, 6.0f);
 
-        // Build the plane fixture and integrate it into a DirectionalTSDF, mirroring the
-        // integrate step of tsdf_slice_debug's "plane" scene. Task 1 only renders the raw
-        // input samples (white); the TSDF itself is built now so Task 2/3 can add the
-        // extracted-cloud and slice point sets without re-plumbing this setup.
-        Engine::Spatial::DirectionalTSDF tsdf;
-        tsdf.Build(app.GetContext());
-        const tsdf_fixtures::PlaneFixture plane = tsdf_fixtures::MakePlaneFixture();
-        tsdf.Integrate(plane.points, plane.normals, Eigen::Vector3f(0.0f, 0.0f, 5.0f),
-                       Eigen::Vector3f::Zero());
+        // The TSDF volume + all point sets are (re)built by Rebuild() between frames whenever
+        // state.dirty is set (see the render loop below). state.dirty starts true, so the
+        // first loop iteration performs the initial build before any frame is in flight. The
+        // volume is a unique_ptr because Rebuild constructs a fresh one per rebuild (no
+        // Reset/Clear on DirectionalTSDF; re-integrating a used volume would accumulate).
+        ViewerState state;
+        state.scene = ParseSceneArg(argc, argv);
+        state.maxDirections = std::clamp(ParseIntArg(argc, argv, "--maxdir", 1), 1, 2);
+        state.viewAngle = ParseFlag(argc, argv, "--viewangle");
+        std::unique_ptr<Engine::Spatial::DirectionalTSDF> tsdf;
 
         const std::string shaderDir = VIEWER_SHADER_DIR;
         Engine::Render::RenderGraph graph;
@@ -117,8 +231,7 @@ int main(int argc, char **argv) {
         graph.AddPass(std::move(imGuiPassOwned));
 
         pointCloudPass->SetPointSize(4.0f);
-        pointCloudPass->SetPointSet(0, ToWhitePointVertices(plane.points));
-        imGuiPass->SetPointCount(static_cast<uint32_t>(plane.points.size()));
+        imGuiPass->SetViewer(&state, pointCloudPass);
 
         app.GetView().SetScene(&scene);
         app.GetView().SetCamera(&camera);
@@ -161,7 +274,37 @@ int main(int argc, char **argv) {
                 app.GetWindow().RequestClose();
         });
 
-        app.Run();
+        // Manual render loop (replicates Engine::Render::Application::Run) so the TSDF
+        // rebuild can run BETWEEN frames. Application::Run() exposes no per-frame hook, and
+        // Rebuild() submits its own GPU compute + reads back from the device -- which must
+        // never happen inside a RenderPass::Execute (mid graphics command buffer). The UI
+        // only sets state.dirty; the actual rebuild happens here, before BeginFrame, guarded
+        // by a device-idle wait so no graphics frame is in flight while vertex buffers are
+        // re-uploaded (the Renderer is single-frame-in-flight). No engine change required.
+        Engine::Core::Context &ctx = app.GetContext();
+        try {
+            while (!app.GetWindow().ShouldClose()) {
+                app.GetWindow().PollEvents();
+
+                const VkExtent2D size = app.GetWindow().FramebufferSize();
+                if (size.width == 0 || size.height == 0)
+                    continue;
+
+                if (state.dirty) {
+                    vkDeviceWaitIdle(ctx.device);
+                    Rebuild(state, ctx, tsdf, *pointCloudPass);
+                }
+
+                if (!app.GetRenderer().BeginFrame(size.width, size.height))
+                    continue;
+                app.GetRenderer().Render(app.GetView());
+                app.GetRenderer().EndFrame();
+            }
+        } catch (...) {
+            vkDeviceWaitIdle(ctx.device);
+            throw;
+        }
+        vkDeviceWaitIdle(ctx.device);
     } catch (const std::exception &e) {
         std::cerr << e.what() << "\n";
         return 1;
