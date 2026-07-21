@@ -19,6 +19,10 @@ namespace Engine::Render {
         std::vector<const char *> RequiredInstanceExtensions() const override;
         VkSurfaceKHR CreateSurface(VkInstance instance) const override;
 
+        // Raw GLFW handle, needed by ImGui's GLFW backend (Task 2) and by tools that must
+        // call GLFW APIs directly (e.g. forcing window-close for --frames smoke tests).
+        GLFWwindow *Handle() { return m_window; }
+
     private:
         GLFWwindow *m_window = nullptr;
 

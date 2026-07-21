@@ -75,6 +75,10 @@ if (GLSLC_EXECUTABLE)
     target_link_libraries(blinn_phong PRIVATE Engine::Render Engine::Core)
     add_compiled_shaders(blinn_phong BLINN_PHONG_SHADER_DIR
             Shaders/BlinnPhong.vert.glsl Shaders/BlinnPhong.frag.glsl)
+
+    add_spatial_example(tsdf_viewer tsdf_viewer.cpp PointCloudPass.cpp)
+    target_link_libraries(tsdf_viewer PRIVATE Engine::Render)
+    add_compiled_shaders(tsdf_viewer VIEWER_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
 else ()
     message(WARNING "cube_render2/shadow_map/blinn_phong examples skipped because glslc was not found")
 endif ()
