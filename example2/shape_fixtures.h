@@ -21,6 +21,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace fixtures {
@@ -80,6 +81,33 @@ namespace fixtures {
         if (nearRimRadius && nearCapPlane) return Region::Edge; // rim (side meets cap)
         if (nearCapPlane) return Region::Flat;                  // cap disk
         return Region::Curved;                                  // side wall
+    }
+
+    // -------- render-free color helpers (Task 3) --------
+    //
+    // Local Rgb, deliberately NOT tsdf_fixtures.h's Rgb (which drags in PointCloudPass.h ->
+    // Engine::Render/Vulkan). shape_fixtures.h stays render-free by contract (see file header)
+    // so tsdf_feature_compare's headless --dump path keeps linking only Engine::Spatial/Core;
+    // the windowed app converts Rgb -> PointVertex.rgba itself.
+    struct Rgb {
+        uint8_t r, g, b;
+    };
+
+    // Sequential blue->red error colormap: t=0 (no error) -> blue, t=1 (>= maxErr) -> red.
+    inline Rgb errorColor(float err, float maxErr) {
+        const float t = std::clamp(maxErr > 0.0f ? err / maxErr : 0.0f, 0.0f, 1.0f);
+        return {static_cast<uint8_t>(255.0f * t), static_cast<uint8_t>(60),
+                static_cast<uint8_t>(255.0f * (1.0f - t))};
+    }
+
+    // Region-bucket color: Flat=grey, Curved=blue, Edge=red (matches the per-region table).
+    inline Rgb regionColor(Region r) {
+        switch (r) {
+            case Region::Flat: return {200, 200, 200};
+            case Region::Curved: return {80, 160, 230};
+            case Region::Edge: return {240, 80, 80};
+        }
+        return {200, 200, 200};
     }
 
     namespace detail {

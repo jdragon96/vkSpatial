@@ -20,10 +20,6 @@ add_spatial_example(registration_chair_demo registration_chair_demo.cpp)
 add_spatial_example(tsdf_slice_debug tsdf_slice_debug.cpp)
 target_link_libraries(registration_chair_demo PRIVATE Engine::Registration)
 
-# Headless SimpleTSDF-vs-DirectionalTSDF feature-preservation error metric (Task 2).
-add_spatial_example(tsdf_feature_compare tsdf_feature_compare.cpp)
-target_link_libraries(tsdf_feature_compare PRIVATE Engine::Core)
-
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
 if (GLSLC_EXECUTABLE)
     function(add_compiled_shaders target define)
@@ -83,6 +79,14 @@ if (GLSLC_EXECUTABLE)
     add_spatial_example(tsdf_viewer tsdf_viewer.cpp PointCloudPass.cpp ImGuiPass.cpp)
     target_link_libraries(tsdf_viewer PRIVATE Engine::Render imgui)
     add_compiled_shaders(tsdf_viewer VIEWER_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
+
+    # Interactive Simple-vs-Directional feature-preservation viewer (Task 3). Windowed: A/B
+    # toggle between the two extracted clouds (same camera), error/region color modes, and an
+    # ImGui panel with the per-region metric table. `--dump` still runs the Task-2 headless
+    # correctness oracle and returns before any window is created.
+    add_spatial_example(tsdf_feature_compare tsdf_feature_compare.cpp PointCloudPass.cpp ImGuiPass.cpp)
+    target_link_libraries(tsdf_feature_compare PRIVATE Engine::Render Engine::Core imgui)
+    add_compiled_shaders(tsdf_feature_compare FEATURE_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
 else ()
     message(WARNING "cube_render2/shadow_map/blinn_phong examples skipped because glslc was not found")
 endif ()
