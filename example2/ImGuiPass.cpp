@@ -1,7 +1,5 @@
 #include "ImGuiPass.h"
 
-#include "PointCloudPass.h"
-
 #include "Engine/Render/RenderAttachments.h"
 #include "Engine/Render/Rendering.h"
 #include "Engine/Render/SwapChain.h"
@@ -100,48 +98,8 @@ void ImGuiPass::Execute(Engine::Render::RenderContext &ctx) {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::Begin("TSDF Viewer");
-    if (m_state != nullptr) {
-        ViewerState &s = *m_state;
-
-        ImGui::SeparatorText("Scene");
-        if (ImGui::Combo("scene", &s.scene, "plane\0interproximal\0\0"))
-            s.dirty = true;
-
-        ImGui::SeparatorText("Integration quality");
-        if (ImGui::SliderInt("maxDirections", &s.maxDirections, 1, 2))
-            s.dirty = true;
-        if (ImGui::Checkbox("view-angle weight", &s.viewAngle))
-            s.dirty = true;
-        if (ImGui::Combo("extract color", &s.extractColor, "direction\0green\0\0"))
-            s.dirty = true;
-
-        // Layer toggles are cheap: flip PointCloudPass visibility immediately, no rebuild.
-        ImGui::SeparatorText("Layers");
-        if (ImGui::Checkbox("input (white)", &s.showInput) && m_pass != nullptr)
-            m_pass->SetVisible(0, s.showInput);
-        if (ImGui::Checkbox("extracted", &s.showExtracted) && m_pass != nullptr)
-            m_pass->SetVisible(1, s.showExtracted);
-        if (ImGui::Checkbox("slice +Z (dir 4)", &s.showSliceP) && m_pass != nullptr)
-            m_pass->SetVisible(2, s.showSliceP);
-        if (ImGui::Checkbox("slice -Z (dir 5)", &s.showSliceN) && m_pass != nullptr)
-            m_pass->SetVisible(3, s.showSliceN);
-
-        ImGui::SeparatorText("Stats");
-        ImGui::Text("input points:     %zu", s.nInput);
-        ImGui::Text("extracted points: %zu", s.nExtracted);
-        ImGui::Text("extracted |z| mean: %.5f mm", s.extractedZMean);
-        ImGui::Text("+Z crossing (dir4): %.4f mm", s.crossP);
-        ImGui::Text("-Z crossing (dir5): %.4f mm", s.crossN);
-
-        ImGui::Spacing();
-        if (ImGui::Button("Re-integrate"))
-            s.dirty = true;
-    } else {
-        ImGui::Text("no viewer state bound");
-    }
-    ImGui::Text("frame: %llu", static_cast<unsigned long long>(ctx.frame.frameIndex));
-    ImGui::End();
+    if (m_drawUi)
+        m_drawUi();
 
     ImGui::Render();
 

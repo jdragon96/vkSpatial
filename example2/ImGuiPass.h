@@ -5,33 +5,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vulkan/vulkan.h>
 
 struct GLFWwindow;
-class PointCloudPass;
 
-// Shared interactive state for the TSDF viewer, owned by the app (tsdf_viewer.cpp) and
-// referenced by ImGuiPass. The UI mutates it; the app's between-frames rebuild reads it and
-// writes back the stats fields. `dirty` requests a full TSDF rebuild (scene/quality change);
-// the show* flags drive cheap PointCloudPass::SetVisible toggles with no rebuild.
-struct ViewerState {
-    int scene = 0;         // 0 = plane, 1 = interproximal
-    int maxDirections = 1; // K in IntegrationQuality (1..2)
-    bool viewAngle = false;
-    bool showInput = true, showExtracted = true, showSliceP = true, showSliceN = true;
-    int extractColor = 0; // 0 = by direction bitmask, 1 = flat green
-    bool dirty = true;    // request rebuild (starts true so the first frame builds)
-
-    // Stats, filled by the rebuild and displayed in the panel.
-    size_t nInput = 0, nExtracted = 0;
-    float extractedZMean = 0.0f; // mean |z| of extracted points
-    float crossP = 0.0f;         // +Z-layer (dir 4) central-column zero-crossing z
-    float crossN = 0.0f;         // -Z-layer (dir 5) central-column zero-crossing z
-};
-
-// Draws the Dear ImGui control panel on top of whatever earlier passes rendered into the
-// swapchain image. Owns the full viewer UI (scene / quality / layer-toggle controls + stats
-// readout) and drives interactivity through a shared ViewerState + PointCloudPass reference.
+// Draws a caller-supplied Dear ImGui panel on top of whatever earlier passes rendered into
+// the swapchain image. The panel content itself (windows, controls, stats) is fully owned by
+// the app via SetUi()'s drawUi callback; this pass only drives the ImGui frame lifecycle.
 //
 // Must be added LAST to the RenderGraph: Execute() opens its RenderingScope with
 // VK_ATTACHMENT_LOAD_OP_LOAD (via ColorAttachment::Load()), not CLEAR, so it composites on
@@ -49,12 +30,10 @@ public:
     const char *Name() const override { return "ImGuiPass"; }
     void Execute(Engine::Render::RenderContext &ctx) override;
 
-    // Wire the panel to the shared state and the point-cloud pass it toggles. Must be called
-    // before the first Execute(). Both references must outlive this pass.
-    void SetViewer(ViewerState *state, PointCloudPass *pass) {
-        m_state = state;
-        m_pass = pass;
-    }
+    // Sets the per-frame panel builder, invoked between ImGui::NewFrame() and ImGui::Render()
+    // inside Execute(). Must be called before the first Execute(); anything captured by
+    // drawUi must outlive this pass.
+    void SetUi(std::function<void()> drawUi) { m_drawUi = std::move(drawUi); }
 
 private:
     Engine::Core::Context &m_context;
@@ -64,6 +43,5 @@ private:
     VkFormat m_colorFormat;
     VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
 
-    ViewerState *m_state = nullptr;
-    PointCloudPass *m_pass = nullptr;
+    std::function<void()> m_drawUi;
 };

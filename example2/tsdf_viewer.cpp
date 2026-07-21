@@ -16,10 +16,13 @@
 #include "Engine/Render/Scene.h"
 #include "Engine/Spatial/DirectionalTSDF.h"
 
+#include "imgui.h"
+
 #include <Eigen/Core>
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <memory>
@@ -28,6 +31,25 @@
 #include <vector>
 
 namespace {
+
+    // Shared interactive state for the TSDF viewer. The UI (built in the ImGuiPass::SetUi
+    // lambda below) mutates it; the app's between-frames rebuild reads it and writes back the
+    // stats fields. `dirty` requests a full TSDF rebuild (scene/quality change); the show*
+    // flags drive cheap PointCloudPass::SetVisible toggles with no rebuild.
+    struct ViewerState {
+        int scene = 0;         // 0 = plane, 1 = interproximal
+        int maxDirections = 1; // K in IntegrationQuality (1..2)
+        bool viewAngle = false;
+        bool showInput = true, showExtracted = true, showSliceP = true, showSliceN = true;
+        int extractColor = 0; // 0 = by direction bitmask, 1 = flat green
+        bool dirty = true;    // request rebuild (starts true so the first frame builds)
+
+        // Stats, filled by the rebuild and displayed in the panel.
+        size_t nInput = 0, nExtracted = 0;
+        float extractedZMean = 0.0f; // mean |z| of extracted points
+        float crossP = 0.0f;         // +Z-layer (dir 4) central-column zero-crossing z
+        float crossN = 0.0f;         // -Z-layer (dir 5) central-column zero-crossing z
+    };
 
     // Watches the render graph's frame counter and requests the window close once
     // `maxFrames` frames have been rendered, so `--frames N` gives the launch-smoke test an
@@ -231,7 +253,48 @@ int main(int argc, char **argv) {
         graph.AddPass(std::move(imGuiPassOwned));
 
         pointCloudPass->SetPointSize(4.0f);
-        imGuiPass->SetViewer(&state, pointCloudPass);
+        // Panel body: exactly what used to live in ImGuiPass.cpp::Execute (Task 1 refactor),
+        // now supplied via the generic ImGuiPass::SetUi callback. `state` and `pointCloudPass`
+        // are app-scope locals that outlive the render loop below.
+        imGuiPass->SetUi([&state, pointCloudPass]() {
+            ImGui::Begin("TSDF Viewer");
+
+            ImGui::SeparatorText("Scene");
+            if (ImGui::Combo("scene", &state.scene, "plane\0interproximal\0\0"))
+                state.dirty = true;
+
+            ImGui::SeparatorText("Integration quality");
+            if (ImGui::SliderInt("maxDirections", &state.maxDirections, 1, 2))
+                state.dirty = true;
+            if (ImGui::Checkbox("view-angle weight", &state.viewAngle))
+                state.dirty = true;
+            if (ImGui::Combo("extract color", &state.extractColor, "direction\0green\0\0"))
+                state.dirty = true;
+
+            // Layer toggles are cheap: flip PointCloudPass visibility immediately, no rebuild.
+            ImGui::SeparatorText("Layers");
+            if (ImGui::Checkbox("input (white)", &state.showInput))
+                pointCloudPass->SetVisible(0, state.showInput);
+            if (ImGui::Checkbox("extracted", &state.showExtracted))
+                pointCloudPass->SetVisible(1, state.showExtracted);
+            if (ImGui::Checkbox("slice +Z (dir 4)", &state.showSliceP))
+                pointCloudPass->SetVisible(2, state.showSliceP);
+            if (ImGui::Checkbox("slice -Z (dir 5)", &state.showSliceN))
+                pointCloudPass->SetVisible(3, state.showSliceN);
+
+            ImGui::SeparatorText("Stats");
+            ImGui::Text("input points:     %zu", state.nInput);
+            ImGui::Text("extracted points: %zu", state.nExtracted);
+            ImGui::Text("extracted |z| mean: %.5f mm", state.extractedZMean);
+            ImGui::Text("+Z crossing (dir4): %.4f mm", state.crossP);
+            ImGui::Text("-Z crossing (dir5): %.4f mm", state.crossN);
+
+            ImGui::Spacing();
+            if (ImGui::Button("Re-integrate"))
+                state.dirty = true;
+
+            ImGui::End();
+        });
 
         app.GetView().SetScene(&scene);
         app.GetView().SetCamera(&camera);
