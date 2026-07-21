@@ -2,13 +2,17 @@
 // (Task 1 of the interactive TSDF viewer plan: docs/superpowers/specs,
 // .superpowers/sdd/task-1-brief.md). Builds the "plane" fixture also used by
 // tsdf_slice_debug.cpp, integrates it into a DirectionalTSDF, and renders the raw input
-// point cloud (white) with a trackball camera. No ImGui yet (Task 2) and no extracted /
-// slice point sets wired up yet (Task 3) -- this milestone is just "points on screen".
+// point cloud (white) with a trackball camera.
+// Task 2 (.superpowers/sdd/task-2-brief.md) adds ImGuiPass, drawn as the LAST render-graph
+// pass so its "load, don't clear" RenderingScope composites the panel on top of the points
+// instead of erasing them. No extracted / slice point sets wired up yet (Task 3).
+#include "ImGuiPass.h"
 #include "PointCloudPass.h"
 #include "tsdf_fixtures.h"
 
 #include "Engine/Render/Application.h"
 #include "Engine/Render/Camera.h"
+#include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
 #include "Engine/Spatial/DirectionalTSDF.h"
 
@@ -99,8 +103,22 @@ int main(int argc, char **argv) {
         graph.AddPass(std::move(pointCloudPassOwned));
         graph.AddPass(std::make_unique<FrameLimiterPass>(app.GetWindow(), framesLimit));
 
+        // Window backend is fixed to GLFW (ApplicationDescriptor default, not overridden
+        // above), so the base Window& is always actually a GlfwWindow -- safe to downcast to
+        // reach Handle(), which ImGui's GLFW backend needs.
+        auto &glfwWindow = static_cast<Engine::Render::GlfwWindow &>(app.GetWindow());
+        auto imGuiPassOwned = std::make_unique<ImGuiPass>(
+                app.GetContext(), glfwWindow.Handle(), app.GetSwapChain().Format(),
+                app.GetSwapChain().ImageCount());
+        ImGuiPass *imGuiPass = imGuiPassOwned.get();
+        // Added last: ImGuiPass's RenderingScope loads (does not clear) the swapchain image,
+        // so it must run after PointCloudPass within the same frame to draw the panel over
+        // the points rather than wiping them out.
+        graph.AddPass(std::move(imGuiPassOwned));
+
         pointCloudPass->SetPointSize(4.0f);
         pointCloudPass->SetPointSet(0, ToWhitePointVertices(plane.points));
+        imGuiPass->SetPointCount(static_cast<uint32_t>(plane.points.size()));
 
         app.GetView().SetScene(&scene);
         app.GetView().SetCamera(&camera);

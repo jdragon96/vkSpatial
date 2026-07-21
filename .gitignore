@@ -43,3 +43,7 @@ CmakeSettings.json
 # specific models
 hairball.obj
 powerplant.obj
+
+# Dear ImGui window-layout state, written to the cwd at shutdown by any example that
+# links imgui (e.g. tsdf_viewer via ImGuiPass) -- not something to version.
+imgui.ini
