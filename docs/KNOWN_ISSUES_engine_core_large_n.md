@@ -1,59 +1,58 @@
-# Known issue: Engine::Core compute correctness at scale / under load
+# RESOLVED: Engine::Core compute correctness at scale / under load
 
-**Status:** open — surfaced 2026-07-19 by `example2/bvh_benchmark`. Not addressed in the
-pluggable-BVH work (out of scope: it is an `Engine::Core` module issue, not a BVH bug).
+**Status:** ✅ **fixed 2026-07-23.** One-line correction in `src/shader/bvh_boundingBox.comp`
+(inverted bottom-up-refit arriver condition). Regression tests added to
+`test/test_spatialIndex.cpp` (`BinaryLBVHTest.LargeNKnnExactAcrossScales`,
+`RepeatedBuildsStayExactUnderLoad`). Kept for the record because the original diagnosis
+(below) pointed at the wrong cause.
 
-## Symptom
+## Original symptom
 
-`Engine::Spatial::BinaryLBVH` and `WideBVH` (both built on `Engine::Core::Buffer` +
-`ComputePipeline`) return **wrong, non-deterministic** KNN/RadiusSearch results in two
-regimes:
+`Engine::Spatial::BinaryLBVH` / `WideBVH` returned **wrong, non-deterministic** KNN/Radius
+results, degrading with N (KNN recall ~0.97 @ N=512 → ~0.62 @ N=16384) and dipping under
+sustained build+query load even at N≤512.
 
-1. **At N ≳ 1000** (single build, fresh Context): results are grossly wrong and vary
-   run-to-run (e.g. KNN recall ~3/16, radius returns empty where dozens are expected).
-2. **Under repeated build+dispatch load** (the benchmark builds 6 warmup indices + runs
-   400 queries per backend on one Context): KNN recall dips below 100% even at N ≤ 512
-   (e.g. 62–75% at N=256/512), worsening with N.
+## Actual root cause
 
-## What is NOT the cause (verified)
+`bvh_boundingBox.comp` does the classic Karras bottom-up AABB refit: each leaf walks to the
+root; at every node an atomic visitation counter decides which of the two children-threads
+merges that node. The correct rule is **the FIRST arriver stops** (its sibling subtree is
+not computed yet) **and the SECOND arriver merges** (both children ready). The shader had the
+condition inverted:
 
-- **Not the shaders / BVH algorithm.** The old `vkSpatial::vkBVH` (same
-  `src/shader/bvh_*.comp`, via `vkComputeBase`/`vkGPUMemory`) is **correct and
-  deterministic at N=1000** (temporarily ran `KNNTest.RandomPointsMatchCpuBruteForce`
-  with N=1000, 3/3 passed).
-- **Not the single-build path at small N.** `test/test_spatialIndex.cpp` builds one index
-  per fresh Context at N≤512 and matches a CPU reference **exactly** — all pass.
-- **Not cross-dispatch synchronization.** `SubmitOneShot` calls `vkQueueWaitIdle` after
-  every dispatch, so build steps are fully serialized.
-- **Not buffer zero-init.** Explicitly zeroing the node and construction (visitation-
-  counter) buffers before the build did not help.
-- **Not shared-Context-across-backends.** A fresh `Context` per backend did not help.
+```glsl
+int historicalVisits = atomicAdd(g_constrInfos[nodeIdx].visitationCount, 1); // returns OLD count
+if (historicalVisits == 1) return;   // BUG: second arriver (old==1) returned; first merged
+```
 
-## Leading hypothesis
+So the **first** child to reach a node merged it using the sibling's **not-yet-written**
+AABB — a data race. It grew worse with N (more concurrent workgroups race), and small-N
+unit tests passed only because their specific query points happened not to touch the
+corrupted internal nodes. Fix:
 
-`Engine::Core::Buffer` allocates device-local storage with VMA flags that yield a Metal
-(MoltenVK) storage mode which does **not** provide the cross-workgroup memory coherence
-that `bvh_boundingBox.comp`'s bottom-up, atomic-visitation-counter AABB propagation
-relies on. `vkGPUMemory` (old path) apparently allocates with coherent-compatible flags.
-The bug only manifests once the propagation spans multiple workgroups (larger N) and/or
-after sustained GPU activity, which is why the small-N single-build tests never caught it
-— and why no old test caught it either (old KNN/radius correctness tests top out at
-N≤500; the old "large-N" tests only validate *sorting*).
+```glsl
+if (historicalVisits == 0) return;   // first arriver stops; second (old==1) merges
+```
 
-## Suggested investigation
+## Why the original "memory coherence" hypothesis was wrong (all tested and ruled out)
 
-1. Run with Vulkan validation layers + synchronization validation on a large-N build.
-2. Compare the VMA `VmaAllocationCreateInfo`/usage flags and resulting `VkMemoryPropertyFlags`
-   between `Engine::Core::Buffer::Allocate` and the old `vkGPUMemory::Allocate`.
-3. Check whether `bvh_boundingBox.comp` needs `coherent` SSBO qualifiers +
-   `memoryBarrierBuffer()` that the current pipeline setup doesn't honor on MoltenVK, and
-   whether inserting an explicit `VkMemoryBarrier` between the hierarchy and bounding-box
-   dispatches (or splitting the propagation into level-by-level dispatches) fixes it.
-4. Add large-N (N≥4096) correctness tests to `test/test_spatialIndex.cpp` once fixed, so
-   the regime is covered going forward.
+The earlier writeup blamed MoltenVK cross-workgroup memory coherence / VMA storage mode.
+Each was tested on the failing repro (N up to 16384) and made **no meaningful difference**:
 
-## Impact on the benchmark
+- **Shader optimization** — compiling `bvh_*.comp` at `-O0` instead of `-O performance`:
+  recall unchanged (4096: 0.81 → 0.88, still failing).
+- **Buffer storage mode** — forcing host-visible/coherent memory
+  (`VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT`, Metal `shared` instead of `private`):
+  no change (4096: 0.81).
+- The `coherent` qualifier + `memoryBarrierBuffer()` already in the shader were fine; the
+  bug was pure control-flow logic, not visibility.
 
-`example2/bvh_benchmark` is capped at N≤512 and reports `knn_rec%` transparently. Its
-**structure-size metrics (nodes, mem_KB) and build_ms are trustworthy** and demonstrate
-the wide BVH's compactness; query correctness/timing carry the caveat above.
+Flipping the one condition took recall to **1.000 at every N (512…16384) and under load**,
+with no other change (Context / Buffer / ComputePipeline all reverted to baseline).
+
+## Impact now
+
+`example2/bvh_benchmark`'s N≤512 cap and `knn_rec%` caveat can be lifted; large-N GPU BVH
+build/query is trustworthy. The DirectionalTSDF "keep per-Integrate N ≲ 1000" mitigation is
+no longer required for correctness (it was a symptom of this same refit race via the shared
+`Engine::Core` compute path).

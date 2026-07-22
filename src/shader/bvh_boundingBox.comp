@@ -31,9 +31,13 @@ void main() {
 
     while (true) {
         int historicalVisits = atomicAdd(g_constrInfos[nodeIdx].visitationCount, 1);
-        
-        if (historicalVisits == 1) {
-            return; 
+
+        // Correct Karras bottom-up refit: the FIRST child to arrive (old count 0) stops —
+        // its sibling subtree may not be computed yet. The SECOND arriver (old count 1) has
+        // both children ready and proceeds to merge. (Was inverted: `== 1`, a race that
+        // degraded with N — see KNOWN_ISSUES_engine_core_large_n.)
+        if (historicalVisits == 0) {
+            return;
         }
 
         memoryBarrierBuffer();

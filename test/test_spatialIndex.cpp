@@ -252,3 +252,60 @@ TEST(EngineWideBVHTest, RadiusSearchGuardsRejectInvalidArgs) {
     EXPECT_THROW(bvh.RadiusSearch(nan, 0.0f, 0.0f, 1.0f), std::runtime_error);
     EXPECT_THROW(bvh.RadiusSearch(0.0f, 0.0f, 0.0f, -1.0f), std::runtime_error);
 }
+
+namespace {
+    // Fraction of a query's true k-NN that the GPU returned. 1.0 == exact match.
+    float knnRecall(const std::vector<uint32_t> &gpu, const std::vector<uint32_t> &cpu) {
+        std::vector<uint32_t> g = gpu, c = cpu;
+        std::sort(g.begin(), g.end());
+        std::sort(c.begin(), c.end());
+        std::vector<uint32_t> inter;
+        std::set_intersection(g.begin(), g.end(), c.begin(), c.end(), std::back_inserter(inter));
+        return c.empty() ? 1.0f : static_cast<float>(inter.size()) / static_cast<float>(c.size());
+    }
+
+    // Mean k-NN recall over Q random query points against a CPU brute-force reference.
+    float meanKnnRecall(SpatialIndex &bvh, const std::vector<PointPrim> &pts,
+                        uint32_t k, int Q, uint32_t seed) {
+        std::mt19937 rng(seed);
+        std::uniform_real_distribution<float> d(-20.0f, 20.0f);
+        float sum = 0.0f;
+        for (int q = 0; q < Q; ++q) {
+            const float cx = d(rng), cy = d(rng), cz = d(rng);
+            sum += knnRecall(bvh.KNN(cx, cy, cz, static_cast<int>(k)), cpuKNN(pts, cx, cy, cz, k));
+        }
+        return sum / static_cast<float>(Q);
+    }
+} // namespace
+
+// Regression for the bottom-up AABB-refit race (docs/KNOWN_ISSUES_engine_core_large_n.md):
+// bvh_boundingBox.comp merged a node on its FIRST arriving child instead of its second, so
+// large builds (many workgroups) returned grossly wrong, N-dependent KNN results. A single
+// fresh build must now be exact at every N.
+TEST(BinaryLBVHTest, LargeNKnnExactAcrossScales) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+
+    for (uint32_t N : {1024u, 4096u, 16384u}) {
+        const auto pts = randomPoints(N, 7);
+        BinaryLBVH bvh(*h.ctx);
+        bvh.Build(pts);
+        EXPECT_FLOAT_EQ(meanKnnRecall(bvh, pts, 16, 24, 123), 1.0f)
+                << "KNN wrong at N=" << N << " — AABB refit race regressed";
+    }
+}
+
+// The same bug also surfaced only under sustained load at small N. Repeated builds +
+// many queries on one Context must all stay exact.
+TEST(BinaryLBVHTest, RepeatedBuildsStayExactUnderLoad) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+
+    for (int build = 0; build < 6; ++build) {
+        const auto pts = randomPoints(512, 100u + static_cast<uint32_t>(build));
+        BinaryLBVH bvh(*h.ctx);
+        bvh.Build(pts);
+        EXPECT_FLOAT_EQ(meanKnnRecall(bvh, pts, 16, 40, 321), 1.0f)
+                << "KNN wrong on build #" << build << " under load";
+    }
+}
