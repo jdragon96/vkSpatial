@@ -67,6 +67,11 @@ namespace Engine::Spatial {
         // single-dominant-axis behavior exactly).
         void SetIntegrationQuality(const IntegrationQuality &q) { m_quality = q; }
 
+        // Opt-in sub-voxel extraction: project each extracted point onto the zero isosurface via
+        // a first-order gradient step (default off = legacy axis-crossing average). Position only;
+        // normals are unchanged. See docs/superpowers/specs/2026-07-22-directional-tsdf-subvoxel-extraction-design.md.
+        void SetSubvoxelRefine(bool on) { m_subvoxelRefine = on; }
+
         // Starts a frame: recomputes the local base (window centred on the hint, snapped to
         // the group grid) and resets the indexGrid to kInvalidPoolIndex.
         void BeginFrame(const Eigen::Vector3f &aabbCenterHint);
@@ -125,6 +130,7 @@ namespace Engine::Spatial {
         float m_voxelSize = 0.1f;
         float m_truncation = 0.3f;
         IntegrationQuality m_quality;
+        bool m_subvoxelRefine = false;
 
         std::unique_ptr<IResidencyBackend> m_backend;
 
