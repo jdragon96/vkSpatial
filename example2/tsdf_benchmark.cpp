@@ -67,6 +67,34 @@
 // summed over the view loop), a small MrHash-style single-resolution projection off
 // SimpleTSDF::DownloadVoxels (legacy bonus section, kept for continuity with
 // variance_adaptive_demo.cpp), and the new real 2-level sigma sweep described above.
+//
+// ---------------------------------------------------------------------------------------------
+// [directional-storage] / Adaptive-Directional hybrid (Task: "can we get DirectionalTSDF
+// accuracy at less memory?"):
+//
+//   Part 1 (AnalyzeDirectionalStorage): the existing Directional row's mem_KB
+//   (dir.HostStore().Size()*4096B) counts whole 512-voxel groups -- mostly empty near a thin
+//   surface band. This enumerates the ACTUAL occupied (weight>0) directional voxels and
+//   projects what a per-voxel store (8B/voxel, same accuracy) would cost, plus a
+//   directions-per-occupied-voxel histogram (pruning potential: most flat voxels only ever
+//   get written from one dominant direction).
+//
+//   HONEST-MEASUREMENT NOTE: this reads the live GPU active pool (DebugDownloadIndexGrid +
+//   DebugDownloadGroupVoxels), NOT DirectionalHostStore's values. Every view here integrates
+//   with the same aabbCenterHint (Zero()), so DirectionalTSDF's local window never moves
+//   across a shape's whole view loop; directional_tsdf_classify.comp's "inside window" test
+//   therefore reclassifies every previously-active slot as "reusable" every frame, so the
+//   dirty write-back path (the only place HostStore() is Put with real data) never fires.
+//   HostStore() still holds one zero-filled Group per touched key (inserted once via
+//   GetOrCreate the first time that key becomes resident) -- so HostStore().Size() remains a
+//   correct OCCUPANCY count (matches mem_KB above) but HostStore().Get(key) is all-zero for
+//   this run. The GPU pool holds the real values, hence the debug-pool reads below.
+//
+//   Part 2 (RunAdaptiveDirectional): reuses the sigma-sweep's per-coarse-cell variance
+//   classification (median sigma) to build a hybrid surface = Directional points in
+//   high-variance ("edge") cells U Simple(fine) points in low-variance ("flat") cells, with
+//   memory = flat Simple voxels*16B + edge occupied-directional-voxels*8B (per-voxel
+//   projected, restricted to edge cells, from the same Part-1 pass).
 #include "shape_fixtures.h"
 
 #include "Engine/Core/Context.h"
@@ -81,6 +109,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -229,6 +258,47 @@ namespace {
         double meanVar() const { return fineCount ? varSum / double(fineCount) : 0.0; }
     };
 
+    // Groups fine voxels into coarse cells (single source of truth, shared by the sigma
+    // sweep and the Adaptive-Directional hybrid so both agree on the same cell statistics).
+    std::map<CellKey, CellAgg> BuildCellStats(
+            const std::vector<Engine::Spatial::VoxelStat> &fineVoxels, float vc) {
+        std::map<CellKey, CellAgg> cellStats;
+        for (const auto &v : fineVoxels) {
+            CellAgg &agg = cellStats[CellOf(v.center, vc)];
+            agg.varSum += double(v.variance);
+            ++agg.fineCount;
+        }
+        return cellStats;
+    }
+
+    // p-th percentile (0..1) of the per-cell mean-variance distribution. Empty -> 0.
+    double PercentileOfCellVars(const std::map<CellKey, CellAgg> &cellStats, double p) {
+        if (cellStats.empty()) return 0.0;
+        std::vector<double> cellVars;
+        cellVars.reserve(cellStats.size());
+        for (const auto &kv : cellStats) cellVars.push_back(kv.second.meanVar());
+        std::sort(cellVars.begin(), cellVars.end());
+        const std::size_t idx =
+                std::min(cellVars.size() - 1, std::size_t(p * double(cellVars.size() - 1)));
+        return cellVars[idx];
+    }
+
+    // Shared high-variance ("edge") cell test at a single (median) sigma -- used by the
+    // Adaptive-Directional hybrid (Part 2) to select Directional-vs-Simple(fine) per cell.
+    // The sigma sweep below (RunVarianceAdaptiveSweep) builds its own per-percentile sigmas
+    // from the same BuildCellStats/PercentileOfCellVars but is otherwise independent.
+    struct CellClassifier {
+        std::map<CellKey, CellAgg> cellStats;
+        float vc = 0.0f;
+        double sigma = 0.0;
+
+        bool IsHighVar(const Eigen::Vector3f &p) const {
+            const auto it = cellStats.find(CellOf(p, vc));
+            // A cell with no fine voxels has nothing to keep fine -> treat as coarse/flat.
+            return it != cellStats.end() && it->second.meanVar() > sigma;
+        }
+    };
+
     struct SigmaRow {
         std::string shape;
         double sigma = 0.0;
@@ -271,12 +341,7 @@ namespace {
             const Engine::Spatial::OrientedPointCloud &coarseCloud) {
         std::vector<SigmaRow> out;
 
-        std::map<CellKey, CellAgg> cellStats;
-        for (const auto &v : fineVoxels) {
-            CellAgg &agg = cellStats[CellOf(v.center, vc)];
-            agg.varSum += double(v.variance);
-            ++agg.fineCount;
-        }
+        std::map<CellKey, CellAgg> cellStats = BuildCellStats(fineVoxels, vc);
 
         if (cellStats.empty()) {
             std::printf("  [variance-adaptive-2level] %s: no fine voxels, skipping sigma sweep\n",
@@ -284,21 +349,10 @@ namespace {
             return out;
         }
 
-        std::vector<double> cellVars;
-        cellVars.reserve(cellStats.size());
-        for (const auto &kv : cellStats) cellVars.push_back(kv.second.meanVar());
-        std::sort(cellVars.begin(), cellVars.end());
-
-        auto percentile = [&](double p) {
-            const std::size_t idx =
-                    std::min(cellVars.size() - 1, std::size_t(p * double(cellVars.size() - 1)));
-            return cellVars[idx];
-        };
-
         const std::array<double, 4> percentiles = {0.25, 0.50, 0.75, 0.90};
 
         for (double p : percentiles) {
-            const double sigma = percentile(p);
+            const double sigma = PercentileOfCellVars(cellStats, p);
 
             SigmaRow row;
             row.shape = ShapeName(shape);
@@ -394,9 +448,123 @@ namespace {
         return row;
     }
 
-    Row RunDirectional(Engine::Core::Context &ctx, Shape shape, float voxel, uint32_t maxDir,
-                       const std::vector<fixtures::View> &views) {
+    // ---- Part 1: Directional per-voxel storage-waste measurement --------------------------
+
+    struct DirStorageStats {
+        std::size_t occupiedGroups = 0;      // (block,direction) groups currently resident
+        std::size_t occupiedDirVoxels = 0;   // total (voxel,direction) instances with weight>0
+        std::size_t occupiedDirVoxelsEdge = 0; // subset of the above in high-variance ("edge") cells
+        std::size_t occupiedPositions = 0;   // distinct (block,local-voxel) positions with >=1 dir occupied
+        std::size_t hist1 = 0, hist2 = 0, hist3plus = 0; // direction-count histogram over occupiedPositions
+        double avgDirsPerVoxel = 0.0;
+        double memBlockKB = 0.0;             // current: HostStore().Size()*4096B (whole-group granularity)
+        double memPerVoxelProjectedKB = 0.0; // occupiedDirVoxels*8B (per-voxel granularity, same accuracy)
+        double wasteFactor = 0.0;            // memBlockKB / memPerVoxelProjectedKB
+    };
+
+    // Enumerates DirectionalTSDF's currently-resident GPU active-pool groups over a generous
+    // block bounding box around the shape, downloading each occupied group's live voxel data
+    // (DebugDownloadGroupVoxels) to count weight>0 voxels -- see the file-header
+    // HONEST-MEASUREMENT NOTE for why this reads the GPU pool rather than dir.HostStore()'s
+    // values (HostStore()'s values are stale zeros for this benchmark's fixed-window usage
+    // pattern; only its Size() -- an occupancy count -- is meaningful here).
+    //
+    // `isEdgeCell`, if set, additionally tallies occupiedDirVoxelsEdge -- the subset of
+    // occupied voxels whose world-space center falls in a high-variance cell (Part 2's
+    // Adaptive-Directional hybrid memory term) -- in the SAME pass, avoiding a second
+    // GPU-download sweep.
+    DirStorageStats AnalyzeDirectionalStorage(
+            Engine::Spatial::DirectionalTSDF &dir, float voxel,
+            const std::function<bool(const Eigen::Vector3f &)> &isEdgeCell) {
+        using namespace Engine::Spatial;
+        DirStorageStats out;
+        out.memBlockKB = double(dir.HostStore().Size()) * 4096.0 / 1024.0;
+
+        const std::vector<uint32_t> indexGrid = dir.DebugDownloadIndexGrid();
+        const Eigen::Vector3i localBase = dir.LocalBase();
+
+        auto slotFor = [&](const DirectionalGroupKey &key) -> uint32_t {
+            const int lx = key.gx - localBase.x();
+            const int ly = key.gy - localBase.y();
+            const int lz = key.gz - localBase.z();
+            if (lx < 0 || ly < 0 || lz < 0 || lx >= int(kLocalGroupGrid) ||
+                ly >= int(kLocalGroupGrid) || lz >= int(kLocalGroupGrid))
+                return kInvalidPoolIndex;
+            return indexGrid[IndexGridOffset(uint32_t(lx), uint32_t(ly), uint32_t(lz),
+                                             key.direction)];
+        };
+
+        // Generous bounding box: fixture half-extent (1.5 for both shapes; see
+        // shape_fixtures.h) + the truncation band, converted to block units (kGroupDim
+        // voxels/block) with a safety margin -- covers the shape regardless of which fixture.
+        const float halfExtent =
+                std::max({fixtures::kCubeHalf, fixtures::kCylRadius, fixtures::kCylHalfZ});
+        const float maxCoord = halfExtent + kTruncation + 2.0f * voxel;
+        const int voxelBound = int(std::ceil(double(maxCoord) / double(voxel))) + 2;
+        const int blockBound = int(std::ceil(double(voxelBound) / double(kGroupDim))) + 1;
+
+        for (int gz = -blockBound; gz <= blockBound; ++gz)
+            for (int gy = -blockBound; gy <= blockBound; ++gy)
+                for (int gx = -blockBound; gx <= blockBound; ++gx) {
+                    std::array<uint8_t, kVoxelsPerGroup> dirCount{}; // per-local-voxel dir count
+                    bool anyOccupied = false;
+                    for (uint8_t d = 0; d < uint8_t(kNumDirections); ++d) {
+                        const DirectionalGroupKey key{gx, gy, gz, d};
+                        const uint32_t slot = slotFor(key);
+                        if (slot == kInvalidPoolIndex) continue;
+                        ++out.occupiedGroups;
+                        const DirectionalHostStore::Group group = dir.DebugDownloadGroupVoxels(key);
+                        for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
+                            if (group[v].weight <= 0.0f) continue;
+                            ++out.occupiedDirVoxels;
+                            ++dirCount[v];
+                            anyOccupied = true;
+                            if (isEdgeCell) {
+                                const uint32_t lx = v % kGroupDim;
+                                const uint32_t ly = (v / kGroupDim) % kGroupDim;
+                                const uint32_t lz = v / (kGroupDim * kGroupDim);
+                                const int gvx = gx * int(kGroupDim) + int(lx);
+                                const int gvy = gy * int(kGroupDim) + int(ly);
+                                const int gvz = gz * int(kGroupDim) + int(lz);
+                                const Eigen::Vector3f center((float(gvx) + 0.5f) * voxel,
+                                                             (float(gvy) + 0.5f) * voxel,
+                                                             (float(gvz) + 0.5f) * voxel);
+                                if (isEdgeCell(center)) ++out.occupiedDirVoxelsEdge;
+                            }
+                        }
+                    }
+                    if (!anyOccupied) continue;
+                    for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
+                        const uint8_t c = dirCount[v];
+                        if (c == 0) continue;
+                        ++out.occupiedPositions;
+                        if (c == 1) ++out.hist1;
+                        else if (c == 2) ++out.hist2;
+                        else ++out.hist3plus;
+                    }
+                }
+
+        out.memPerVoxelProjectedKB = double(out.occupiedDirVoxels) * 8.0 / 1024.0;
+        out.wasteFactor = out.memPerVoxelProjectedKB > 0.0
+                                  ? out.memBlockKB / out.memPerVoxelProjectedKB
+                                  : 0.0;
+        out.avgDirsPerVoxel = out.occupiedPositions > 0
+                                      ? double(out.occupiedDirVoxels) / double(out.occupiedPositions)
+                                      : 0.0;
+        return out;
+    }
+
+    struct DirectionalResult {
         Row row;
+        std::vector<Eigen::Vector3f> points; // extracted cloud positions (for Part 2 reuse)
+        DirStorageStats storage;
+    };
+
+    DirectionalResult RunDirectional(Engine::Core::Context &ctx, Shape shape, float voxel,
+                                     uint32_t maxDir, const std::vector<fixtures::View> &views,
+                                     const CellClassifier &classifier) {
+        DirectionalResult out;
+        Row &row = out.row;
         row.shape = ShapeName(shape);
         row.method = "Directional";
 
@@ -420,15 +588,81 @@ namespace {
         row.nPoints = cloud.size();
         row.memKB = double(dir.HostStore().Size()) * 4096.0 / 1024.0;
 
-        std::vector<Eigen::Vector3f> pts;
-        pts.reserve(cloud.size());
-        for (const auto &e : cloud) pts.push_back(e.position);
-        ScoreAgainstGT(shape, voxel, pts, row);
+        out.points.reserve(cloud.size());
+        for (const auto &e : cloud) out.points.push_back(e.position);
+        ScoreAgainstGT(shape, voxel, out.points, row);
 
         std::printf("  [directional-internal] %s: sum integrate=%.3fms extract=%.3fms "
                     "merge=%.3fms (over %zu frames)\n",
                     ShapeName(shape), sumIntegrateMs, sumExtractMs, sumMergeMs, views.size());
 
+        // Part 1 storage-waste enumeration must run before `dir` goes out of scope --
+        // the debug pool downloads need the live backend.
+        auto isEdgeCell = [&classifier](const Eigen::Vector3f &p) { return classifier.IsHighVar(p); };
+        out.storage = AnalyzeDirectionalStorage(dir, voxel, isEdgeCell);
+
+        return out;
+    }
+
+    void PrintDirectionalStorage(Shape shape, const DirStorageStats &s) {
+        std::printf("  [directional-storage] %s: mem_block=%.2f KB  occupied_dir_voxels=%zu  "
+                    "mem_pervoxel_projected=%.2f KB  waste_factor=%.1fx\n",
+                    ShapeName(shape), s.memBlockKB, s.occupiedDirVoxels, s.memPerVoxelProjectedKB,
+                    s.wasteFactor);
+        const double pct1 = s.occupiedPositions ? 100.0 * double(s.hist1) / double(s.occupiedPositions) : 0.0;
+        const double pct2 = s.occupiedPositions ? 100.0 * double(s.hist2) / double(s.occupiedPositions) : 0.0;
+        const double pct3 = s.occupiedPositions ? 100.0 * double(s.hist3plus) / double(s.occupiedPositions) : 0.0;
+        std::printf("  [directional-storage] %s: direction histogram over %zu occupied "
+                    "positions -- 1 dir: %zu (%.1f%%)  2 dir: %zu (%.1f%%)  3+ dir: %zu "
+                    "(%.1f%%)  avg=%.2f directions/occupied-voxel\n",
+                    ShapeName(shape), s.occupiedPositions, s.hist1, pct1, s.hist2, pct2,
+                    s.hist3plus, pct3, s.avgDirsPerVoxel);
+    }
+
+    // ---- Part 2: Adaptive-Directional hybrid (edge-only Directional, flat Simple(fine)) ----
+
+    // outDirFrac: fraction of the classifier's occupied coarse CELLS flagged high-variance
+    // ("edge") -- i.e. how much of the surface this hybrid actually routes through
+    // Directional. HONEST-MEASUREMENT NOTE: the classifier's sigma is the MEDIAN (0.50
+    // percentile) of the per-cell variance distribution (see main()), so by construction
+    // ~50% of occupied cells are flagged high-variance regardless of geometric edge-ness --
+    // this is a considerably more generous split than "true edges only", so some
+    // ClassifyRegion-labeled Flat points end up sourced from Directional (pulling the
+    // hybrid's measured flat_mm below plain Simple(fine)'s). Reported as measured; see
+    // outDirFrac / the printed cell-split line for the actual split size.
+    Row RunAdaptiveDirectional(Shape shape, float voxel, const Row &fineRow, const Row &dirRow,
+                               const BuiltSimple &fine,
+                               const std::vector<Engine::Spatial::VoxelStat> &fineVoxels,
+                               const std::vector<Eigen::Vector3f> &dirPoints,
+                               const CellClassifier &classifier, const DirStorageStats &dirStorage,
+                               double &outMemFlatKB, double &outMemEdgeKB, double &outDirCellFrac) {
+        Row row;
+        row.shape = ShapeName(shape);
+        row.method = "Adaptive-Dir";
+        row.buildMs = fineRow.buildMs + dirRow.buildMs; // cost to build both source structures
+
+        std::vector<Eigen::Vector3f> pts;
+        pts.reserve(dirPoints.size() + fine.cloud.points.size());
+        for (const auto &p : dirPoints)
+            if (classifier.IsHighVar(p)) pts.push_back(p); // edge cells -> Directional
+        for (const auto &p : fine.cloud.points)
+            if (!classifier.IsHighVar(p)) pts.push_back(p); // flat cells -> Simple(fine)
+        row.nPoints = pts.size();
+
+        std::size_t flatFineVoxels = 0;
+        std::size_t highVarCells = 0;
+        for (const auto &kv : classifier.cellStats)
+            if (kv.second.meanVar() > classifier.sigma) ++highVarCells;
+        outDirCellFrac = classifier.cellStats.empty()
+                                 ? 0.0
+                                 : double(highVarCells) / double(classifier.cellStats.size());
+        for (const auto &v : fineVoxels)
+            if (!classifier.IsHighVar(v.center)) ++flatFineVoxels;
+        outMemFlatKB = double(flatFineVoxels) * 16.0 / 1024.0;
+        outMemEdgeKB = double(dirStorage.occupiedDirVoxelsEdge) * 8.0 / 1024.0;
+        row.memKB = outMemFlatKB + outMemEdgeKB;
+
+        ScoreAgainstGT(shape, voxel, pts, row);
         return row;
     }
 
@@ -492,6 +726,44 @@ namespace {
                     coarse.overall.rmse(), mid.overall.rmse());
     }
 
+    // Final insight (a)+(b): per-voxel projected Directional memory + waste factor, and the
+    // directions-per-voxel pruning potential.
+    void PrintStorageInsight(const Row &dirRow, const DirStorageStats &s) {
+        std::printf("insight (%s, directional storage): mem_block=%.2f KB vs "
+                    "mem_pervoxel_projected=%.2f KB -> waste factor %.1fx (Directional "
+                    "accuracy is achievable at ~%.2f KB -- the %.0fx is block-granularity "
+                    "waste, not fundamental) | avg %.2f directions/occupied-voxel (pruning "
+                    "potential: %zu/%zu occupied positions are single-direction)\n",
+                    dirRow.shape.c_str(), s.memBlockKB, s.memPerVoxelProjectedKB, s.wasteFactor,
+                    s.memPerVoxelProjectedKB, s.wasteFactor, s.avgDirsPerVoxel, s.hist1,
+                    s.occupiedPositions);
+    }
+
+    // Final insight (c): the Adaptive-Directional hybrid's partial result. NOTE: dirCellFrac
+    // is the fraction of occupied coarse cells routed through Directional (median-sigma
+    // split, ~50% by construction -- see RunAdaptiveDirectional's header comment) -- a much
+    // more generous split than "edges only", so treat edge_mm/flat_mm as measured, not as a
+    // clean edge-vs-flat isolation.
+    void PrintHybridInsight(const Row &hybrid, const Row &dirRow, const Row &fineRow,
+                            double memFlatKB, double memEdgeKB, double dirCellFrac) {
+        const auto &he = hybrid.perRegion[static_cast<int>(Region::Edge)];
+        const auto &hf = hybrid.perRegion[static_cast<int>(Region::Flat)];
+        const auto &de = dirRow.perRegion[static_cast<int>(Region::Edge)];
+        const auto &ff = fineRow.perRegion[static_cast<int>(Region::Flat)];
+        std::printf("insight (%s, adaptive-directional hybrid, %.0f%% of occupied cells routed "
+                    "through Directional): edge_mm=%s (Directional=%s) | flat_mm=%s "
+                    "(Simple(fine)=%s) | RMSE_mm=%.5f (Directional=%.5f Simple(fine)=%.5f) | "
+                    "mem_KB=%.2f (flat Simple=%.2f + edge Directional/voxel=%.2f) vs "
+                    "whole-shape Directional=%.2f Simple(fine)=%.2f\n",
+                    hybrid.shape.c_str(), 100.0 * dirCellFrac,
+                    FmtErr(he.mean(), he.count > 0, 0).c_str(),
+                    FmtErr(de.mean(), de.count > 0, 0).c_str(),
+                    FmtErr(hf.mean(), hf.count > 0, 0).c_str(),
+                    FmtErr(ff.mean(), ff.count > 0, 0).c_str(), hybrid.overall.rmse(),
+                    dirRow.overall.rmse(), fineRow.overall.rmse(), hybrid.memKB, memFlatKB,
+                    memEdgeKB, dirRow.memKB, fineRow.memKB);
+    }
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -523,8 +795,10 @@ int main(int argc, char **argv) {
     std::vector<SigmaRow> sigmaRows;
     // Per-shape bundle for the trailing insight summaries.
     struct ShapeInsight {
-        Row fine, coarse, dir;
+        Row fine, coarse, dir, hybrid;
         std::vector<SigmaRow> sweep;
+        DirStorageStats storage;
+        double memFlatKB = 0.0, memEdgeKB = 0.0, dirCellFrac = 0.0;
     };
     std::vector<ShapeInsight> insights;
 
@@ -559,14 +833,33 @@ int main(int argc, char **argv) {
         std::vector<SigmaRow> sweep = RunVarianceAdaptiveSweep(shape, voxel, vc, fineVoxels,
                                                                 fine.cloud, coarse.cloud);
 
-        Row dirRow = RunDirectional(ctx, shape, voxel, maxDir, views);
+        // Shared median-sigma cell classifier (Part 2's edge/flat split), built from the
+        // SAME cell statistics the sigma sweep uses, at the same median (0.50) percentile as
+        // its "median" row (sweep[1], see PrintAdaptiveInsight's midIdx below).
+        CellClassifier classifier;
+        classifier.cellStats = BuildCellStats(fineVoxels, vc);
+        classifier.vc = vc;
+        classifier.sigma = PercentileOfCellVars(classifier.cellStats, 0.50);
+
+        DirectionalResult dirResult = RunDirectional(ctx, shape, voxel, maxDir, views, classifier);
+        const Row &dirRow = dirResult.row;
+        PrintDirectionalStorage(shape, dirResult.storage);
+
+        // Part 2: Adaptive-Directional hybrid -- Directional points in edge cells U
+        // Simple(fine) points in flat cells, memory-costed the same way.
+        double memFlatKB = 0.0, memEdgeKB = 0.0, dirCellFrac = 0.0;
+        Row hybridRow = RunAdaptiveDirectional(shape, voxel, fineRow, dirRow, fine, fineVoxels,
+                                               dirResult.points, classifier, dirResult.storage,
+                                               memFlatKB, memEdgeKB, dirCellFrac);
 
         rows.push_back(fineRow);
         rows.push_back(weightedRow);
         rows.push_back(coarseRow);
         rows.push_back(dirRow);
+        rows.push_back(hybridRow);
         sigmaRows.insert(sigmaRows.end(), sweep.begin(), sweep.end());
-        insights.push_back({fineRow, coarseRow, dirRow, sweep});
+        insights.push_back({fineRow, coarseRow, dirRow, hybridRow, sweep, dirResult.storage,
+                            memFlatKB, memEdgeKB, dirCellFrac});
 
         std::printf("\n");
     }
@@ -591,6 +884,9 @@ int main(int argc, char **argv) {
             const std::size_t midIdx = std::min<std::size_t>(1, ins.sweep.size() - 1);
             PrintAdaptiveInsight(ins.fine, ins.coarse, ins.sweep[midIdx]);
         }
+        PrintStorageInsight(ins.dir, ins.storage);
+        PrintHybridInsight(ins.hybrid, ins.dir, ins.fine, ins.memFlatKB, ins.memEdgeKB,
+                          ins.dirCellFrac);
     }
 
     return 0;
