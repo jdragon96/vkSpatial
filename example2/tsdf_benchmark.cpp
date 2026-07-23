@@ -365,6 +365,23 @@ namespace {
         return out;
     }
 
+    // Same as BuildSimpleTSDF, but integrates with the normal view-angle-weighted overload
+    // (w = max(0, dot(normal, -rayDir)) per observation) -- isolates the effect of view-angle
+    // weighting alone (no extra memory: same TSDFEntry/hash-table layout as Simple(fine)).
+    BuiltSimple BuildSimpleTSDFWeighted(Engine::Core::Context &ctx, float voxelSize,
+                                        const std::vector<fixtures::View> &views) {
+        BuiltSimple out;
+        out.tsdf.Build(ctx, voxelSize, kTruncation);
+
+        const auto t0 = std::chrono::steady_clock::now();
+        for (const auto &v : views) out.tsdf.Integrate(v.points, v.normals, v.camPos);
+        out.cloud = out.tsdf.ExtractPointCloud();
+        const auto t1 = std::chrono::steady_clock::now();
+
+        out.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        return out;
+    }
+
     Row ScoreSimpleRow(Shape shape, const std::string &method, float classifyVoxel,
                        const BuiltSimple &built) {
         Row row;
@@ -525,6 +542,12 @@ int main(int argc, char **argv) {
         const std::vector<Engine::Spatial::VoxelStat> fineVoxels = fine.tsdf.DownloadVoxels();
         PrintVarianceAdaptiveSection(shape, voxel, fineVoxels);
 
+        // Same fine voxel size, but integrated with normal view-angle weighting
+        // (w = max(0, dot(normal, -rayDir))) -- isolates whether view-angle weighting alone
+        // (no extra memory) recovers DirectionalTSDF's flat-region accuracy advantage.
+        BuiltSimple weighted = BuildSimpleTSDFWeighted(ctx, voxel, views);
+        Row weightedRow = ScoreSimpleRow(shape, "Simple(weighted)", voxel, weighted);
+
         // All-coarse baseline: SimpleTSDF at 2x the voxel size, integrating the SAME (fine-
         // sampled) views -- the "coarsen everywhere" lower bound.
         const float vc = 2.0f * voxel;
@@ -539,6 +562,7 @@ int main(int argc, char **argv) {
         Row dirRow = RunDirectional(ctx, shape, voxel, maxDir, views);
 
         rows.push_back(fineRow);
+        rows.push_back(weightedRow);
         rows.push_back(coarseRow);
         rows.push_back(dirRow);
         sigmaRows.insert(sigmaRows.end(), sweep.begin(), sweep.end());

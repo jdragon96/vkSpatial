@@ -47,7 +47,19 @@ namespace Engine::Spatial {
 
         // Integrate a point cloud observed from cameraPos.
         // cameraPos defaults to the origin (suitable for pre-transformed clouds).
+        // Unweighted (w=1 per observation) -- does NOT read normals.
         void Integrate(const std::vector<Eigen::Vector3f> &points,
+                       const Eigen::Vector3f &cameraPos = Eigen::Vector3f::Zero());
+
+        // Integrate with per-observation normal view-angle weighting:
+        //   w = max(0, dot(normal, -rayDir))
+        // (the same view-angle confidence DirectionalTSDF uses). Down-weights grazing/
+        // oblique observations, reducing the projective-SDF bias on flat surfaces seen
+        // obliquely -- no extra memory over the unweighted path (same TSDFEntry layout).
+        // points and normals must be the same length (parallel arrays; both clamped to
+        // maxPoints).
+        void Integrate(const std::vector<Eigen::Vector3f> &points,
+                       const std::vector<Eigen::Vector3f> &normals,
                        const Eigen::Vector3f &cameraPos = Eigen::Vector3f::Zero());
 
         void Reset();
@@ -80,6 +92,7 @@ namespace Engine::Spatial {
 
         std::unique_ptr<Engine::Core::Buffer> m_hashBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_pointBuffer;
+        std::unique_ptr<Engine::Core::Buffer> m_normalBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_statBuffer;
         std::unique_ptr<Engine::Core::ComputePipeline> m_kernel;
 

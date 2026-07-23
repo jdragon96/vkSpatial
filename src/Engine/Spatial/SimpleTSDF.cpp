@@ -20,6 +20,7 @@ namespace Engine::Spatial {
             float camX;
             float camY;
             float camZ;
+            uint32_t useNormalWeight;
         };
     } // namespace
 
@@ -38,17 +39,22 @@ namespace Engine::Spatial {
 
         m_hashBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
         m_pointBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
+        m_normalBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
         m_statBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
 
         m_hashBuffer->Allocate(hashCapacity * sizeof(TSDFEntry));
         m_pointBuffer->Allocate(maxPoints * 3u * sizeof(float));
+        // Always allocated (even when the unweighted Integrate() overload is used, which
+        // never uploads to it) so binding 3 is always a valid descriptor.
+        m_normalBuffer->Allocate(maxPoints * 3u * sizeof(float));
         m_statBuffer->Allocate(sizeof(uint32_t));
 
         m_kernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         m_kernel->Build("voxel_tsdf_integrate.comp")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, *m_pointBuffer)
-                .Bind(2, *m_statBuffer);
+                .Bind(2, *m_statBuffer)
+                .Bind(3, *m_normalBuffer);
 
         Reset();
     }
@@ -68,9 +74,29 @@ namespace Engine::Spatial {
 
         m_pointBuffer->Upload(points.data(), N * 3u * sizeof(float));
 
+        // useNormalWeight=0: the shader never reads g_normals in this path, so no upload
+        // is required here -- byte-identical to the pre-normal-weighting behaviour.
         IntegratePC pc{
                 N, m_hashCapacity, m_voxelSize, m_truncation,
-                cameraPos.x(), cameraPos.y(), cameraPos.z()};
+                cameraPos.x(), cameraPos.y(), cameraPos.z(), 0u};
+        m_kernel->Args(pc).DispatchElements(N);
+    }
+
+    void SimpleTSDF::Integrate(const std::vector<Eigen::Vector3f> &points,
+                               const std::vector<Eigen::Vector3f> &normals,
+                               const Eigen::Vector3f &cameraPos) {
+        if (points.empty()) return;
+
+        const uint32_t N = std::min({static_cast<uint32_t>(points.size()),
+                                      static_cast<uint32_t>(normals.size()), m_maxPoints});
+        if (N == 0) return;
+
+        m_pointBuffer->Upload(points.data(), N * 3u * sizeof(float));
+        m_normalBuffer->Upload(normals.data(), N * 3u * sizeof(float));
+
+        IntegratePC pc{
+                N, m_hashCapacity, m_voxelSize, m_truncation,
+                cameraPos.x(), cameraPos.y(), cameraPos.z(), 1u};
         m_kernel->Args(pc).DispatchElements(N);
     }
 

@@ -13,6 +13,7 @@ layout(push_constant) uniform PC {
     float g_camX;
     float g_camY;
     float g_camZ;
+    uint  g_useNormalWeight;
 };
 
 struct TSDFEntry { uint key; int sumDW; uint sumW; uint sumD2; };
@@ -20,6 +21,7 @@ struct TSDFEntry { uint key; int sumDW; uint sumW; uint sumD2; };
 layout(std430, set = 0, binding = 0) buffer HashTable { TSDFEntry g_hash[]; };
 layout(std430, set = 0, binding = 1) readonly buffer Points { float g_points[]; };
 layout(        set = 0, binding = 2) buffer Stat { uint g_filledCount; };
+layout(std430, set = 0, binding = 3) readonly buffer Normals { float g_normals[]; };
 
 // Insert or find key in hash table; returns slot index or ~0u if full.
 uint findOrInsert(uint key) {
@@ -40,10 +42,12 @@ uint findOrInsert(uint key) {
 //
 // TSDF integration (per observed surface point):
 //
+//   w = 1.0, or (if g_useNormalWeight) max(0, dot(normal, -rayDir)) -- view-angle
+//       confidence; down-weights grazing/oblique observations. w<=0 is skipped entirely.
 //   For each voxel within the truncation band along the camera ray toward p:
 //     sdf = depth - projectedDist(voxelCenter, camPos, rayDir)
-//     sumDW += sdf      (×TSDF_SCALE, fixed-point)
-//     sumW  += 1.0      (×TSDF_SCALE)
+//     sumDW += sdf * w  (×TSDF_SCALE, fixed-point)
+//     sumW  += w        (×TSDF_SCALE)
 //
 //   Actual TSDF value recovered as: float(sumDW) / float(sumW)
 //
@@ -60,6 +64,17 @@ void main() {
     float depth = length(diff);
     if (depth < 1e-6) return;
     vec3 rayDir = diff / depth;
+
+    // Per-observation weight: 1.0 unless normal view-angle weighting is enabled, in which
+    // case it's the view-angle confidence w = max(0, dot(normal, -rayDir)) -- the same
+    // weighting DirectionalTSDF uses (directional_tsdf_integrate.comp's viewFactor). A
+    // back-facing/grazing observation (w<=0) contributes nothing.
+    float w = 1.0;
+    if (g_useNormalWeight != 0u) {
+        vec3 n = vec3(g_normals[gid * 3u], g_normals[gid * 3u + 1u], g_normals[gid * 3u + 2u]);
+        w = max(0.0, dot(n, -rayDir));
+        if (w <= 0.0) return;
+    }
 
     float trunc = g_truncation;
     int   steps = int(ceil(trunc / g_voxelSize)) + 1;
@@ -79,12 +94,14 @@ void main() {
         uint slot = findOrInsert(key);
         if (slot == ~0u) continue;
 
-        int sdwi = int(sdf * float(TSDF_SCALE));
-        atomicAdd(g_hash[slot].sumDW, sdwi);
-        atomicAdd(g_hash[slot].sumW,  uint(TSDF_SCALE));
+        // Weight-scaled accumulation. w==1.0 (useNormalWeight==0) reproduces the original
+        // unweighted behaviour exactly. The variance formula sumD2/sumW - (sumDW/sumW)^2
+        // still holds when w!=1 -- it becomes a weighted variance.
+        atomicAdd(g_hash[slot].sumDW, int(sdf * w * float(TSDF_SCALE)));
+        atomicAdd(g_hash[slot].sumW,  uint(w * float(TSDF_SCALE)));
         // Online variance accumulator (parallel-atomic-friendly, NOT Welford): sum(sdf^2).
         // sdf in [-truncation, truncation] (truncation<=0.3) so sdf^2 in [0, 0.09]; well
         // within uint32 range after scaling. CPU recovers variance = E[d^2] - E[d]^2.
-        atomicAdd(g_hash[slot].sumD2, uint(sdf * sdf * float(TSDF_SCALE)));
+        atomicAdd(g_hash[slot].sumD2, uint(sdf * sdf * w * float(TSDF_SCALE)));
     }
 }
