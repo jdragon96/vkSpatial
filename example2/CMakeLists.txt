@@ -17,6 +17,12 @@ target_link_libraries(variance_adaptive_demo PRIVATE Engine::Core)
 add_spatial_example(directional_tsdf_demo directional_tsdf_demo.cpp)
 add_spatial_example(directional_tsdf_eval directional_tsdf_eval.cpp)
 add_spatial_example(directional_tsdf_chair_benchmark directional_tsdf_chair_benchmark.cpp)
+
+# Headless SimpleTSDF-vs-DirectionalTSDF benchmark: accuracy (vs analytic ground truth) +
+# occupied-storage memory + host wall-clock speed, on the same shape_fixtures.h fixtures used
+# by tsdf_feature_compare/variance_adaptive_demo. No render/GUI deps.
+add_spatial_example(tsdf_benchmark tsdf_benchmark.cpp)
+target_link_libraries(tsdf_benchmark PRIVATE Engine::Core)
 add_spatial_example(bvh_benchmark bvh_benchmark.cpp)
 add_spatial_example(scan_dataset_gen scan_dataset_gen.cpp)
 
