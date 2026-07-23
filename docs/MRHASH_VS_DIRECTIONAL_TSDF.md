@@ -130,6 +130,50 @@
 
 ---
 
+## Directional 정확도를 유지하며 메모리 절약하기 (실측 분석)
+
+**질문**: DirectionalTSDF 급 정확도를 메모리 절약하며 얻을 수 있나? — `tsdf_benchmark`로 여러 접근을 실측했고, 결론은 **직관과 반대**였다.
+
+### 시도 1 (실패): 법선 view-angle 가중을 Simple에 추가
+가설은 "Directional 평면 정확도는 법선 가중(`w=max(0,n·(−ray))`)에서 오니, 그것만 Simple에 넣으면 메모리 0으로 평면 정확도 회복"이었다. **틀렸다** — `Simple(weighted)`는 오히려 약간 나빠짐(cube flat 0.046→0.050). 원인: ① MC 점유 게이트(`MIN_WEIGHT`)가 w=1 가정이라 가중 시 ~16% 복셀이 탈락→+τ로 스퍼리어스 삼각형, ② 합성 8-코너 뷰가 모든 면을 거의 동일 경사로 봐서 가중이 차별화 안 됨. **Directional의 정확도 이득은 view-angle 가중이 아니라 방향별 표현(레이어+추출)에 내재**한다.
+
+### 핵심 발견: Directional의 35× 메모리는 거의 전부 "블록 낭비"
+
+정확도를 못 깎으니 **저장 방식**을 봐야 한다. DirectionalTSDF의 메모리는 8³=512복셀 **블록 단위**로 잡히는데, 얇은 표면 밴드 주변에선 블록 대부분이 비어 있다. GPU 활성 풀을 열어 **실제 점유(weight>0) 방향-복셀**을 센 결과:
+
+| shape | 현재 mem (블록) | 점유 방향복셀 | **per-voxel 투영 mem** | **낭비 배수** | 평균 방향/복셀 |
+|---|---|---|---|---|---|
+| cube | 6144 KB | 14040 | **110 KB** | **56×** | **1.14** |
+| cylinder | 6784 KB | 17542 | **137 KB** | **49×** | **1.42** |
+
+> **결론(핵심)**: Directional의 정확도(edge 0.027, RMSE 0.022)는 **per-voxel 저장이면 ~110–137 KB — Simple(193 KB)과 대등하거나 더 적게** 달성 가능하다. **35–56×는 근본 비용이 아니라 블록 그래뉴러리티 낭비다. 정확도 손실 0.**
+
+### 방향 레이어 프루닝: 대부분 1개 방향뿐
+방향 히스토그램: 점유 복셀의 **87%(cube)/61%(cylinder)가 단일 방향**, 평균 1.14–1.42 방향/복셀. "6개 레이어"는 코너/능선 소수에서만 쓰인다. per-voxel 카운트가 이미 이 프루닝(점유 방향만)을 반영한다.
+
+### Adaptive-Directional 하이브리드 (오늘 바로 가능한 절충점)
+셀별로 **에지=Directional / 평면=Simple** 선택 + 에지는 per-voxel 계상:
+
+| method | edge(mm) | RMSE(mm) | mem_KB |
+|---|---|---|---|
+| Simple(fine) | 0.050 | 0.054 | 192 |
+| **Directional** | **0.027** | **0.022** | 6144 |
+| Directional (per-voxel 투영) | **0.027** | **0.022** | **~110** |
+| **Adaptive-Dir 하이브리드** | 0.031 | 0.032 | **139** |
+| variance-adaptive | 0.061 | 0.067 | 106–153 |
+
+하이브리드는 **Simple보다 적은 메모리(139–150 KB)로 Directional에 근접한 RMSE(0.032–0.043 vs Simple 0.054–0.067)** — DirectionalTSDF 저장구조를 재작성하지 않고 오늘 얻는 실효 절충점.
+
+### 종합 권고
+1. **1순위 (정확도 손실 0): per-voxel 저장** — 8³ 블록 대신 (voxel,dir) 단위 해시(또는 MrHash flat-hash). → Directional 정확도를 **~Simple 메모리**로. 56× 절감. *DirectionalTSDF의 residency/pool 재작성 필요(가장 큰 작업).*
+2. **2순위: variance-adaptive 해상도** — 저분산 평면을 coarse로(앞 절, −45% mem). per-voxel과 곱해짐.
+3. **완전체(D) = per-voxel directional + variance-adaptive 해상도** → 이론상 Directional 정확도를 Simple 미만 메모리로.
+4. **오늘 당장**: Adaptive-Dir 하이브리드(측정됨) — 재작성 없이 <Simple 메모리 + 근-Directional 정확도.
+
+**Caveat**: per-voxel/pruning 수치는 실제 점유 복셀 카운트 기반 **투영**(DirectionalTSDF 저장구조는 아직 블록 단위 — 재작성 시 실측 필요). 하이브리드는 median-σ로 ~50% 셀을 Directional로 라우팅(순수 에지-only 아님)이라 평면 이득이 가설보다 큼. `HostStore().Get()`은 정적 aabbHint로 write-back이 안 일어나 placeholder만 가지므로, 실 데이터는 GPU 활성 풀(`DebugDownloadGroupVoxels`)에서 읽음.
+
+---
+
 ## 참고문헌
 - De Rebotti, Giacomini, Grisetti, Di Giammarino, *Resolution Where It Counts*, ACM TOG 2025.
 - Splietker & Behnke, *Directional TSDF: Modeling Surface Orientation for Coherent Meshes*, 2019 — [arXiv:1908.05146](https://arxiv.org/pdf/1908.05146).
