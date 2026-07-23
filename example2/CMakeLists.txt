@@ -8,6 +8,12 @@ function(add_spatial_example name)
 endfunction()
 
 add_spatial_example(voxel_tsdf_mc voxel_tsdf_mc.cpp)
+
+# MrHash-foundation validation: online per-voxel TSDF variance (SimpleTSDF::DownloadVoxels)
+# proves the paper's premise (edge/corner variance >> flat/curved) and estimates the memory
+# a variance-adaptive grid would save. See docs/MRHASH_VS_DIRECTIONAL_TSDF.md.
+add_spatial_example(variance_adaptive_demo variance_adaptive_demo.cpp)
+target_link_libraries(variance_adaptive_demo PRIVATE Engine::Core)
 add_spatial_example(directional_tsdf_demo directional_tsdf_demo.cpp)
 add_spatial_example(directional_tsdf_eval directional_tsdf_eval.cpp)
 add_spatial_example(directional_tsdf_chair_benchmark directional_tsdf_chair_benchmark.cpp)

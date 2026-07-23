@@ -19,7 +19,10 @@ target_link_libraries(vkspatial_tests
         GTest::gtest_main)
 
 target_include_directories(vkspatial_tests PRIVATE
-        ${CMAKE_SOURCE_DIR})
+        ${CMAKE_SOURCE_DIR}
+        # example2/shape_fixtures.h is header-only (render-free) analytic shape fixtures,
+        # reused by test_simpletsdf_variance.cpp to avoid duplicating the cube/cylinder sampler.
+        ${CMAKE_SOURCE_DIR}/example2)
 
 target_compile_definitions(vkspatial_tests PRIVATE
         VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")

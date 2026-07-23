@@ -80,6 +80,39 @@ namespace Engine::Spatial {
         return count;
     }
 
+    std::vector<VoxelStat> SimpleTSDF::DownloadVoxels() const {
+        std::vector<TSDFEntry> entries(m_hashCapacity);
+        m_hashBuffer->Download(entries.data(), m_hashCapacity * sizeof(TSDFEntry));
+
+        // Same occupancy gate as voxel_tsdf_mc.comp's MIN_WEIGHT (TSDF_SCALE / 2).
+        const uint32_t kMinWeight = static_cast<uint32_t>(TSDF_FIXED_SCALE) / 2u;
+
+        std::vector<VoxelStat> out;
+        out.reserve(entries.size());
+        for (const TSDFEntry &e : entries) {
+            if (e.key == EMPTY_KEY) continue;
+            if (e.sumW < kMinWeight) continue;
+
+            // Unpack the same way voxel_tsdf_mc.comp does (packCoord in voxel_common.glsl).
+            const int kx = static_cast<int>((e.key >> 20u) & 0x3FFu) - 512;
+            const int ky = static_cast<int>((e.key >> 10u) & 0x3FFu) - 512;
+            const int kz = static_cast<int>(e.key & 0x3FFu) - 512;
+
+            VoxelStat vs;
+            vs.center = (Eigen::Vector3f(float(kx), float(ky), float(kz)) + Eigen::Vector3f(0.5f, 0.5f, 0.5f)) *
+                        m_voxelSize;
+            const float sumDW = float(e.sumDW);
+            const float sumW = float(e.sumW);
+            const float sumD2 = float(e.sumD2);
+            vs.tsdf = sumDW / sumW;
+            vs.weight = sumW / float(TSDF_FIXED_SCALE);
+            const float ex2 = sumD2 / sumW;
+            vs.variance = std::max(0.0f, ex2 - vs.tsdf * vs.tsdf);
+            out.push_back(vs);
+        }
+        return out;
+    }
+
 
     std::vector<Eigen::Vector3f> SimpleTSDF::downloadMCVertices(uint32_t maxTris) const {
         struct Vec4 {

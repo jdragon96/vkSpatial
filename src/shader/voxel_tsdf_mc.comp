@@ -6,7 +6,7 @@ layout(local_size_x = 64) in;
 
 #include "voxel_common.glsl"
 
-struct TSDFEntry { uint key; int sumDW; uint sumW; uint pad; };
+struct TSDFEntry { uint key; int sumDW; uint sumW; uint sumD2; };
 
 layout(std430, set=0, binding=0) readonly buffer HashTable { TSDFEntry g_hash[]; };
 layout(        set=0, binding=1)          buffer Ctr       { uint count;          } ctr;

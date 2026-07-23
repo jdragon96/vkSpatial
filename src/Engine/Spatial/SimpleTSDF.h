@@ -17,10 +17,20 @@ namespace Engine::Spatial {
     static constexpr int32_t TSDF_FIXED_SCALE = 10000;
 
     struct TSDFEntry {
-        uint32_t key;  // packed 10-bit coord per axis; 0xFFFFFFFF = empty
-        int32_t sumDW; // sum(d_i * w_i) * TSDF_FIXED_SCALE
-        uint32_t sumW; // sum(w_i)       * TSDF_FIXED_SCALE
-        uint32_t pad;  // alignment
+        uint32_t key;   // packed 10-bit coord per axis; 0xFFFFFFFF = empty
+        int32_t sumDW;  // sum(d_i * w_i) * TSDF_FIXED_SCALE
+        uint32_t sumW;  // sum(w_i)       * TSDF_FIXED_SCALE
+        uint32_t sumD2; // sum(d_i^2)     * TSDF_FIXED_SCALE -- online per-voxel variance (MrHash)
+    };
+
+    // Per-voxel readback for variance-adaptive-resolution experiments (MrHash foundation):
+    // world-space centre, recovered TSDF value/weight, and the online variance sigma^2
+    // (world-units^2) computed from sumDW/sumW/sumD2 -- see SimpleTSDF::DownloadVoxels.
+    struct VoxelStat {
+        Eigen::Vector3f center;
+        float tsdf;
+        float weight;
+        float variance;
     };
 
     class SimpleTSDF {
@@ -54,6 +64,12 @@ namespace Engine::Spatial {
         OrientedPointCloud ExtractPointCloud(uint32_t maxTris = 500000u) const;
 
         uint32_t FilledCount() const;
+
+        // Downloads the whole hash table and unpacks every occupied, sufficiently-observed
+        // voxel (same MIN_WEIGHT occupancy gate as the Marching Cubes kernel) into a
+        // VoxelStat: world-space centre, TSDF value, weight, and online variance. Used by
+        // variance-adaptive-resolution validation (no multi-resolution storage yet).
+        std::vector<VoxelStat> DownloadVoxels() const;
 
     private:
         Engine::Core::Context *m_ctx = nullptr;

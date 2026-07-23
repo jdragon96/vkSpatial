@@ -15,7 +15,7 @@ layout(push_constant) uniform PC {
     float g_camZ;
 };
 
-struct TSDFEntry { uint key; int sumDW; uint sumW; uint pad; };
+struct TSDFEntry { uint key; int sumDW; uint sumW; uint sumD2; };
 
 layout(std430, set = 0, binding = 0) buffer HashTable { TSDFEntry g_hash[]; };
 layout(std430, set = 0, binding = 1) readonly buffer Points { float g_points[]; };
@@ -82,5 +82,9 @@ void main() {
         int sdwi = int(sdf * float(TSDF_SCALE));
         atomicAdd(g_hash[slot].sumDW, sdwi);
         atomicAdd(g_hash[slot].sumW,  uint(TSDF_SCALE));
+        // Online variance accumulator (parallel-atomic-friendly, NOT Welford): sum(sdf^2).
+        // sdf in [-truncation, truncation] (truncation<=0.3) so sdf^2 in [0, 0.09]; well
+        // within uint32 range after scaling. CPU recovers variance = E[d^2] - E[d]^2.
+        atomicAdd(g_hash[slot].sumD2, uint(sdf * sdf * float(TSDF_SCALE)));
     }
 }
