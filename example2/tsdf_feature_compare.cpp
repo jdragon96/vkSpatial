@@ -77,6 +77,17 @@ namespace {
         }
     }
 
+    // Per-region normal-angle error (degrees): angle between each extracted normal and the
+    // analytic surface normal at that point.
+    void accumulateNormals(Shape s, float voxel, const std::vector<Eigen::Vector3f> &pts,
+                           const std::vector<Eigen::Vector3f> &normals,
+                           std::array<RegionStat, kNumRegions> &stats) {
+        for (std::size_t i = 0; i < pts.size(); ++i) {
+            const float ang = fixtures::NormalAngleDeg(normals[i], fixtures::NearestNormal(s, pts[i]));
+            stats[static_cast<int>(fixtures::ClassifyRegion(s, pts[i], voxel))].add(ang);
+        }
+    }
+
     const char *regionName(int r) {
         switch (r) {
             case static_cast<int>(Region::Flat): return "flat";
@@ -94,9 +105,15 @@ namespace {
         std::vector<fixtures::View> views;
         std::size_t nInput = 0, maxPerView = 0;
         std::vector<Eigen::Vector3f> simplePts;
-        std::vector<Eigen::Vector3f> dirPts;
+        std::vector<Eigen::Vector3f> dirPts;             // legacy directional positions
+        std::vector<Eigen::Vector3f> dirNormals;         // legacy directional normals
+        std::vector<Eigen::Vector3f> dirPtsRefined;      // refined directional positions
+        std::vector<Eigen::Vector3f> dirNormalsRefined;  // refined directional normals
         std::array<RegionStat, kNumRegions> simpleStats{};
-        std::array<RegionStat, kNumRegions> dirStats{};
+        std::array<RegionStat, kNumRegions> dirStats{};            // legacy position error
+        std::array<RegionStat, kNumRegions> dirStatsRefined{};     // refined position error
+        std::array<RegionStat, kNumRegions> dirNormStats{};        // legacy normal-angle error
+        std::array<RegionStat, kNumRegions> dirNormStatsRefined{}; // refined normal-angle error
     };
 
     CompareResult RunCompare(Engine::Core::Context &ctx, Shape shape, float voxel,
@@ -115,39 +132,77 @@ namespace {
         const Engine::Spatial::OrientedPointCloud simpleCloud = simple.ExtractPointCloud();
         r.simplePts = simpleCloud.points;
 
-        // ---- DirectionalTSDF: per-direction layers (preserves sharp features) ----
-        Engine::Spatial::DirectionalTSDF dir;
-        dir.Build(ctx, voxel, truncation);
-        dir.SetIntegrationQuality({3, 4, true}); // maxDirections=3, dirExponent=4, viewAngleWeight
+        // ---- DirectionalTSDF, legacy extraction (axis-crossing average) ----
+        Engine::Spatial::DirectionalTSDF dirLegacy;
+        dirLegacy.Build(ctx, voxel, truncation);
+        dirLegacy.SetIntegrationQuality({3, 4, true}); // maxDirections=3, dirExponent=4, viewAngleWeight
+        dirLegacy.SetSubvoxelRefine(false);
         for (const auto &v : r.views)
-            dir.Integrate(v.points, v.normals, v.camPos, Eigen::Vector3f::Zero());
-        const auto &dirCloud = dir.PointCloud(); // fetch once (reviewer fix): avoid a second call
-        r.dirPts.reserve(dirCloud.size());
-        for (const auto &e : dirCloud) r.dirPts.push_back(e.position);
+            dirLegacy.Integrate(v.points, v.normals, v.camPos, Eigen::Vector3f::Zero());
+        for (const auto &e : dirLegacy.PointCloud()) {
+            r.dirPts.push_back(e.position);
+            r.dirNormals.push_back(e.normal);
+        }
+
+        // ---- DirectionalTSDF, refined extraction (sub-voxel gradient projection) ----
+        // Same synthetic input is deterministic at this sample budget, so the two integrated
+        // volumes match and only the extraction differs. (No public re-extract API exists;
+        // a second Build+Integrate is the clean way to get both clouds.)
+        Engine::Spatial::DirectionalTSDF dirRefined;
+        dirRefined.Build(ctx, voxel, truncation);
+        dirRefined.SetIntegrationQuality({3, 4, true});
+        dirRefined.SetSubvoxelRefine(true);
+        for (const auto &v : r.views)
+            dirRefined.Integrate(v.points, v.normals, v.camPos, Eigen::Vector3f::Zero());
+        for (const auto &e : dirRefined.PointCloud()) {
+            r.dirPtsRefined.push_back(e.position);
+            r.dirNormalsRefined.push_back(e.normal);
+        }
 
         accumulate(shape, voxel, r.simplePts, r.simpleStats);
         accumulate(shape, voxel, r.dirPts, r.dirStats);
+        accumulate(shape, voxel, r.dirPtsRefined, r.dirStatsRefined);
+        accumulateNormals(shape, voxel, r.dirPts, r.dirNormals, r.dirNormStats);
+        accumulateNormals(shape, voxel, r.dirPtsRefined, r.dirNormalsRefined, r.dirNormStatsRefined);
         return r;
     }
 
-    // The Task-2 verification table (unchanged format/numbers -- this is the --dump oracle).
+    // The Task-2/3 verification table (--dump oracle): legacy vs refined position error, plus
+    // the refined-vs-legacy normal-angle error.
     void PrintReport(const char *shapeName, float voxel, float truncation,
                       const CompareResult &r) {
         std::printf("=== tsdf_feature_compare  shape=%s  voxel=%.3f  truncation=%.3f ===\n",
                     shapeName, voxel, truncation);
-        std::printf("views=%zu  nInput=%zu (max/view=%zu)  nSimple=%zu  nDir=%zu\n",
-                    r.views.size(), r.nInput, r.maxPerView, r.simplePts.size(), r.dirPts.size());
-        std::printf("%-7s | %11s %11s | %11s %11s\n", "region", "Simple.mean",
-                    "Simple.max", "Dir.mean", "Dir.max");
+        std::printf("views=%zu  nInput=%zu (max/view=%zu)  nSimple=%zu  nDir=%zu  nDirRefined=%zu\n",
+                    r.views.size(), r.nInput, r.maxPerView, r.simplePts.size(), r.dirPts.size(),
+                    r.dirPtsRefined.size());
+
+        std::printf("[position error mm]\n");
+        std::printf("%-7s | %11s %11s | %11s %11s | %11s %11s\n", "region", "Simple.mean",
+                    "Simple.max", "Dir.mean", "Dir.max", "DirRef.mean", "DirRef.max");
+        std::printf("--------+-------------------------+-------------------------"
+                    "+-------------------------\n");
+        for (int reg = 0; reg < kNumRegions; ++reg) {
+            if (r.simpleStats[reg].count == 0 && r.dirStats[reg].count == 0 &&
+                r.dirStatsRefined[reg].count == 0)
+                continue;
+            std::printf("%-7s | %9.4f %11.4f | %9.4f %11.4f | %9.4f %11.4f\n", regionName(reg),
+                        r.simpleStats[reg].mean(), r.simpleStats[reg].maxErr,
+                        r.dirStats[reg].mean(), r.dirStats[reg].maxErr,
+                        r.dirStatsRefined[reg].mean(), r.dirStatsRefined[reg].maxErr);
+        }
+
+        std::printf("[normal-angle error deg]  (edge = reference only, normal is discontinuous)\n");
+        std::printf("%-7s | %11s %11s | %11s %11s\n", "region", "Dir.mean", "Dir.max",
+                    "DirRef.mean", "DirRef.max");
         std::printf("--------+-------------------------+-------------------------\n");
         for (int reg = 0; reg < kNumRegions; ++reg) {
-            if (r.simpleStats[reg].count == 0 && r.dirStats[reg].count == 0) continue;
-            std::printf("%-7s | %9.4f %11.4f | %9.4f %11.4f  (S:n=%zu D:n=%zu)\n",
-                        regionName(reg), r.simpleStats[reg].mean(), r.simpleStats[reg].maxErr,
-                        r.dirStats[reg].mean(), r.dirStats[reg].maxErr, r.simpleStats[reg].count,
-                        r.dirStats[reg].count);
+            if (r.dirNormStats[reg].count == 0 && r.dirNormStatsRefined[reg].count == 0) continue;
+            std::printf("%-7s | %9.4f %11.4f | %9.4f %11.4f\n", regionName(reg),
+                        r.dirNormStats[reg].mean(), r.dirNormStats[reg].maxErr,
+                        r.dirNormStatsRefined[reg].mean(), r.dirNormStatsRefined[reg].maxErr);
         }
-        std::printf("(per-point ground-truth error in mm; 1 world unit == 1 mm)\n");
+        std::printf("(position mm; angle deg; 1 world unit == 1 mm)\n");
     }
 
     // ---------------------------------------------------------------------------------------
