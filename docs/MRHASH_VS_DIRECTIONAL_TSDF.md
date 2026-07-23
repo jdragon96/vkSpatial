@@ -99,6 +99,37 @@
 
 ---
 
+## 벤치마크 결과 (`example2/tsdf_benchmark`, voxel 0.1mm, 해석적 GT)
+
+구현된 TSDF들을 동일 다시점 입력·해석적 정답으로 실측. `tsdf_benchmark`는 정확도(GT 대비 RMSE·영역별)·메모리(점유 저장 바이트)·속도(chrono, 동일 방법론)를 보고한다.
+
+**4-way 비교 (cylinder — all-coarse baseline이 유효한 깨끗한 케이스)**
+
+| method | mem | RMSE(mm) | edge(mm) | 특징 |
+|---|---|---|---|---|
+| Simple (fine) | 193 KB | 0.067 | 0.061 | 기준선 |
+| Simple (coarse, 2×) | 32 KB | 0.106 | 0.096 | 싸지만 에지 뭉갬 |
+| **Variance-adaptive** | 106–153 KB | 0.067–0.074 | **0.061–0.063** | 에지=fine 수준 유지 + 메모리↓ |
+| Directional | 6784 KB | **0.027** | **0.030** | 최고 정확도, ~35× 메모리 |
+
+**Variance-adaptive σ sweep (실제 2-level fine+coarse, cylinder — 논문 Fig 7의 GT 재현)**
+
+| coarsen% | mem_KB | edge(mm) | vs fine |
+|---|---|---|---|
+| 26% | 182 | 0.061 | 거의 동일 |
+| 50% | 153 | 0.061 | 에지 그대로, −21% 메모리 |
+| 75% | 106 | 0.063 | 에지 거의 그대로, −45% 메모리 |
+| 90% | 65 | 0.068 | 공격적 → 에지 저하 시작 |
+
+**결론:**
+- **Directional** = 최고 품질(edge 0.030)이지만 **~35× 메모리**(블록 8³ + 방향 레이어 + 다시점 누적).
+- **Variance-adaptive** = 고분산 에지는 fine 유지·저분산 영역만 coarse → **75% 셀을 coarsen해도 edge 오차가 fine과 거의 동일(0.061→0.063)**, 메모리 45%↓, naive all-coarse(edge 0.096) 대비 크게 우수. 분산이 "해상도를 어디 둘지"의 올바른 신호임을 GT로 입증.
+- → **결합("방향 × 해상도": 방향 레이어를 고분산 영역에만)** 이 정량적으로 유망 — Directional 품질을 variance-adaptive 메모리로.
+
+**Caveat**: ① cube는 all-coarse가 0점 추출(fixture 샘플 피치=2×voxel 앨리어싱, 선택 로직 버그 아님) → cube의 coarsen 셀은 hole이라 수치 의미 제한적. ② 2-level은 transitional-voxel 없는 근사(두 단일해상도 MC를 셀별 선택)라 경계 seam 가능. 속도는 `SimpleTSDF` MC가 점유와 무관하게 전체 해시용량을 스캔하는 특성에 영향받아 순수 알고리즘 비교가 아님.
+
+---
+
 ## 참고문헌
 - De Rebotti, Giacomini, Grisetti, Di Giammarino, *Resolution Where It Counts*, ACM TOG 2025.
 - Splietker & Behnke, *Directional TSDF: Modeling Surface Orientation for Coherent Meshes*, 2019 — [arXiv:1908.05146](https://arxiv.org/pdf/1908.05146).
