@@ -194,7 +194,7 @@
 ### 종합 권고
 1. **달성됨 (per-voxel 저장)**: `CompactDirectionalTSDF` → Directional 정확도 @ ~Simple 메모리(25–28×↓), **실측**.
 2. **달성됨 (완전체 = per-voxel × variance-adaptive)**: `Compact-Dir(var-adaptive)` → Directional 정확도 @ **Simple 미만 메모리**(40–44×↓), **실측**.
-3. **프로덕션 남은 것**: ±256 voxel 키 폭 확장(64bit/타일링)으로 대규모 씬; Compact에 merge/dedup(정확도는 충분, 점 수 정리). 2-level 대신 진짜 multi-res MC(transitional voxel)면 경계 seam 제거.
+3. **프로덕션 진행됨**: (a) origin-relative movable 512³ 창 + 유닛 테스트 ✅ (b) 실 chair 스캔 E2E 검증 ✅ (c) merge/dedup 추출(`ExtractPointCloud(...,merge=true)`, DirectionalTSDF 클러스터링 이식) ✅ — 실데이터에서 completeness를 Directional 수준(1.45)까지. **남은 것**: 대규모 씬 타일링(HW `shaderBufferInt64Atomics=false`라 단일 해시는 512³ 상한; 스트리밍 DirectionalTSDF가 상보), 2-level 대신 진짜 multi-res MC(transitional voxel).
 4. **대규모 씬**: 기존 DirectionalTSDF의 스트리밍 residency는 여전히 유효(Compact은 단일 해시) — 상보적.
 
 **Caveat**: Compact-Directional은 merge 없이 raw per-voxel 후보를 추출(그래서 nPoints가 Directional보다 적고 cylinder에선 더 정확); 키 범위(현재 512³ voxel origin-relative 창 — 이 GPU는 `shaderBufferInt64Atomics=false`라 더 넓은 64bit 키 불가, 대규모 씬은 스트리밍 DirectionalTSDF). 하이브리드/블록-낭비 수치의 일부는 여전히 투영(점유 카운트 기반)이나, **핵심 주장(Directional 정확도 @ ~Simple 메모리)은 Compact-Directional로 실측 완료**.
@@ -205,13 +205,14 @@
 
 합성 fixture를 넘어 **실제 chair 스캔**(scanData/frame_*.ply, ~77k pts/frame, 씬 ~827mm)으로 E2E 검증. GT가 없으므로 관측점(서브샘플 40k) 대비 최근접 RMSE로 accuracy(recon→관측)·completeness(관측→recon) 측정. 공통 voxel 2.38mm(씬이 Directional 400-voxel·Compact 512³ 창에 모두 맞음; 실측 span 348<512).
 
-| method | mem | accuracy_rmse(mm) | completeness(mm) | build_ms |
-|---|---|---|---|---|
-| SimpleTSDF | 3.8 MB | 2.74 | 2.13 | 379 |
-| DirectionalTSDF | **132 MB** | 2.58 | **1.47** | 7010 |
-| **CompactDirectionalTSDF** | **8.1 MB** | **2.31** | 1.67 | 444 |
+| method | mem | accuracy_rmse(mm) | completeness(mm) | nPoints | build_ms |
+|---|---|---|---|---|---|
+| SimpleTSDF | 3.8 MB | 2.74 | 2.13 | 73101 | 379 |
+| DirectionalTSDF | **132 MB** | 2.58 | 1.47 | 59650 | 7010 |
+| **CompactDirectionalTSDF** (raw) | **8.1 MB** | **2.31** | 1.67 | 94851 | 444 |
+| **CompactDirectionalTSDF (merged)** | **8.1 MB** | 2.46 | **1.45** | 52755 | — |
 
-> **실데이터 결론**: Compact이 **accuracy 최고(2.31 < Directional 2.58 < Simple 2.74)**, 메모리는 Directional 대비 **16.3× 적음(8.1 vs 132 MB)**, 속도 **~16× 빠름(444 vs 7010 ms)**. `FilledCount`(520,202)가 Directional 점유복셀과 **정확히 일치**(합성과 동일한 sanity check). 827mm chair가 origin-relative 512³ 창에 들어감을 실증. 유일한 열세는 completeness(1.67 vs 1.47) — merge 없는 raw 추출 탓, 후속 merge/dedup으로 개선 여지. **핵심 주장이 실 스캔에서도 성립.**
+> **실데이터 결론**: Compact이 **accuracy 최고(raw 2.31 < Directional 2.58 < Simple 2.74)**, 메모리는 Directional 대비 **16.3× 적음(8.1 vs 132 MB)**, 속도 **~16× 빠름(444 vs 7010 ms)**. `FilledCount`(520,202)가 Directional 점유복셀과 **정확히 일치**(합성과 동일한 sanity check). 827mm chair가 origin-relative 512³ 창에 들어감을 실증. **merge/dedup**(DirectionalTSDF의 클러스터링 이식, 60° hard-split로 코너 보존)을 켜면 점 수가 94851→52755(Directional 59650보다 적게)로 줄고 **completeness 1.67→1.45로 Directional(1.47)까지 따라잡음**(accuracy는 2.31→2.46로 소폭 양보하나 여전히 3자 중 최고). **핵심 주장이 실 스캔에서도 성립.**
 
 ---
 
