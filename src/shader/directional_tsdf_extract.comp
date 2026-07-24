@@ -8,7 +8,7 @@ layout(local_size_x = 256) in;
 #define LOCAL_GRID 50
 
 struct ActiveGroupMeta { int gx; int gy; int gz; uint packed; };
-struct GpuVoxel { int sumDW; uint sumW; };
+struct GpuVoxel { int sumDW; uint sumW; int sumNx; int sumNy; int sumNz; };
 struct Candidate {
     float px; float py; float pz;
     float nx; float ny; float nz;

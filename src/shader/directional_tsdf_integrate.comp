@@ -10,7 +10,7 @@ layout(local_size_x = 256) in;
 #define TSDF_SCALE 10000.0
 
 struct PointSample { float px, py, pz, nx, ny, nz; };
-struct GpuVoxel { int sumDW; uint sumW; };
+struct GpuVoxel { int sumDW; uint sumW; int sumNx; int sumNy; int sumNz; };
 struct ActiveGroupMeta { int gx; int gy; int gz; uint packed; };
 
 layout(push_constant) uniform PC {

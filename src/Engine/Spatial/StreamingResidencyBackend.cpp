@@ -10,7 +10,7 @@
 namespace Engine::Spatial {
 
     namespace {
-        constexpr uint32_t kGroupBytes = kVoxelsPerGroup * uint32_t(sizeof(GpuTsdfVoxel)); // 4096
+        constexpr uint32_t kGroupBytes = kVoxelsPerGroup * uint32_t(sizeof(GpuTsdfVoxel)); // 10240
         constexpr uint32_t kStageGroupCap = 4096; // max groups staged per H2D/D2H batch (chunked if exceeded)
 
         struct RegisterPC {
@@ -254,6 +254,9 @@ namespace Engine::Spatial {
                 GpuTsdfVoxel &g = voxStage[i * kVoxelsPerGroup + v];
                 g.sumW = uint32_t(std::lround(double(h.weight) * kTsdfFixedScale));
                 g.sumDW = int32_t(std::lround(double(h.value) * double(h.weight) * kTsdfFixedScale));
+                g.sumNx = 0;
+                g.sumNy = 0;
+                g.sumNz = 0;
             }
             metaStage[i] = ActiveGroupMeta{pk.key.gx, pk.key.gy, pk.key.gz,
                                            PackMeta(pk.key.direction, SlotState::ResidentClean, false, true)};

@@ -60,7 +60,10 @@ namespace Engine::Spatial {
     struct GpuTsdfVoxel {
         int32_t sumDW = 0;
         uint32_t sumW = 0;
-    }; // 8B
+        int32_t sumNx = 0; // Σ n·w·TSDF_SCALE per direction layer (measure-first: not persisted)
+        int32_t sumNy = 0;
+        int32_t sumNz = 0;
+    }; // 20B
 
     // GLSL std430 has no 8-bit members, so direction/state/dirty/valid live in one packed uint.
     struct ActiveGroupMeta {
@@ -105,8 +108,10 @@ namespace Engine::Spatial {
     static_assert(std::is_standard_layout_v<HostTsdfVoxel>);
     static_assert(sizeof(HostTsdfVoxel) == 8);
     static_assert(std::is_standard_layout_v<GpuTsdfVoxel>);
-    static_assert(sizeof(GpuTsdfVoxel) == 8);
+    static_assert(sizeof(GpuTsdfVoxel) == 20);
     static_assert(offsetof(GpuTsdfVoxel, sumW) == 4);
+    static_assert(offsetof(GpuTsdfVoxel, sumNx) == 8);
+    static_assert(offsetof(GpuTsdfVoxel, sumNz) == 16);
     static_assert(std::is_standard_layout_v<ActiveGroupMeta>);
     static_assert(sizeof(ActiveGroupMeta) == 16);
     static_assert(offsetof(ActiveGroupMeta, packed) == 12);
