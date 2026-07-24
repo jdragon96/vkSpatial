@@ -112,6 +112,9 @@ void main() {
             float w = viewFactor * rel[di];
             atomicAdd(g_pool[addr].sumDW, int(newValue * w * TSDF_SCALE));
             atomicAdd(g_pool[addr].sumW,  uint(w * TSDF_SCALE));
+            atomicAdd(g_pool[addr].sumNx, int(nrm.x * w * TSDF_SCALE));
+            atomicAdd(g_pool[addr].sumNy, int(nrm.y * w * TSDF_SCALE));
+            atomicAdd(g_pool[addr].sumNz, int(nrm.z * w * TSDF_SCALE));
             atomicOr(g_meta[poolIndex].packed, 1u << 16);
         }
     }
