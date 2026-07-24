@@ -42,15 +42,35 @@ namespace Engine::Spatial {
     // (topK dominant directions, view-angle weight, per-direction zero crossings) but stored
     // like SimpleTSDF (one 16-byte entry per occupied key, ray-march band only). Mirrors
     // SimpleTSDF's class shape (Build/Integrate/ExtractPointCloud/FilledCount/Reset).
+    //
+    // 32-bit key => a 512^3-voxel window (9 bits/axis, settable ORIGIN via Build's
+    // windowMinCorner -- see below). Scenes that don't fit in one 512^3 window need tiling
+    // (multiple CompactDirectionalTSDF instances) or the streaming DirectionalTSDF; this GPU
+    // reports shaderBufferInt64Atomics=false, so a wider (e.g. 64-bit) key isn't available --
+    // atomicCompSwap-based findOrInsert requires a 32-bit-atomic-sized key.
     class CompactDirectionalTSDF {
     public:
         explicit CompactDirectionalTSDF();
 
+        // windowMinCorner: world-space minimum corner of the movable 512^3-voxel hash window.
+        // Internally floored to a voxel-space origin (m_originVoxel = floor(windowMinCorner /
+        // voxelSize)); voxels with (worldVoxel - m_originVoxel) outside [0,511] per axis fall
+        // outside the window and are skipped (integrate) / never found (extract neighbour
+        // probe). The default (-25.6,-25.6,-25.6) reproduces the ORIGINAL fixed +256-bias key
+        // exactly at the original default voxelSize (0.1): floor(-25.6/0.1) = -256 per axis, an
+        // origin-relative pack of a voxel v -> lv = v-(-256) = v+256, identical to the old
+        // hard-coded bias. Passing a different windowMinCorner re-centers the window anywhere
+        // in space (e.g. a scene far from the world origin) without changing the key format.
         void Build(Engine::Core::Context &ctx,
                    float voxelSize = 0.1f,
                    float truncation = 0.3f,
                    uint32_t hashCapacity = 1u << 20,
-                   uint32_t maxPoints = 1u << 15);
+                   uint32_t maxPoints = 1u << 15,
+                   const Eigen::Vector3f &windowMinCorner = Eigen::Vector3f(-25.6f, -25.6f, -25.6f));
+
+        // Voxel-space origin of the movable window (see Build's windowMinCorner). Exposed for
+        // tests/diagnostics.
+        Eigen::Vector3i OriginVoxel() const { return m_originVoxel; }
 
         void SetIntegrationQuality(const IntegrationQuality &q) { m_quality = q; }
 
@@ -82,6 +102,7 @@ namespace Engine::Spatial {
         float m_truncation = 0.3f;
         uint32_t m_hashCapacity = 0;
         uint32_t m_maxPoints = 0;
+        Eigen::Vector3i m_originVoxel = Eigen::Vector3i::Constant(-256); // see Build's windowMinCorner
         IntegrationQuality m_quality; // defaults: single dominant direction, no view weight
 
         std::unique_ptr<Engine::Core::Buffer> m_hashBuffer;

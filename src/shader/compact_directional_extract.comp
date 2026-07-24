@@ -25,27 +25,43 @@ layout(push_constant) uniform PC {
     float g_voxelSize;
     uint  g_hashCapacity;
     uint  g_maxCandidates;
+    int   g_originX;
+    int   g_originY;
+    int   g_originZ;
 };
 
-uint packDirKey(ivec3 c, uint dir) {
-    return ((uint(c.x + 256) & 0x1FFu) << 21u)
-         | ((uint(c.y + 256) & 0x1FFu) << 12u)
-         | ((uint(c.z + 256) & 0x1FFu) << 3u)
-         |  (dir & 0x7u);
+// ORIGIN-RELATIVE pack/unpack -- see compact_directional_integrate.comp's packDirKey doc.
+// Returns false (caller must skip/treat as absent) when the voxel falls outside the movable
+// 512^3-voxel window.
+bool packDirKey(ivec3 c, uint dir, out uint key) {
+    ivec3 lv = c - ivec3(g_originX, g_originY, g_originZ);
+    if (lv.x < 0 || lv.x > 511 || lv.y < 0 || lv.y > 511 || lv.z < 0 || lv.z > 511) {
+        key = 0u;
+        return false;
+    }
+    key = ((uint(lv.x) & 0x1FFu) << 21u)
+        | ((uint(lv.y) & 0x1FFu) << 12u)
+        | ((uint(lv.z) & 0x1FFu) << 3u)
+        |  (dir & 0x7u);
+    return true;
 }
 
 void unpackDirKey(uint key, out ivec3 c, out uint dir) {
-    c.x = int((key >> 21u) & 0x1FFu) - 256;
-    c.y = int((key >> 12u) & 0x1FFu) - 256;
-    c.z = int((key >>  3u) & 0x1FFu) - 256;
+    ivec3 lv;
+    lv.x = int((key >> 21u) & 0x1FFu);
+    lv.y = int((key >> 12u) & 0x1FFu);
+    lv.z = int((key >>  3u) & 0x1FFu);
     dir = key & 0x7u;
+    c = lv + ivec3(g_originX, g_originY, g_originZ);
 }
 
 // Hash probe for (nv, dir). Ported from voxel_tsdf_mc.comp's getTSDF: from wangHash(key),
-// MAX_PROBE linear probes; false on EMPTY_KEY hit or weight below MIN_WEIGHT.
+// MAX_PROBE linear probes; false on EMPTY_KEY hit, weight below MIN_WEIGHT, or nv outside the
+// movable window.
 bool fetchValue(ivec3 nv, uint dir, out float val) {
     val = 0.0;
-    uint key  = packDirKey(nv, dir);
+    uint key;
+    if (!packDirKey(nv, dir, key)) return false;
     uint slot = wangHash(key) % g_hashCapacity;
     for (uint p = 0u; p < MAX_PROBE; p++) {
         DirEntry e = g_hash[(slot + p) % g_hashCapacity];

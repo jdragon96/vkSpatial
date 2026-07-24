@@ -1,6 +1,7 @@
 #include "Engine/Spatial/CompactDirectionalTSDF.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace Engine::Spatial {
 
@@ -23,6 +24,9 @@ namespace Engine::Spatial {
             uint32_t maxDirections;
             uint32_t dirExponent;
             uint32_t viewAngleWeight;
+            int32_t originX;
+            int32_t originY;
+            int32_t originZ;
         };
 
         // Must match the push_constant block in compact_directional_extract.comp.
@@ -30,7 +34,18 @@ namespace Engine::Spatial {
             float voxelSize;
             uint32_t hashCapacity;
             uint32_t maxCandidates;
+            int32_t originX;
+            int32_t originY;
+            int32_t originZ;
         };
+
+        // floor(worldMinCorner / voxelSize), component-wise -- the voxel-space origin of the
+        // movable 512^3 hash window (see CompactDirectionalTSDF.h's Build doc).
+        Eigen::Vector3i FloorToVoxel(const Eigen::Vector3f &worldMinCorner, float voxelSize) {
+            return Eigen::Vector3i(static_cast<int32_t>(std::floor(worldMinCorner.x() / voxelSize)),
+                                   static_cast<int32_t>(std::floor(worldMinCorner.y() / voxelSize)),
+                                   static_cast<int32_t>(std::floor(worldMinCorner.z() / voxelSize)));
+        }
     } // namespace
 
     CompactDirectionalTSDF::CompactDirectionalTSDF() {}
@@ -39,12 +54,14 @@ namespace Engine::Spatial {
                                        float voxelSize,
                                        float truncation,
                                        uint32_t hashCapacity,
-                                       uint32_t maxPoints) {
+                                       uint32_t maxPoints,
+                                       const Eigen::Vector3f &windowMinCorner) {
         m_ctx = &ctx;
         m_voxelSize = voxelSize;
         m_truncation = truncation;
         m_hashCapacity = hashCapacity;
         m_maxPoints = maxPoints;
+        m_originVoxel = FloorToVoxel(windowMinCorner, voxelSize);
 
         m_hashBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
         m_pointBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
@@ -89,7 +106,8 @@ namespace Engine::Spatial {
                 N, m_hashCapacity, m_voxelSize, m_truncation,
                 cameraPos.x(), cameraPos.y(), cameraPos.z(),
                 m_quality.maxDirections, m_quality.dirExponent,
-                m_quality.viewAngleWeight ? 1u : 0u};
+                m_quality.viewAngleWeight ? 1u : 0u,
+                m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z()};
         m_kernel->Args(pc).DispatchElements(N);
     }
 
@@ -115,11 +133,15 @@ namespace Engine::Spatial {
             if (e.sumW < kMinWeight) continue;
 
             // Unpack with the SAME layout as packDirKey/unpackDirKey in
-            // compact_directional_{integrate,extract}.comp.
+            // compact_directional_{integrate,extract}.comp: local (window-relative) coords,
+            // no bias -- add m_originVoxel back to recover the world-space voxel.
             const uint32_t dir = e.key & 0x7u;
-            const int vz = static_cast<int>((e.key >> 3u) & 0x1FFu) - 256;
-            const int vy = static_cast<int>((e.key >> 12u) & 0x1FFu) - 256;
-            const int vx = static_cast<int>((e.key >> 21u) & 0x1FFu) - 256;
+            const int lz = static_cast<int>((e.key >> 3u) & 0x1FFu);
+            const int ly = static_cast<int>((e.key >> 12u) & 0x1FFu);
+            const int lx = static_cast<int>((e.key >> 21u) & 0x1FFu);
+            const int vx = lx + m_originVoxel.x();
+            const int vy = ly + m_originVoxel.y();
+            const int vz = lz + m_originVoxel.z();
 
             CompactEntry ce;
             ce.center = (Eigen::Vector3f(float(vx), float(vy), float(vz)) +
@@ -144,7 +166,8 @@ namespace Engine::Spatial {
         const uint32_t zero = 0;
         countBuf.Upload(&zero, sizeof(uint32_t));
 
-        ExtractPC pc{m_voxelSize, m_hashCapacity, maxCandidates};
+        ExtractPC pc{m_voxelSize, m_hashCapacity, maxCandidates,
+                     m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z()};
 
         Engine::Core::ComputePipeline kernel(*m_ctx);
         kernel.Build("compact_directional_extract.comp")
