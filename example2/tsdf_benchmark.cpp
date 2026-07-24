@@ -305,6 +305,7 @@ namespace {
         double sigma = 0.0;
         double coarsenPct = 0.0;
         double memKB = 0.0;
+        std::size_t nPoints = 0; // not printed by PrintSigmaRow; used by Compact-Dir combine row
         ErrStats overall;
         std::array<ErrStats, kNumRegions> perRegion;
     };
@@ -384,6 +385,7 @@ namespace {
                 if (isHighVar(p)) adaptivePts.push_back(p);
             for (const auto &p : coarseCloud.points)
                 if (!isHighVar(p)) adaptivePts.push_back(p);
+            row.nPoints = adaptivePts.size();
 
             for (const auto &p : adaptivePts) {
                 const double e = double(fixtures::NearestDistance(shape, p));
@@ -634,6 +636,158 @@ namespace {
         return row;
     }
 
+    // ---- Compact-Dir(var-adaptive): the two orthogonal memory axes COMBINED --------------
+    //
+    // Axis 1 (Compact-Directional): DirectionalTSDF's per-direction accuracy stored one
+    // 16-byte entry per occupied (voxel,direction) key, not whole 512-voxel blocks.
+    // Axis 2 (variance-adaptive resolution): coarsen (2x voxel) low-variance flat cells,
+    // keep fine resolution only where variance is high (edges/curvature).
+    //
+    // This applies Axis 2's cell classification -- reusing the SAME cellStats the
+    // Simple-only sigma sweep (RunVarianceAdaptiveSweep) uses, i.e. built from a fine
+    // SimpleTSDF::DownloadVoxels() grouped into coarse (2*voxel) cells -- to a fine and a
+    // coarse CompactDirectionalTSDF instead of a fine/coarse SimpleTSDF. The two Compact-
+    // Directional structures supply their OWN accuracy (Directional-level) and their OWN
+    // per-entry memory count (CompactEntry, 16B each); only the fine/coarse SELECTION test
+    // (which cells stay fine) is shared with the Simple-only sweep.
+    //
+    // Same honesty caveat as RunVarianceAdaptiveSweep: this selects, per coarse cell,
+    // between two independently-extracted point clouds (no transitional-voxel MC), so minor
+    // seams at fine<->coarse cell boundaries are possible; and the cube's Simple(coarse)
+    // all-coarse-MC-fails aliasing (see file header) does NOT apply here (Compact-Directional
+    // extraction is per-(voxel,direction) hash-probe crossings, not Marching-Cubes corner
+    // occupancy), but the cube's per-cell variance may still be near-uniform, making most
+    // cells classify the same way (little to coarsen) -- reported as measured either way.
+    struct CompactAdaptiveEval {
+        double memKB = 0.0;
+        std::size_t nPoints = 0;
+        double coarsenPct = 0.0;
+        ErrStats overall;
+        std::array<ErrStats, kNumRegions> perRegion;
+    };
+
+    CompactAdaptiveEval EvalCompactAdaptiveSigma(
+            Shape shape, float classifyVoxel, float vc, double sigma,
+            const std::map<CellKey, CellAgg> &cellStats,
+            const Engine::Spatial::OrientedPointCloud &fineCloud,
+            const Engine::Spatial::OrientedPointCloud &coarseCloud,
+            const std::vector<Engine::Spatial::CompactEntry> &fineEntries,
+            const std::vector<Engine::Spatial::CompactEntry> &coarseEntries) {
+        CompactAdaptiveEval ev;
+
+        auto isHighVar = [&](const Eigen::Vector3f &p) {
+            const auto it = cellStats.find(CellOf(p, vc));
+            // A cell with no fine voxels has nothing to keep fine -> treat as coarse/flat.
+            return it != cellStats.end() && it->second.meanVar() > sigma;
+        };
+
+        // Memory: fine-Compact entries kept (high-var cell) + coarse-Compact entries kept
+        // (low-var cell), each entry = 16B (sizeof(DirEntry)).
+        std::size_t fineMemCount = 0, coarseMemCount = 0;
+        for (const auto &e : fineEntries)
+            if (isHighVar(e.center)) ++fineMemCount;
+        for (const auto &e : coarseEntries)
+            if (!isHighVar(e.center)) ++coarseMemCount;
+        ev.memKB = double(fineMemCount + coarseMemCount) * 16.0 / 1024.0;
+
+        std::size_t coarsenCells = 0;
+        for (const auto &kv : cellStats)
+            if (!(kv.second.meanVar() > sigma)) ++coarsenCells;
+        ev.coarsenPct =
+                cellStats.empty() ? 0.0 : 100.0 * double(coarsenCells) / double(cellStats.size());
+
+        // Adaptive surface = fine-Compact cloud points in high-var cells U coarse-Compact
+        // cloud points in low-var cells.
+        std::vector<Eigen::Vector3f> pts;
+        pts.reserve(fineCloud.points.size() + coarseCloud.points.size());
+        for (const auto &p : fineCloud.points)
+            if (isHighVar(p)) pts.push_back(p);
+        for (const auto &p : coarseCloud.points)
+            if (!isHighVar(p)) pts.push_back(p);
+        ev.nPoints = pts.size();
+
+        for (const auto &p : pts) {
+            const double e = double(fixtures::NearestDistance(shape, p));
+            ev.overall.add(e);
+            ev.perRegion[static_cast<int>(fixtures::ClassifyRegion(shape, p, classifyVoxel))]
+                    .add(e);
+        }
+        return ev;
+    }
+
+    struct CompactAdaptiveResult {
+        Row row; // representative (median-sigma) row for the main table
+        std::vector<SigmaRow> sweep;
+    };
+
+    // Builds a fine (voxel) and coarse (2*voxel) CompactDirectionalTSDF from the same views,
+    // then sweeps the SAME cell-variance percentiles as RunVarianceAdaptiveSweep to show the
+    // combine's memory/accuracy tradeoff. `cellStats` must be pre-built via
+    // BuildCellStats(fineSimpleVoxels, 2*voxel) (shared with the Simple-only sweep / hybrid
+    // classifier so all rows agree on the same per-cell variance).
+    CompactAdaptiveResult RunCompactVarianceAdaptive(
+            Engine::Core::Context &ctx, Shape shape, float voxel, uint32_t maxDir,
+            const std::vector<fixtures::View> &views,
+            const std::map<CellKey, CellAgg> &cellStats) {
+        CompactAdaptiveResult out;
+        const float vc = 2.0f * voxel;
+
+        Engine::Spatial::CompactDirectionalTSDF cdFine;
+        Engine::Spatial::CompactDirectionalTSDF cdCoarse;
+        cdFine.Build(ctx, voxel, kTruncation);
+        cdFine.SetIntegrationQuality({maxDir, 4, true});
+        cdCoarse.Build(ctx, vc, kTruncation);
+        cdCoarse.SetIntegrationQuality({maxDir, 4, true});
+
+        const auto t0 = std::chrono::steady_clock::now();
+        for (const auto &v : views) {
+            cdFine.Integrate(v.points, v.normals, v.camPos);
+            cdCoarse.Integrate(v.points, v.normals, v.camPos);
+        }
+        const Engine::Spatial::OrientedPointCloud fineCloud = cdFine.ExtractPointCloud();
+        const Engine::Spatial::OrientedPointCloud coarseCloud = cdCoarse.ExtractPointCloud();
+        const auto t1 = std::chrono::steady_clock::now();
+        const double buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+        const std::vector<Engine::Spatial::CompactEntry> fineEntries = cdFine.DownloadEntries();
+        const std::vector<Engine::Spatial::CompactEntry> coarseEntries = cdCoarse.DownloadEntries();
+
+        const std::array<double, 4> percentiles = {0.25, 0.50, 0.75, 0.90};
+        for (double p : percentiles) {
+            const double sigma = PercentileOfCellVars(cellStats, p);
+            const CompactAdaptiveEval ev = EvalCompactAdaptiveSigma(
+                    shape, voxel, vc, sigma, cellStats, fineCloud, coarseCloud, fineEntries,
+                    coarseEntries);
+
+            SigmaRow sr;
+            sr.shape = ShapeName(shape);
+            sr.sigma = sigma;
+            sr.coarsenPct = ev.coarsenPct;
+            sr.memKB = ev.memKB;
+            sr.nPoints = ev.nPoints;
+            sr.overall = ev.overall;
+            sr.perRegion = ev.perRegion;
+            out.sweep.push_back(sr);
+        }
+
+        // Representative row for the main table: the median-sigma (0.50 percentile) sweep
+        // entry, same convention as the main() loop's `midIdx` for the Simple-only sweep.
+        Row row;
+        row.shape = ShapeName(shape);
+        row.method = "Compact-Dir(var-adaptive)";
+        row.buildMs = buildMs;
+        if (!out.sweep.empty()) {
+            const std::size_t midIdx = std::min<std::size_t>(1, out.sweep.size() - 1);
+            const SigmaRow &mid = out.sweep[midIdx];
+            row.nPoints = mid.nPoints;
+            row.memKB = mid.memKB;
+            row.overall = mid.overall;
+            row.perRegion = mid.perRegion;
+        }
+        out.row = row;
+        return out;
+    }
+
     void PrintDirectionalStorage(Shape shape, const DirStorageStats &s) {
         std::printf("  [directional-storage] %s: mem_block=%.2f KB  occupied_dir_voxels=%zu  "
                     "mem_pervoxel_projected=%.2f KB  waste_factor=%.1fx\n",
@@ -794,6 +948,34 @@ namespace {
                     memEdgeKB, dirRow.memKB, fineRow.memKB);
     }
 
+    // Headline insight: the two orthogonal memory axes combined. Compares the
+    // Compact-Dir(var-adaptive) representative (median-sigma) row against Compact-Directional
+    // (fine, Axis 1 alone), Simple(fine) (the memory bar to beat), and Directional (the
+    // accuracy bar to match) -- states plainly whether "Directional accuracy at BELOW Simple
+    // memory" was reached.
+    void PrintCompactAdaptiveInsight(const Row &combo, const Row &compactFine,
+                                     const Row &simpleFine, const Row &dirRow) {
+        const bool belowSimpleMem = combo.memKB < simpleFine.memKB;
+        const bool belowCompactFineMem = combo.memKB < compactFine.memKB;
+        const bool nearDirAccuracy =
+                combo.overall.rmse() <
+                simpleFine.overall.rmse() -
+                        0.5 * (simpleFine.overall.rmse() - dirRow.overall.rmse());
+        std::printf("insight (%s, COMBINE: Compact-Dir x variance-adaptive): mem_KB "
+                    "combo=%.2f  Compact-Directional(fine)=%.2f  Simple(fine)=%.2f  "
+                    "Directional=%.2f | RMSE_mm combo=%.5f  Compact-Directional(fine)=%.5f  "
+                    "Simple(fine)=%.5f  Directional=%.5f | combo is %s Simple(fine) memory, "
+                    "%s Compact-Directional(fine) memory, RMSE %s Directional than Simple(fine)"
+                    " -- headline (\"Directional accuracy at BELOW Simple memory\"): %s\n",
+                    combo.shape.c_str(), combo.memKB, compactFine.memKB, simpleFine.memKB,
+                    dirRow.memKB, combo.overall.rmse(), compactFine.overall.rmse(),
+                    simpleFine.overall.rmse(), dirRow.overall.rmse(),
+                    belowSimpleMem ? "BELOW" : "ABOVE",
+                    belowCompactFineMem ? "below" : "above",
+                    nearDirAccuracy ? "closer to" : "closer to Simple(fine), not",
+                    (belowSimpleMem && nearDirAccuracy) ? "REACHED" : "NOT reached");
+    }
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -823,9 +1005,10 @@ int main(int argc, char **argv) {
 
     std::vector<Row> rows;
     std::vector<SigmaRow> sigmaRows;
+    std::vector<SigmaRow> compactSigmaRows;
     // Per-shape bundle for the trailing insight summaries.
     struct ShapeInsight {
-        Row fine, coarse, dir, hybrid;
+        Row fine, coarse, dir, hybrid, compact, compactAdaptive;
         std::vector<SigmaRow> sweep;
         DirStorageStats storage;
         double memFlatKB = 0.0, memEdgeKB = 0.0, dirCellFrac = 0.0;
@@ -879,6 +1062,13 @@ int main(int argc, char **argv) {
         // at ~SimpleTSDF per-entry memory (measured, right after the Directional row).
         Row compactRow = RunCompactDirectional(ctx, shape, voxel, maxDir, views);
 
+        // COMBINE: Compact-Directional's per-voxel storage (Axis 1) x variance-adaptive
+        // coarsening of low-variance flat cells (Axis 2) -- reuses the SAME cellStats the
+        // Simple-only sweep/hybrid classifier above use (built from fine SimpleTSDF variance),
+        // applied to a fine+coarse CompactDirectionalTSDF pair instead of SimpleTSDF.
+        CompactAdaptiveResult compactAdaptive =
+                RunCompactVarianceAdaptive(ctx, shape, voxel, maxDir, views, classifier.cellStats);
+
         // Part 2: Adaptive-Directional hybrid -- Directional points in edge cells U
         // Simple(fine) points in flat cells, memory-costed the same way.
         double memFlatKB = 0.0, memEdgeKB = 0.0, dirCellFrac = 0.0;
@@ -891,10 +1081,13 @@ int main(int argc, char **argv) {
         rows.push_back(coarseRow);
         rows.push_back(dirRow);
         rows.push_back(compactRow);
+        rows.push_back(compactAdaptive.row);
         rows.push_back(hybridRow);
         sigmaRows.insert(sigmaRows.end(), sweep.begin(), sweep.end());
-        insights.push_back({fineRow, coarseRow, dirRow, hybridRow, sweep, dirResult.storage,
-                            memFlatKB, memEdgeKB, dirCellFrac});
+        compactSigmaRows.insert(compactSigmaRows.end(), compactAdaptive.sweep.begin(),
+                                compactAdaptive.sweep.end());
+        insights.push_back({fineRow, coarseRow, dirRow, hybridRow, compactRow, compactAdaptive.row,
+                            sweep, dirResult.storage, memFlatKB, memEdgeKB, dirCellFrac});
 
         std::printf("\n");
     }
@@ -913,6 +1106,16 @@ int main(int argc, char **argv) {
                 "resolution MC with transitional voxels -- so minor seams/double-coverage at "
                 "fine<->coarse cell boundaries are possible. Numbers are reported as measured.\n\n");
 
+    std::printf("-- Compact-Dir(var-adaptive) sigma sweep (COMBINE: per-voxel directional "
+                "storage x variance-adaptive coarsening) --\n");
+    PrintSigmaHeader();
+    for (const auto &r : compactSigmaRows) PrintSigmaRow(r);
+    std::printf("\n");
+
+    std::printf("[caveat] same per-cell-selection-of-two-independently-extracted-clouds caveat "
+                "as the sigma sweep above applies here too, now with Compact-Directional as both "
+                "the fine and coarse source (see RunCompactVarianceAdaptive's header comment).\n\n");
+
     for (const auto &ins : insights) {
         PrintInsight(ins.fine, ins.dir);
         if (!ins.sweep.empty()) {
@@ -922,6 +1125,7 @@ int main(int argc, char **argv) {
         PrintStorageInsight(ins.dir, ins.storage);
         PrintHybridInsight(ins.hybrid, ins.dir, ins.fine, ins.memFlatKB, ins.memEdgeKB,
                           ins.dirCellFrac);
+        PrintCompactAdaptiveInsight(ins.compactAdaptive, ins.compact, ins.fine, ins.dir);
     }
 
     return 0;

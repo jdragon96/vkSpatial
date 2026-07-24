@@ -5,6 +5,9 @@
 namespace Engine::Spatial {
 
     static constexpr uint32_t EMPTY_KEY = 0xFFFFFFFFu;
+    // Matches #define TSDF_SCALE 10000.0 in compact_directional_integrate.comp /
+    // compact_directional_extract.comp (extract's MIN_WEIGHT gate = TSDF_SCALE/2).
+    static constexpr int32_t kTsdfScale = 10000;
 
     namespace {
         // Must match the push_constant block in compact_directional_integrate.comp (all 4-byte
@@ -94,6 +97,39 @@ namespace Engine::Spatial {
         uint32_t count = 0;
         m_statBuffer->Download(&count, sizeof(uint32_t));
         return count;
+    }
+
+    std::vector<CompactEntry> CompactDirectionalTSDF::DownloadEntries() const {
+        std::vector<CompactEntry> out;
+        if (!m_ctx) return out;
+
+        std::vector<DirEntry> entries(m_hashCapacity);
+        m_hashBuffer->Download(entries.data(), m_hashCapacity * sizeof(DirEntry));
+
+        // Same occupancy gate as compact_directional_extract.comp's MIN_WEIGHT (TSDF_SCALE/2).
+        const uint32_t kMinWeight = static_cast<uint32_t>(kTsdfScale) / 2u;
+
+        out.reserve(entries.size());
+        for (const DirEntry &e : entries) {
+            if (e.key == EMPTY_KEY) continue;
+            if (e.sumW < kMinWeight) continue;
+
+            // Unpack with the SAME layout as packDirKey/unpackDirKey in
+            // compact_directional_{integrate,extract}.comp.
+            const uint32_t dir = e.key & 0x7u;
+            const int vz = static_cast<int>((e.key >> 3u) & 0x1FFu) - 256;
+            const int vy = static_cast<int>((e.key >> 12u) & 0x1FFu) - 256;
+            const int vx = static_cast<int>((e.key >> 21u) & 0x1FFu) - 256;
+
+            CompactEntry ce;
+            ce.center = (Eigen::Vector3f(float(vx), float(vy), float(vz)) +
+                         Eigen::Vector3f::Constant(0.5f)) * m_voxelSize;
+            ce.direction = dir;
+            ce.tsdf = float(e.sumDW) / float(e.sumW);
+            ce.weight = float(e.sumW) / float(kTsdfScale);
+            out.push_back(ce);
+        }
+        return out;
     }
 
     OrientedPointCloud CompactDirectionalTSDF::ExtractPointCloud(uint32_t maxCandidates) const {

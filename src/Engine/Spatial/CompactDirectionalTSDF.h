@@ -26,6 +26,17 @@ namespace Engine::Spatial {
         uint32_t pad;   // unused
     };
 
+    // Per-(voxel,direction) readback for variance-adaptive-resolution experiments (mirrors
+    // SimpleTSDF::VoxelStat / DownloadVoxels): world-space voxel centre, the direction layer
+    // (0..5, see topK/directional_tsdf_integrate.comp's axis encoding), and the recovered
+    // TSDF value/weight. See CompactDirectionalTSDF::DownloadEntries.
+    struct CompactEntry {
+        Eigen::Vector3f center;
+        uint32_t direction;
+        float tsdf;
+        float weight;
+    };
+
     // DirectionalTSDF accuracy at ~SimpleTSDF memory: a per-voxel flat hash keyed by
     // (voxel, direction), integrated/extracted with DirectionalTSDF's directional logic
     // (topK dominant directions, view-angle weight, per-direction zero crossings) but stored
@@ -55,6 +66,13 @@ namespace Engine::Spatial {
         OrientedPointCloud ExtractPointCloud(uint32_t maxCandidates = 1u << 19) const;
 
         uint32_t FilledCount() const;
+
+        // Downloads the whole hash buffer and unpacks every occupied, sufficiently-observed
+        // entry (key != EMPTY_KEY, sumW >= TSDF_SCALE/2 -- same occupancy gate as
+        // compact_directional_extract.comp) into a CompactEntry: world-space voxel centre,
+        // direction layer, recovered TSDF value, and weight. Used by the Compact-Directional x
+        // variance-adaptive-resolution benchmark (per-voxel/per-direction memory accounting).
+        std::vector<CompactEntry> DownloadEntries() const;
 
         void Reset();
 
