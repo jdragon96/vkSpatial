@@ -1,0 +1,117 @@
+#version 460
+layout(local_size_x = 64) in;
+
+// CompactDirectionalTSDF extraction: one thread per hash slot. Emits a surface point per
+// occupied (voxel, direction) entry that has a per-direction zero crossing, with a
+// central-difference gradient normal. Sign crossings are compared ONLY within the same
+// direction layer (DirectionalTSDF invariant), but neighbours are found by HASH PROBE
+// instead of DirectionalTSDF's group/pool addressing.
+//
+// Ported from: directional_tsdf_extract.comp (crossing + gradient + candidate emission),
+//              voxel_tsdf_mc.comp (getTSDF probe -> fetchValue).
+
+#define TSDF_SCALE  10000
+#define MIN_WEIGHT  (TSDF_SCALE / 2)
+
+#include "voxel_common.glsl"   // EMPTY_KEY, MAX_PROBE, wangHash
+
+struct DirEntry { uint key; int sumDW; uint sumW; uint pad; };
+
+layout(std430, set = 0, binding = 0) readonly buffer HashTable  { DirEntry g_hash[]; };
+layout(std430, set = 0, binding = 1)          buffer Candidates { float g_cand[]; };
+layout(        set = 0, binding = 2)          buffer Counter    { uint g_count; };
+
+layout(push_constant) uniform PC {
+    float g_voxelSize;
+    uint  g_hashCapacity;
+    uint  g_maxCandidates;
+};
+
+uint packDirKey(ivec3 c, uint dir) {
+    return ((uint(c.x + 256) & 0x1FFu) << 21u)
+         | ((uint(c.y + 256) & 0x1FFu) << 12u)
+         | ((uint(c.z + 256) & 0x1FFu) << 3u)
+         |  (dir & 0x7u);
+}
+
+void unpackDirKey(uint key, out ivec3 c, out uint dir) {
+    c.x = int((key >> 21u) & 0x1FFu) - 256;
+    c.y = int((key >> 12u) & 0x1FFu) - 256;
+    c.z = int((key >>  3u) & 0x1FFu) - 256;
+    dir = key & 0x7u;
+}
+
+// Hash probe for (nv, dir). Ported from voxel_tsdf_mc.comp's getTSDF: from wangHash(key),
+// MAX_PROBE linear probes; false on EMPTY_KEY hit or weight below MIN_WEIGHT.
+bool fetchValue(ivec3 nv, uint dir, out float val) {
+    val = 0.0;
+    uint key  = packDirKey(nv, dir);
+    uint slot = wangHash(key) % g_hashCapacity;
+    for (uint p = 0u; p < MAX_PROBE; p++) {
+        DirEntry e = g_hash[(slot + p) % g_hashCapacity];
+        if (e.key == EMPTY_KEY) return false;
+        if (e.key == key) {
+            if (e.sumW < uint(MIN_WEIGHT)) return false;
+            val = float(e.sumDW) / float(e.sumW);
+            return true;
+        }
+    }
+    return false;
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= g_hashCapacity) return;
+
+    DirEntry e = g_hash[idx];
+    if (e.key == EMPTY_KEY) return;
+    if (e.sumW < uint(MIN_WEIGHT)) return;
+
+    ivec3 v; uint dir;
+    unpackDirKey(e.key, v, dir);
+    float c = float(e.sumDW) / float(e.sumW);
+
+    // Zero crossings against the three +axis neighbours (same direction layer only).
+    vec3 posSum = vec3(0.0);
+    int crossings = 0;
+    for (int axis = 0; axis < 3; axis++) {
+        ivec3 nv = v; nv[axis] += 1;
+        float nVal;
+        if (!fetchValue(nv, dir, nVal)) continue;
+        if ((c > 0.0) == (nVal > 0.0)) continue;
+        if (c == nVal) continue;
+        float t = c / (c - nVal);
+        vec3 crossPos = (vec3(v) + vec3(0.5)) * g_voxelSize;
+        crossPos[axis] += t * g_voxelSize;
+        posSum += crossPos;
+        crossings++;
+    }
+    if (crossings == 0) return;
+
+    // Normal: central-difference gradient in the same layer (one-sided fallback).
+    vec3 grad = vec3(0.0);
+    for (int axis = 0; axis < 3; axis++) {
+        ivec3 vp = v; vp[axis] += 1;
+        ivec3 vm = v; vm[axis] -= 1;
+        float fp, fm;
+        bool hp = fetchValue(vp, dir, fp);
+        bool hm = fetchValue(vm, dir, fm);
+        if (hp && hm) grad[axis] = (fp - fm) * 0.5;
+        else if (hp)  grad[axis] = fp - c;
+        else if (hm)  grad[axis] = c - fm;
+    }
+    float len = length(grad);
+    if (len < 1e-6) return;
+
+    uint outIdx = atomicAdd(g_count, 1u);
+    if (outIdx >= g_maxCandidates) return;
+
+    vec3 pos = posSum / float(crossings);
+    vec3 n   = grad / len;
+    g_cand[outIdx * 6u + 0u] = pos.x;
+    g_cand[outIdx * 6u + 1u] = pos.y;
+    g_cand[outIdx * 6u + 2u] = pos.z;
+    g_cand[outIdx * 6u + 3u] = n.x;
+    g_cand[outIdx * 6u + 4u] = n.y;
+    g_cand[outIdx * 6u + 5u] = n.z;
+}

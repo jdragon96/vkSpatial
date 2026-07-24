@@ -98,6 +98,7 @@
 #include "shape_fixtures.h"
 
 #include "Engine/Core/Context.h"
+#include "Engine/Spatial/CompactDirectionalTSDF.h"
 #include "Engine/Spatial/DirectionalTSDF.h"
 #include "Engine/Spatial/DirectionalTSDFTypes.h"
 #include "Engine/Spatial/SimpleTSDF.h"
@@ -168,18 +169,18 @@ namespace {
     }
 
     void PrintHeader() {
-        std::printf("%-9s %-15s %10s %9s %10s %10s %10s %9s %9s %9s\n", "shape", "method",
+        std::printf("%-9s %-20s %10s %9s %10s %10s %10s %9s %9s %9s\n", "shape", "method",
                     "build_ms", "nPoints", "mem_KB", "acc_mean", "acc_rmse", "edge", "flat",
                     "curved");
         std::printf("---------------------------------------------------------------------"
-                    "---------------------------------\n");
+                    "--------------------------------------\n");
     }
 
     void PrintRow(const Row &r) {
         const auto &e = r.perRegion[static_cast<int>(Region::Edge)];
         const auto &f = r.perRegion[static_cast<int>(Region::Flat)];
         const auto &c = r.perRegion[static_cast<int>(Region::Curved)];
-        std::printf("%-9s %-15s %10.3f %9zu %10.2f %s %s %s %s %s\n", r.shape.c_str(),
+        std::printf("%-9s %-20s %10.3f %9zu %10.2f %s %s %s %s %s\n", r.shape.c_str(),
                     r.method.c_str(), r.buildMs, r.nPoints, r.memKB,
                     FmtErr(r.overall.mean(), r.overall.count > 0, 10).c_str(),
                     FmtErr(r.overall.rmse(), r.overall.count > 0, 10).c_str(),
@@ -604,6 +605,35 @@ namespace {
         return out;
     }
 
+    // ---- Compact-Directional: DirectionalTSDF logic in a per-voxel flat (voxel,dir) hash -----
+    //
+    // Same dominant-direction integrate + per-direction extract as the Directional row, but
+    // stored one 16-byte entry per occupied (voxel,direction) key (like SimpleTSDF) instead of
+    // DirectionalTSDF's 8^3=512-voxel blocks. This makes the "Directional accuracy is a
+    // block-granularity storage cost, not fundamental" claim a REAL measurement: mem_KB here is
+    // FilledCount()*16B (occupied entries only), compared directly against the Directional row's
+    // block-granular mem_KB at the SAME per-direction accuracy.
+    Row RunCompactDirectional(Engine::Core::Context &ctx, Shape shape, float voxel, uint32_t maxDir,
+                              const std::vector<fixtures::View> &views) {
+        Engine::Spatial::CompactDirectionalTSDF cd;
+        cd.Build(ctx, voxel, kTruncation);
+        cd.SetIntegrationQuality({maxDir, 4, true});
+
+        const auto t0 = std::chrono::steady_clock::now();
+        for (const auto &v : views) cd.Integrate(v.points, v.normals, v.camPos);
+        const Engine::Spatial::OrientedPointCloud cloud = cd.ExtractPointCloud();
+        const auto t1 = std::chrono::steady_clock::now();
+
+        Row row;
+        row.shape = ShapeName(shape);
+        row.method = "Compact-Directional";
+        row.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        row.nPoints = cloud.points.size();
+        row.memKB = double(cd.FilledCount()) * 16.0 / 1024.0; // occupied entries * sizeof(DirEntry)
+        ScoreAgainstGT(shape, voxel, cloud.points, row);
+        return row;
+    }
+
     void PrintDirectionalStorage(Shape shape, const DirStorageStats &s) {
         std::printf("  [directional-storage] %s: mem_block=%.2f KB  occupied_dir_voxels=%zu  "
                     "mem_pervoxel_projected=%.2f KB  waste_factor=%.1fx\n",
@@ -845,6 +875,10 @@ int main(int argc, char **argv) {
         const Row &dirRow = dirResult.row;
         PrintDirectionalStorage(shape, dirResult.storage);
 
+        // Compact-Directional: DirectionalTSDF accuracy from a per-voxel flat (voxel,dir) hash
+        // at ~SimpleTSDF per-entry memory (measured, right after the Directional row).
+        Row compactRow = RunCompactDirectional(ctx, shape, voxel, maxDir, views);
+
         // Part 2: Adaptive-Directional hybrid -- Directional points in edge cells U
         // Simple(fine) points in flat cells, memory-costed the same way.
         double memFlatKB = 0.0, memEdgeKB = 0.0, dirCellFrac = 0.0;
@@ -856,6 +890,7 @@ int main(int argc, char **argv) {
         rows.push_back(weightedRow);
         rows.push_back(coarseRow);
         rows.push_back(dirRow);
+        rows.push_back(compactRow);
         rows.push_back(hybridRow);
         sigmaRows.insert(sigmaRows.end(), sweep.begin(), sweep.end());
         insights.push_back({fineRow, coarseRow, dirRow, hybridRow, sweep, dirResult.storage,

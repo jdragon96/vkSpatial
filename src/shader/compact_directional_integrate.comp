@@ -1,0 +1,130 @@
+#version 460
+layout(local_size_x = 256) in;
+
+// CompactDirectionalTSDF integration: DirectionalTSDF's dominant-direction ray-march
+// (topK direction selection + view-angle weight + normalized value accumulation) written
+// into a SINGLE per-voxel flat hash keyed by (voxel, direction) -- NOT the 8^3=512-voxel
+// blocks DirectionalTSDF uses. Only occupied (voxel,dir) entries exist, so storage tracks
+// the thin surface band instead of whole blocks (see CompactDirectionalTSDF.{h,cpp}).
+//
+// Ported from: voxel_tsdf_integrate.comp (findOrInsert + ray-march band) and
+//              directional_tsdf_integrate.comp (topK/ipow + viewFactor + normalized value).
+
+#define TSDF_SCALE 10000.0
+
+#include "voxel_common.glsl"   // EMPTY_KEY, MAX_PROBE, wangHash
+
+layout(push_constant) uniform PC {
+    uint  g_numPoints;
+    uint  g_hashCapacity;
+    float g_voxelSize;
+    float g_truncation;
+    float g_camX;
+    float g_camY;
+    float g_camZ;
+    uint  g_maxDirections;
+    uint  g_dirExponent;
+    uint  g_viewAngleWeight;
+};
+
+struct DirEntry { uint key; int sumDW; uint sumW; uint pad; };
+
+layout(std430, set = 0, binding = 0) buffer HashTable { DirEntry g_hash[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Points  { float g_points[];  };
+layout(std430, set = 0, binding = 2) readonly buffer Normals { float g_normals[]; };
+layout(        set = 0, binding = 3) buffer Stat { uint g_filledCount; };
+
+// (voxel, direction) -> uint32 key. 9 bits/axis (+256 bias => coord range [-256, 255],
+// ample for the +-1.5-unit fixtures at voxelSize 0.1) + 3 dir bits = 30 bits used, so the
+// max value 0x3FFFFFFF stays distinct from EMPTY_KEY (0xFFFFFFFF). RANGE LIMIT: coordinates
+// outside [-256, 255] alias -- fine here; a production version would widen the key / use 64-bit.
+uint packDirKey(ivec3 c, uint dir) {
+    return ((uint(c.x + 256) & 0x1FFu) << 21u)
+         | ((uint(c.y + 256) & 0x1FFu) << 12u)
+         | ((uint(c.z + 256) & 0x1FFu) << 3u)
+         |  (dir & 0x7u);
+}
+
+// Insert or find key in the hash; returns slot index or ~0u if the probe chain is full.
+// (Ported verbatim from voxel_tsdf_integrate.comp, retargeted to DirEntry.)
+uint findOrInsert(uint key) {
+    uint slot = wangHash(key) % g_hashCapacity;
+    for (uint p = 0u; p < MAX_PROBE; p++) {
+        uint idx  = (slot + p) % g_hashCapacity;
+        uint prev = atomicCompSwap(g_hash[idx].key, EMPTY_KEY, key);
+        if (prev == EMPTY_KEY) { atomicAdd(g_filledCount, 1u); return idx; }
+        if (prev == key) return idx;
+    }
+    return ~0u;
+}
+
+// integer power via repeated multiply (matches CPU ipow exactly)
+float ipow(float x, uint p){ float r = 1.0; for (uint i = 0u; i < p; i++) r *= x; return r; }
+
+// Dominant-direction selection. Mirrors TopKDirections() / directional_tsdf_integrate.comp's
+// topK() EXACTLY (stable insertion sort desc, shift only on strict <, r>=0.05 gate).
+int topK(vec3 n, out uint dirs[3], out float rel[3]) {
+    float a[3] = float[](abs(n.x), abs(n.y), abs(n.z));
+    uint  d[3] = uint[]( n.x >= 0.0 ? 0u : 1u, n.y >= 0.0 ? 2u : 3u, n.z >= 0.0 ? 4u : 5u );
+    for (int i = 1; i < 3; i++) { float ka = a[i]; uint kd = d[i]; int j = i - 1;
+        while (j >= 0 && a[j] < ka) { a[j+1] = a[j]; d[j+1] = d[j]; j--; }
+        a[j+1] = ka; d[j+1] = kd; }
+    float rmax = ipow(a[0], g_dirExponent);
+    int cnt = 0; uint K = g_maxDirections < 1u ? 1u : g_maxDirections;
+    for (int i = 0; i < 3 && uint(cnt) < K; i++) {
+        float rd = ipow(a[i], g_dirExponent);
+        float r  = rmax > 0.0 ? rd / rmax : 0.0;
+        if (i == 0) { dirs[cnt] = d[0]; rel[cnt] = 1.0; cnt++; continue; }
+        if (r >= 0.05) { dirs[cnt] = d[i]; rel[cnt] = r; cnt++; }
+    }
+    return cnt;
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= g_numPoints) return;
+
+    vec3 p   = vec3(g_points[gid * 3u], g_points[gid * 3u + 1u], g_points[gid * 3u + 2u]);
+    vec3 nrm = vec3(g_normals[gid * 3u], g_normals[gid * 3u + 1u], g_normals[gid * 3u + 2u]);
+    vec3 cam = vec3(g_camX, g_camY, g_camZ);
+
+    vec3  diff  = p - cam;
+    float depth = length(diff);
+    if (depth < 1e-6) return;
+    vec3 rayDir = diff / depth;
+
+    // View-angle confidence (directional_tsdf_integrate.comp's viewFactor). rayDir is fixed
+    // per point, so viewFactor is constant across the band. A back-facing/grazing observation
+    // (<=0) contributes nothing -- skip early so no zero-weight entries are ever inserted.
+    float viewFactor = (g_viewAngleWeight != 0u) ? max(0.0, dot(nrm, -rayDir)) : 1.0;
+    if (viewFactor <= 0.0) return;
+
+    uint dirs[3]; float rel[3];
+    int nd = topK(nrm, dirs, rel);
+
+    float trunc = g_truncation;
+    int   steps = int(ceil(trunc / g_voxelSize)) + 1;
+
+    for (int t = -steps; t <= steps; t++) {
+        vec3  samplePos = p + rayDir * (float(t) * g_voxelSize);
+        ivec3 v         = ivec3(floor(samplePos / g_voxelSize));
+        vec3  vCenter   = (vec3(v) + vec3(0.5)) * g_voxelSize;
+
+        float sdf = depth - dot(vCenter - cam, rayDir);
+        if (abs(sdf) > trunc) continue;
+
+        // Normalized TSDF in [-1, 1] (directional_tsdf_integrate.comp), so sign crossings
+        // in the extract kernel are scale-independent.
+        float value = clamp(sdf / trunc, -1.0, 1.0);
+
+        for (int di = 0; di < nd; di++) {
+            float w = viewFactor * rel[di];
+            if (w <= 0.0) continue;
+            uint key  = packDirKey(v, dirs[di]);
+            uint slot = findOrInsert(key);
+            if (slot == ~0u) continue;
+            atomicAdd(g_hash[slot].sumDW, int(value * w * TSDF_SCALE));
+            atomicAdd(g_hash[slot].sumW,  uint(w * TSDF_SCALE));
+        }
+    }
+}
