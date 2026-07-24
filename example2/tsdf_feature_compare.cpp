@@ -136,7 +136,7 @@ namespace {
         Engine::Spatial::DirectionalTSDF dirLegacy;
         dirLegacy.Build(ctx, voxel, truncation);
         dirLegacy.SetIntegrationQuality({3, 4, true}); // maxDirections=3, dirExponent=4, viewAngleWeight
-        dirLegacy.SetSubvoxelRefine(false);
+        dirLegacy.SetExtractMode(0);
         for (const auto &v : r.views)
             dirLegacy.Integrate(v.points, v.normals, v.camPos, Eigen::Vector3f::Zero());
         for (const auto &e : dirLegacy.PointCloud()) {
@@ -151,7 +151,7 @@ namespace {
         Engine::Spatial::DirectionalTSDF dirRefined;
         dirRefined.Build(ctx, voxel, truncation);
         dirRefined.SetIntegrationQuality({3, 4, true});
-        dirRefined.SetSubvoxelRefine(true);
+        dirRefined.SetExtractMode(1);
         for (const auto &v : r.views)
             dirRefined.Integrate(v.points, v.normals, v.camPos, Eigen::Vector3f::Zero());
         for (const auto &e : dirRefined.PointCloud()) {

@@ -23,7 +23,8 @@ layout(push_constant) uniform PC {
     int   g_baseX;
     int   g_baseY;
     int   g_baseZ;
-    uint  g_refine;   // 0 = legacy axis-crossing average, 1 = gradient isosurface projection
+    uint  g_mode;        // 0 = legacy average, 1 = FD projection, 2 = stored-gradient
+    float g_truncation;  // metric = c * truncation (mode 2 position magnitude)
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer GroupList { uint g_groupSlots[]; };
@@ -107,18 +108,30 @@ void main() {
 
     Candidate cand;
     vec3 pos;
-    if (g_refine == 1u) {
-        // First-order projection onto the zero isosurface. dot(grad,grad) >= len^2 > 1e-12 here
-        // (len < 1e-6 already returned above). Truncation normalization is baked into |grad|,
-        // so no truncation constant is needed. Fall back to the legacy average if the step is
-        // implausibly large (weak/degenerate gradient), guarding against divergence.
+    vec3 n;
+    if (g_mode == 2u) {
+        // Stored-gradient: denoised normal from accumulated observed normals, position
+        // projected onto the isosurface along it. Fall back if the accumulator is degenerate.
+        vec3 sumN = vec3(float(center.sumNx), float(center.sumNy), float(center.sumNz));
+        float sl = length(sumN);
+        if (sl < 1e-6) {
+            pos = posSum / float(crossings);
+            n = grad / len;
+        } else {
+            vec3 nhat = sumN / sl;
+            vec3 voxelCenter = (vec3(v) + vec3(0.5)) * g_voxelSize;
+            pos = voxelCenter - c * g_truncation * nhat;
+            n = nhat;
+        }
+    } else if (g_mode == 1u) {
         vec3 voxelCenter = (vec3(v) + vec3(0.5)) * g_voxelSize;
         vec3 stepv = c * g_voxelSize * grad / dot(grad, grad);
         pos = (length(stepv) > g_voxelSize) ? (posSum / float(crossings)) : (voxelCenter - stepv);
+        n = grad / len;
     } else {
         pos = posSum / float(crossings);
+        n = grad / len;
     }
-    vec3 n = grad / len;
     cand.px = pos.x; cand.py = pos.y; cand.pz = pos.z;
     cand.nx = n.x;   cand.ny = n.y;   cand.nz = n.z;
     cand.gx = m.gx;  cand.gy = m.gy;  cand.gz = m.gz;
