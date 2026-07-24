@@ -415,6 +415,36 @@ int main(int argc, char **argv) {
                   << " completeness_rmse=" << r.completenessRmse << "\n\n";
         ExportPly("recon_compact.ply", cloud.points);
         results.push_back(r);
+
+        // ---- CompactDirectionalTSDF (merged) ----
+        // SAME build/integrate (tsdf's hash table above is untouched by extraction) -- just a
+        // second extract dispatch with merge=true, clustering the raw candidates on the CPU
+        // (ported from DirectionalTSDF::mergeCandidates) to dedup redundant candidates into
+        // averaged points while preserving sharp corners. Memory is unchanged (merge is
+        // extraction-only; FilledCount() reflects the SAME storage), so memKB is copied from
+        // the raw row rather than re-measured.
+        std::cout << "=== CompactDirectionalTSDF (merged) ===\n";
+        const auto tm0 = std::chrono::steady_clock::now();
+        const Engine::Spatial::OrientedPointCloud mergedCloud =
+                tsdf.ExtractPointCloud(1u << 21, /*merge=*/true);
+        const auto tm1 = std::chrono::steady_clock::now();
+
+        MethodResult rm;
+        rm.name = "CompactDirectionalTSDF(merged)";
+        rm.buildMs = r.buildMs + std::chrono::duration<double, std::milli>(tm1 - tm0).count();
+        rm.nPoints = mergedCloud.points.size();
+        rm.memKB = r.memKB;
+        // CRITICAL: subsample the merged recon to ~40k before the brute-force NN, same as the
+        // raw row above -- a full (un-subsampled) merged recon would make ParallelNnRmse take
+        // many minutes (O(recon*ref) brute force).
+        const std::vector<Eigen::Vector3f> mergedSub = Subsample(mergedCloud.points, 40000);
+        rm.accuracyRmse = ParallelNnRmse(mergedSub, refObserved);
+        rm.completenessRmse = ParallelNnRmse(refObserved, mergedSub);
+        std::cout << "  nPoints=" << rm.nPoints << " mem_KB=" << rm.memKB
+                  << " build_ms=" << rm.buildMs << " accuracy_rmse=" << rm.accuracyRmse
+                  << " completeness_rmse=" << rm.completenessRmse << "\n\n";
+        ExportPly("recon_compact_merged.ply", mergedCloud.points);
+        results.push_back(rm);
     }
 
     // ============================== summary ==============================
@@ -424,14 +454,19 @@ int main(int argc, char **argv) {
               << " KB  occupied_dir_voxels=" << dirOccupiedDirVoxels
               << "  mem_pervoxel_projected=" << dirMemPerVoxelKB << " KB\n";
 
-    if (results.size() == 3) {
+    if (results.size() == 4) {
         const MethodResult &simple = results[0];
         const MethodResult &dirc = results[1];
         const MethodResult &compact = results[2];
+        const MethodResult &compactMerged = results[3];
         const double dirVsCompactX =
                 compact.memKB > 0.0 ? dirc.memKB / compact.memKB : 0.0;
         const double compactVsSimpleX =
                 simple.memKB > 0.0 ? compact.memKB / simple.memKB : 0.0;
+        const double mergedPctOfRaw =
+                compact.nPoints > 0
+                        ? 100.0 * double(compactMerged.nPoints) / double(compact.nPoints)
+                        : 0.0;
         std::cout << "\ninsight: Compact accuracy_rmse=" << compact.accuracyRmse
                   << " (Directional=" << dirc.accuracyRmse << ", Simple=" << simple.accuracyRmse
                   << ") | Compact completeness_rmse=" << compact.completenessRmse
@@ -440,7 +475,16 @@ int main(int argc, char **argv) {
                   << " vs Directional mem_block_KB=" << dirc.memKB << " (" << dirVsCompactX
                   << "x less) vs Simple mem_KB=" << simple.memKB << " (" << compactVsSimpleX
                   << "x of Simple)\n"
-                  << "wrote recon_simple.ply, recon_directional.ply, recon_compact.ply\n";
+                  << "insight (merge/dedup): Compact(merged) nPoints=" << compactMerged.nPoints
+                  << " vs raw=" << compact.nPoints << " (" << mergedPctOfRaw
+                  << "% of raw, Directional=" << dirc.nPoints
+                  << ") | accuracy_rmse merged=" << compactMerged.accuracyRmse
+                  << " (raw=" << compact.accuracyRmse
+                  << ") | completeness_rmse merged=" << compactMerged.completenessRmse
+                  << " (raw=" << compact.completenessRmse << ", Directional=" << dirc.completenessRmse
+                  << ")\n"
+                  << "wrote recon_simple.ply, recon_directional.ply, recon_compact.ply, "
+                     "recon_compact_merged.ply\n";
     }
 
     return 0;

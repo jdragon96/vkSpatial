@@ -83,7 +83,15 @@ namespace Engine::Spatial {
 
         // Dispatch the extract kernel (one thread per hash slot) and download the emitted
         // per-direction surface candidates into an OrientedPointCloud.
-        OrientedPointCloud ExtractPointCloud(uint32_t maxCandidates = 1u << 19) const;
+        //
+        // merge=false (default): RAW candidates, one point per emitted (voxel,direction)
+        // crossing -- byte-identical to the pre-merge behavior.
+        // merge=true: candidates are clustered on the CPU (ported from
+        // DirectionalTSDF::mergeCandidates, see MergeCandidates below) to dedup redundant
+        // candidates into averaged points while preserving sharp corners (a hard normal-angle
+        // split prevents merging across a corner).
+        OrientedPointCloud ExtractPointCloud(uint32_t maxCandidates = 1u << 19,
+                                             bool merge = false) const;
 
         uint32_t FilledCount() const;
 
@@ -110,6 +118,18 @@ namespace Engine::Spatial {
         std::unique_ptr<Engine::Core::Buffer> m_normalBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_statBuffer;
         std::unique_ptr<Engine::Core::ComputePipeline> m_kernel;
+
+        // CPU clustering of raw {position,normal} candidates, ported from
+        // DirectionalTSDF::mergeCandidates (see DirectionalTSDF.cpp ~line 330). Compact's
+        // candidates carry no direction index (unlike DirectionalTSDF's DirectionalCandidate),
+        // so the split here is normal-based only -- no dirMask, no owner-group bookkeeping.
+        // Buckets candidates by voxel (floor(pos/m_voxelSize)); within a bucket, a candidate
+        // merges into an existing cluster only if the cluster's mean normal is within the
+        // strong-split cone (60 deg) AND the candidate is within posThresh/cosThresh of that
+        // cluster (30 deg, 0.6*voxelSize) -- otherwise it starts a new cluster (a corner keeps
+        // separate clusters), capped at 6 clusters/voxel (kNumDirections parity).
+        OrientedPointCloud MergeCandidates(const std::vector<Eigen::Vector3f> &points,
+                                           const std::vector<Eigen::Vector3f> &normals) const;
     };
 
 } // namespace Engine::Spatial

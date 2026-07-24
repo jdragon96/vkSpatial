@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 
 namespace Engine::Spatial {
 
@@ -9,6 +10,10 @@ namespace Engine::Spatial {
     // Matches #define TSDF_SCALE 10000.0 in compact_directional_integrate.comp /
     // compact_directional_extract.comp (extract's MIN_WEIGHT gate = TSDF_SCALE/2).
     static constexpr int32_t kTsdfScale = 10000;
+    // Cluster cap per voxel bucket in MergeCandidates -- matches DirectionalTSDFTypes.h's
+    // kNumDirections (6), the max number of distinct surface orientations a single voxel can
+    // carry in the directional schemes this class mirrors.
+    static constexpr size_t kMaxClustersPerVoxel = 6;
 
     namespace {
         // Must match the push_constant block in compact_directional_integrate.comp (all 4-byte
@@ -45,6 +50,15 @@ namespace Engine::Spatial {
             return Eigen::Vector3i(static_cast<int32_t>(std::floor(worldMinCorner.x() / voxelSize)),
                                    static_cast<int32_t>(std::floor(worldMinCorner.y() / voxelSize)),
                                    static_cast<int32_t>(std::floor(worldMinCorner.z() / voxelSize)));
+        }
+
+        // Same 21-bit-per-axis voxel-key packing as DirectionalTSDF::mergeCandidates's
+        // voxelKey lambda (DirectionalTSDF.cpp ~line 339) -- world-space voxel coords, not
+        // window-local, so it needs no origin bias.
+        uint64_t VoxelKey(int32_t x, int32_t y, int32_t z) {
+            return (uint64_t(uint32_t(x) & 0x1FFFFFu) << 42) |
+                   (uint64_t(uint32_t(y) & 0x1FFFFFu) << 21) |
+                   uint64_t(uint32_t(z) & 0x1FFFFFu);
         }
     } // namespace
 
@@ -154,7 +168,8 @@ namespace Engine::Spatial {
         return out;
     }
 
-    OrientedPointCloud CompactDirectionalTSDF::ExtractPointCloud(uint32_t maxCandidates) const {
+    OrientedPointCloud CompactDirectionalTSDF::ExtractPointCloud(uint32_t maxCandidates,
+                                                                 bool merge) const {
         OrientedPointCloud cloud;
         if (!m_ctx) return cloud;
 
@@ -191,7 +206,58 @@ namespace Engine::Spatial {
             cloud.points[i] = Eigen::Vector3f(raw[i * 6u + 0u], raw[i * 6u + 1u], raw[i * 6u + 2u]);
             cloud.normals[i] = Eigen::Vector3f(raw[i * 6u + 3u], raw[i * 6u + 4u], raw[i * 6u + 5u]);
         }
-        return cloud;
+
+        if (!merge) return cloud;
+        return MergeCandidates(cloud.points, cloud.normals);
+    }
+
+    OrientedPointCloud CompactDirectionalTSDF::MergeCandidates(
+            const std::vector<Eigen::Vector3f> &points,
+            const std::vector<Eigen::Vector3f> &normals) const {
+        struct Cluster {
+            Eigen::Vector3f posSum = Eigen::Vector3f::Zero();
+            Eigen::Vector3f nSum = Eigen::Vector3f::Zero();
+            int count = 0;
+        };
+
+        const float posThresh = 0.6f * m_voxelSize;  // positionMergeThreshold
+        const float cosThresh = 0.866f;              // normalMergeThreshold = 30 deg
+        const float strongSplitCos = 0.5f;           // 60 deg -- never merge beyond this (corner)
+
+        std::unordered_map<uint64_t, std::vector<Cluster>> buckets;
+        const size_t nCand = std::min(points.size(), normals.size());
+        for (size_t i = 0; i < nCand; ++i) {
+            const Eigen::Vector3f &pos = points[i];
+            const Eigen::Vector3f &nrm = normals[i];
+            const int vx = int(std::floor(pos.x() / m_voxelSize));
+            const int vy = int(std::floor(pos.y() / m_voxelSize));
+            const int vz = int(std::floor(pos.z() / m_voxelSize));
+            auto &clusters = buckets[VoxelKey(vx, vy, vz)];
+
+            bool merged = false;
+            for (auto &cl : clusters) {
+                const Eigen::Vector3f mean = cl.posSum / float(cl.count);
+                const Eigen::Vector3f meanN = cl.nSum.normalized();
+                if (nrm.dot(meanN) < strongSplitCos) continue; // strong split: cannot merge
+                if ((pos - mean).norm() < posThresh && nrm.dot(meanN) > cosThresh) {
+                    cl.posSum += pos;
+                    cl.nSum += nrm;
+                    cl.count++;
+                    merged = true;
+                    break;
+                }
+            }
+            if (!merged && clusters.size() < kMaxClustersPerVoxel)
+                clusters.push_back({pos, nrm, 1});
+        }
+
+        OrientedPointCloud out;
+        for (auto &bucket : buckets)
+            for (auto &cl : bucket.second) {
+                out.points.push_back(cl.posSum / float(cl.count));
+                out.normals.push_back(cl.nSum.normalized());
+            }
+        return out;
     }
 
 } // namespace Engine::Spatial

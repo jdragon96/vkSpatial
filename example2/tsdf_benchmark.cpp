@@ -615,8 +615,17 @@ namespace {
     // block-granularity storage cost, not fundamental" claim a REAL measurement: mem_KB here is
     // FilledCount()*16B (occupied entries only), compared directly against the Directional row's
     // block-granular mem_KB at the SAME per-direction accuracy.
-    Row RunCompactDirectional(Engine::Core::Context &ctx, Shape shape, float voxel, uint32_t maxDir,
-                              const std::vector<fixtures::View> &views) {
+    struct CompactDirectionalResult {
+        Row raw;    // Compact-Directional: RAW per-(voxel,direction) candidates.
+        Row merged; // Compact-Directional(merged): raw candidates clustered on the CPU
+                    // (CompactDirectionalTSDF::ExtractPointCloud(..., merge=true)) -- ported
+                    // from DirectionalTSDF::mergeCandidates, dedups redundant candidates into
+                    // averaged points while preserving sharp corners.
+    };
+
+    CompactDirectionalResult RunCompactDirectional(Engine::Core::Context &ctx, Shape shape,
+                                                   float voxel, uint32_t maxDir,
+                                                   const std::vector<fixtures::View> &views) {
         Engine::Spatial::CompactDirectionalTSDF cd;
         cd.Build(ctx, voxel, kTruncation);
         cd.SetIntegrationQuality({maxDir, 4, true});
@@ -633,7 +642,26 @@ namespace {
         row.nPoints = cloud.points.size();
         row.memKB = double(cd.FilledCount()) * 16.0 / 1024.0; // occupied entries * sizeof(DirEntry)
         ScoreAgainstGT(shape, voxel, cloud.points, row);
-        return row;
+
+        // Merged extraction: SAME build/integrate (cd's hash table above is untouched by
+        // extraction), just a second extract dispatch with merge=true -- no re-integrate cost.
+        // Memory is unchanged (merge is extraction-only; FilledCount() reflects the SAME
+        // storage), so memKB is copied from the raw row rather than re-measured.
+        const auto t2 = std::chrono::steady_clock::now();
+        const Engine::Spatial::OrientedPointCloud mergedCloud =
+                cd.ExtractPointCloud(1u << 19, /*merge=*/true);
+        const auto t3 = std::chrono::steady_clock::now();
+
+        Row mergedRow;
+        mergedRow.shape = ShapeName(shape);
+        mergedRow.method = "Compact-Directional(merged)";
+        mergedRow.buildMs =
+                row.buildMs + std::chrono::duration<double, std::milli>(t3 - t2).count();
+        mergedRow.nPoints = mergedCloud.points.size();
+        mergedRow.memKB = row.memKB;
+        ScoreAgainstGT(shape, voxel, mergedCloud.points, mergedRow);
+
+        return {row, mergedRow};
     }
 
     // ---- Compact-Dir(var-adaptive): the two orthogonal memory axes COMBINED --------------
@@ -976,6 +1004,26 @@ namespace {
                     (belowSimpleMem && nearDirAccuracy) ? "REACHED" : "NOT reached");
     }
 
+    // Compares Compact-Directional's RAW candidate row against its merged/deduped row (and
+    // Directional's point count as the target this is closing the gap toward).
+    void PrintMergeInsight(const Row &raw, const Row &merged, const Row &dirRow) {
+        const double pctOfRaw =
+                raw.nPoints > 0 ? 100.0 * double(merged.nPoints) / double(raw.nPoints) : 0.0;
+        const bool towardDirectional =
+                dirRow.nPoints > 0 &&
+                (merged.nPoints > dirRow.nPoints
+                         ? merged.nPoints - dirRow.nPoints < raw.nPoints - dirRow.nPoints
+                         : true);
+        std::printf("insight (%s, Compact-Dir merge/dedup): nPoints raw=%zu merged=%zu "
+                    "(%.1f%% of raw, Directional=%zu) | RMSE_mm raw=%.5f merged=%.5f | "
+                    "edge_mm raw=%.5f merged=%.5f | merged nPoints moved %s Directional's count\n",
+                    raw.shape.c_str(), raw.nPoints, merged.nPoints, pctOfRaw, dirRow.nPoints,
+                    raw.overall.rmse(), merged.overall.rmse(),
+                    raw.perRegion[static_cast<int>(Region::Edge)].mean(),
+                    merged.perRegion[static_cast<int>(Region::Edge)].mean(),
+                    towardDirectional ? "toward" : "away from");
+    }
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1008,7 +1056,7 @@ int main(int argc, char **argv) {
     std::vector<SigmaRow> compactSigmaRows;
     // Per-shape bundle for the trailing insight summaries.
     struct ShapeInsight {
-        Row fine, coarse, dir, hybrid, compact, compactAdaptive;
+        Row fine, coarse, dir, hybrid, compact, compactMerged, compactAdaptive;
         std::vector<SigmaRow> sweep;
         DirStorageStats storage;
         double memFlatKB = 0.0, memEdgeKB = 0.0, dirCellFrac = 0.0;
@@ -1059,8 +1107,13 @@ int main(int argc, char **argv) {
         PrintDirectionalStorage(shape, dirResult.storage);
 
         // Compact-Directional: DirectionalTSDF accuracy from a per-voxel flat (voxel,dir) hash
-        // at ~SimpleTSDF per-entry memory (measured, right after the Directional row).
-        Row compactRow = RunCompactDirectional(ctx, shape, voxel, maxDir, views);
+        // at ~SimpleTSDF per-entry memory (measured, right after the Directional row). Also
+        // measures the merged/deduped extraction variant (same build/integrate, clustered
+        // extraction) right alongside it.
+        CompactDirectionalResult compactResult =
+                RunCompactDirectional(ctx, shape, voxel, maxDir, views);
+        Row compactRow = compactResult.raw;
+        Row compactMergedRow = compactResult.merged;
 
         // COMBINE: Compact-Directional's per-voxel storage (Axis 1) x variance-adaptive
         // coarsening of low-variance flat cells (Axis 2) -- reuses the SAME cellStats the
@@ -1081,13 +1134,15 @@ int main(int argc, char **argv) {
         rows.push_back(coarseRow);
         rows.push_back(dirRow);
         rows.push_back(compactRow);
+        rows.push_back(compactMergedRow);
         rows.push_back(compactAdaptive.row);
         rows.push_back(hybridRow);
         sigmaRows.insert(sigmaRows.end(), sweep.begin(), sweep.end());
         compactSigmaRows.insert(compactSigmaRows.end(), compactAdaptive.sweep.begin(),
                                 compactAdaptive.sweep.end());
-        insights.push_back({fineRow, coarseRow, dirRow, hybridRow, compactRow, compactAdaptive.row,
-                            sweep, dirResult.storage, memFlatKB, memEdgeKB, dirCellFrac});
+        insights.push_back({fineRow, coarseRow, dirRow, hybridRow, compactRow, compactMergedRow,
+                            compactAdaptive.row, sweep, dirResult.storage, memFlatKB, memEdgeKB,
+                            dirCellFrac});
 
         std::printf("\n");
     }
@@ -1126,6 +1181,7 @@ int main(int argc, char **argv) {
         PrintHybridInsight(ins.hybrid, ins.dir, ins.fine, ins.memFlatKB, ins.memEdgeKB,
                           ins.dirCellFrac);
         PrintCompactAdaptiveInsight(ins.compactAdaptive, ins.compact, ins.fine, ins.dir);
+        PrintMergeInsight(ins.compact, ins.compactMerged, ins.dir);
     }
 
     return 0;
