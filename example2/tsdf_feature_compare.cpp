@@ -114,6 +114,10 @@ namespace {
         std::array<RegionStat, kNumRegions> dirStatsRefined{};     // refined position error
         std::array<RegionStat, kNumRegions> dirNormStats{};        // legacy normal-angle error
         std::array<RegionStat, kNumRegions> dirNormStatsRefined{}; // refined normal-angle error
+        std::vector<Eigen::Vector3f> dirPtsStored;         // mode 2 positions
+        std::vector<Eigen::Vector3f> dirNormalsStored;     // mode 2 normals
+        std::array<RegionStat, kNumRegions> dirStatsStored{};     // stored position error
+        std::array<RegionStat, kNumRegions> dirNormStatsStored{}; // stored normal-angle error
     };
 
     CompareResult RunCompare(Engine::Core::Context &ctx, Shape shape, float voxel,
@@ -159,11 +163,25 @@ namespace {
             r.dirNormalsRefined.push_back(e.normal);
         }
 
+        // ---- DirectionalTSDF, stored-gradient extraction (mode 2) ----
+        Engine::Spatial::DirectionalTSDF dirStored;
+        dirStored.Build(ctx, voxel, truncation);
+        dirStored.SetIntegrationQuality({3, 4, true});
+        dirStored.SetExtractMode(2);
+        for (const auto &v : r.views)
+            dirStored.Integrate(v.points, v.normals, v.camPos, Eigen::Vector3f::Zero());
+        for (const auto &e : dirStored.PointCloud()) {
+            r.dirPtsStored.push_back(e.position);
+            r.dirNormalsStored.push_back(e.normal);
+        }
+
         accumulate(shape, voxel, r.simplePts, r.simpleStats);
         accumulate(shape, voxel, r.dirPts, r.dirStats);
         accumulate(shape, voxel, r.dirPtsRefined, r.dirStatsRefined);
         accumulateNormals(shape, voxel, r.dirPts, r.dirNormals, r.dirNormStats);
         accumulateNormals(shape, voxel, r.dirPtsRefined, r.dirNormalsRefined, r.dirNormStatsRefined);
+        accumulate(shape, voxel, r.dirPtsStored, r.dirStatsStored);
+        accumulateNormals(shape, voxel, r.dirPtsStored, r.dirNormalsStored, r.dirNormStatsStored);
         return r;
     }
 
@@ -173,34 +191,41 @@ namespace {
                       const CompareResult &r) {
         std::printf("=== tsdf_feature_compare  shape=%s  voxel=%.3f  truncation=%.3f ===\n",
                     shapeName, voxel, truncation);
-        std::printf("views=%zu  nInput=%zu (max/view=%zu)  nSimple=%zu  nDir=%zu  nDirRefined=%zu\n",
+        std::printf("views=%zu  nInput=%zu (max/view=%zu)  nSimple=%zu  nDir=%zu  nDirRefined=%zu  "
+                    "nDirStored=%zu\n",
                     r.views.size(), r.nInput, r.maxPerView, r.simplePts.size(), r.dirPts.size(),
-                    r.dirPtsRefined.size());
+                    r.dirPtsRefined.size(), r.dirPtsStored.size());
 
         std::printf("[position error mm]\n");
-        std::printf("%-7s | %11s %11s | %11s %11s | %11s %11s\n", "region", "Simple.mean",
-                    "Simple.max", "Dir.mean", "Dir.max", "DirRef.mean", "DirRef.max");
+        std::printf("%-7s | %11s %11s | %11s %11s | %11s %11s | %11s %11s\n", "region",
+                    "Simple.mean", "Simple.max", "Dir.mean", "Dir.max", "FD.mean", "FD.max",
+                    "Stored.mean", "Stored.max");
         std::printf("--------+-------------------------+-------------------------"
-                    "+-------------------------\n");
+                    "+-------------------------+-------------------------\n");
         for (int reg = 0; reg < kNumRegions; ++reg) {
             if (r.simpleStats[reg].count == 0 && r.dirStats[reg].count == 0 &&
-                r.dirStatsRefined[reg].count == 0)
+                r.dirStatsRefined[reg].count == 0 && r.dirStatsStored[reg].count == 0)
                 continue;
-            std::printf("%-7s | %9.4f %11.4f | %9.4f %11.4f | %9.4f %11.4f\n", regionName(reg),
-                        r.simpleStats[reg].mean(), r.simpleStats[reg].maxErr,
+            std::printf("%-7s | %9.4f %11.4f | %9.4f %11.4f | %9.4f %11.4f | %9.4f %11.4f\n",
+                        regionName(reg), r.simpleStats[reg].mean(), r.simpleStats[reg].maxErr,
                         r.dirStats[reg].mean(), r.dirStats[reg].maxErr,
-                        r.dirStatsRefined[reg].mean(), r.dirStatsRefined[reg].maxErr);
+                        r.dirStatsRefined[reg].mean(), r.dirStatsRefined[reg].maxErr,
+                        r.dirStatsStored[reg].mean(), r.dirStatsStored[reg].maxErr);
         }
 
         std::printf("[normal-angle error deg]  (edge = reference only, normal is discontinuous)\n");
-        std::printf("%-7s | %11s %11s | %11s %11s\n", "region", "Dir.mean", "Dir.max",
-                    "DirRef.mean", "DirRef.max");
-        std::printf("--------+-------------------------+-------------------------\n");
+        std::printf("%-7s | %11s %11s | %11s %11s | %11s %11s\n", "region", "Dir.mean", "Dir.max",
+                    "FD.mean", "FD.max", "Stored.mean", "Stored.max");
+        std::printf("--------+-------------------------+-------------------------"
+                    "+-------------------------\n");
         for (int reg = 0; reg < kNumRegions; ++reg) {
-            if (r.dirNormStats[reg].count == 0 && r.dirNormStatsRefined[reg].count == 0) continue;
-            std::printf("%-7s | %9.4f %11.4f | %9.4f %11.4f\n", regionName(reg),
+            if (r.dirNormStats[reg].count == 0 && r.dirNormStatsRefined[reg].count == 0 &&
+                r.dirNormStatsStored[reg].count == 0)
+                continue;
+            std::printf("%-7s | %9.4f %11.4f | %9.4f %11.4f | %9.4f %11.4f\n", regionName(reg),
                         r.dirNormStats[reg].mean(), r.dirNormStats[reg].maxErr,
-                        r.dirNormStatsRefined[reg].mean(), r.dirNormStatsRefined[reg].maxErr);
+                        r.dirNormStatsRefined[reg].mean(), r.dirNormStatsRefined[reg].maxErr,
+                        r.dirNormStatsStored[reg].mean(), r.dirNormStatsStored[reg].maxErr);
         }
         std::printf("(position mm; angle deg; 1 world unit == 1 mm)\n");
     }
