@@ -159,6 +159,7 @@
 | Simple(fine) | 0.050 | 0.054 | 192 |
 | **Directional** | **0.027** | **0.022** | 6144 |
 | **Compact-Directional (실측)** | 0.031 | **0.022** | **219** ⬅ 구현·측정됨 |
+| **Compact-Dir × variance-adaptive (실측)** | 0.031 | **0.023** | **148** ⬅ 완전체, Simple 미만 |
 | **Adaptive-Dir 하이브리드** | 0.031 | 0.032 | **139** |
 | variance-adaptive | 0.061 | 0.067 | 106–153 |
 
@@ -177,11 +178,24 @@
 
 > **실측 결론**: Compact-Directional은 cube에서 Directional RMSE와 동률(0.0223≈0.0222), cylinder에서는 **Directional을 능가**(0.016 vs 0.027) — 둘 다 **~25–28× 적은 메모리(219–274 KB, Simple 192–193 KB과 대등)**로. 강한 sanity check: Compact의 `FilledCount`가 DirectionalTSDF의 독립 측정 점유복셀 수와 **정확히 일치**(cube 14040, cyl 17542) — 같은 점유 (voxel,dir) 집합, 저장 그래뉴러리티만 다름. (메모리가 8B/voxel 투영의 ~2배인 건 해시 엔트리 `DirEntry`가 키 포함 16B이기 때문 — SimpleTSDF와 동일 엔트리 크기.) cylinder에서 Directional을 능가하는 건 Compact가 merge 없이 raw per-voxel 추출을 하기 때문으로 추정.
 
+### 완전체: Compact-Directional × variance-adaptive (실측, `Compact-Dir(var-adaptive)`)
+
+두 직교 축을 결합했다 — **per-voxel 방향 저장 × 분산 기반 해상도 적응**: 고분산 에지는 fine Compact 유지, 저분산 평면은 coarse Compact로 병합.
+
+| shape | method | RMSE | **mem** | vs Directional |
+|---|---|---|---|---|
+| cube | **Compact-Dir(var-adaptive)** | **0.0233** | **148 KB** | 정확도 동률, **41× 적음** |
+| cube | Directional | 0.0222 | 6144 KB | — |
+| cylinder | **Compact-Dir(var-adaptive)** | **0.0162** | **153 KB** | 정확도 **능가**, **44× 적음** |
+| cylinder | Directional | 0.0268 | 6784 KB | — |
+
+> **완전체 결론**: Directional 정확도(RMSE 0.016–0.023)를 **Simple(192–193 KB)보다도 적은 148–153 KB**로 — Directional(6144–6784 KB) 대비 **~40–44× 절감**. cylinder는 공격적 σ(90% coarsen)에서 **66 KB / RMSE 0.019**(여전히 Directional 근접)까지 내려간다. 두 fixture 모두 "Directional 정확도 @ Simple 미만 메모리" **달성**.
+
 ### 종합 권고
-1. **1순위 — 달성됨 (per-voxel 저장)**: `CompactDirectionalTSDF`가 Directional 정확도를 **~Simple 메모리(25–28× 절감)**로 **실측**으로 증명. flat-hash라 스트리밍 residency 재작성 불필요. (프로덕션에선 키 폭 확대/64bit로 ±256복셀 범위 제한만 풀면 됨.)
-2. **2순위: variance-adaptive 해상도** — 저분산 평면을 coarse로(앞 절, −45% mem). Compact-Directional과 곱해짐 → 더 줄일 수 있음.
-3. **완전체(D) = Compact(per-voxel) directional + variance-adaptive 해상도** → Directional 정확도를 Simple 미만 메모리로(다음 단계).
-4. **대규모 씬**: 기존 DirectionalTSDF의 스트리밍 residency는 여전히 유효(Compact은 단일 해시라 윈도우 스트리밍 없음) — 둘은 상보적.
+1. **달성됨 (per-voxel 저장)**: `CompactDirectionalTSDF` → Directional 정확도 @ ~Simple 메모리(25–28×↓), **실측**.
+2. **달성됨 (완전체 = per-voxel × variance-adaptive)**: `Compact-Dir(var-adaptive)` → Directional 정확도 @ **Simple 미만 메모리**(40–44×↓), **실측**.
+3. **프로덕션 남은 것**: ±256 voxel 키 폭 확장(64bit/타일링)으로 대규모 씬; Compact에 merge/dedup(정확도는 충분, 점 수 정리). 2-level 대신 진짜 multi-res MC(transitional voxel)면 경계 seam 제거.
+4. **대규모 씬**: 기존 DirectionalTSDF의 스트리밍 residency는 여전히 유효(Compact은 단일 해시) — 상보적.
 
 **Caveat**: Compact-Directional은 merge 없이 raw per-voxel 후보를 추출(그래서 nPoints가 Directional보다 적고 cylinder에선 더 정확); ±256 voxel 키 범위(작은 fixture엔 충분, 대규모엔 키 확장 필요). 하이브리드/블록-낭비 수치의 일부는 여전히 투영(점유 카운트 기반)이나, **핵심 주장(Directional 정확도 @ ~Simple 메모리)은 Compact-Directional로 실측 완료**.
 
