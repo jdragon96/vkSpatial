@@ -18,6 +18,11 @@ add_spatial_example(directional_tsdf_demo directional_tsdf_demo.cpp)
 add_spatial_example(directional_tsdf_eval directional_tsdf_eval.cpp)
 add_spatial_example(directional_tsdf_chair_benchmark directional_tsdf_chair_benchmark.cpp)
 
+# Real-data (chair scan) E2E validation: SimpleTSDF vs DirectionalTSDF vs
+# CompactDirectionalTSDF on scanData/frame_*.ply at a common voxelSize/truncation -- goes
+# beyond the synthetic cube/cylinder fixtures used by tsdf_benchmark.cpp. See file header.
+add_spatial_example(tsdf_realdata_benchmark tsdf_realdata_benchmark.cpp)
+
 # Headless SimpleTSDF-vs-DirectionalTSDF benchmark: accuracy (vs analytic ground truth) +
 # occupied-storage memory + host wall-clock speed, on the same shape_fixtures.h fixtures used
 # by tsdf_feature_compare/variance_adaptive_demo. No render/GUI deps.
