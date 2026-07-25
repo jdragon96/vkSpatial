@@ -110,6 +110,13 @@ if (GLSLC_EXECUTABLE)
     add_spatial_example(tsdf_feature_compare tsdf_feature_compare.cpp PointCloudPass.cpp ImGuiPass.cpp)
     target_link_libraries(tsdf_feature_compare PRIVATE Engine::Render Engine::Core imgui)
     add_compiled_shaders(tsdf_feature_compare FEATURE_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
+
+    # Live windowed viewer for the real chair scan: integrates scanData/frame_*.ply into a TSDF
+    # (Simple / Directional / Compact-Directional, switchable at runtime) and renders input +
+    # extracted-surface point clouds with a trackball camera fit to the chair's ~827mm scale.
+    add_spatial_example(chair_tsdf_viewer chair_tsdf_viewer.cpp PointCloudPass.cpp ImGuiPass.cpp)
+    target_link_libraries(chair_tsdf_viewer PRIVATE Engine::Render imgui Engine::Core)
+    add_compiled_shaders(chair_tsdf_viewer CHAIR_VIEWER_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
 else ()
     message(WARNING "cube_render2/shadow_map/blinn_phong examples skipped because glslc was not found")
 endif ()
