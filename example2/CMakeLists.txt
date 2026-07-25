@@ -23,6 +23,12 @@ add_spatial_example(directional_tsdf_chair_benchmark directional_tsdf_chair_benc
 # beyond the synthetic cube/cylinder fixtures used by tsdf_benchmark.cpp. See file header.
 add_spatial_example(tsdf_realdata_benchmark tsdf_realdata_benchmark.cpp)
 
+# TiledCompactDirectionalTSDF demo: reconstruct the chair scan at a FINE 1mm voxel (scene spans
+# ~827 voxels/axis, beyond any single 512^3 CompactDirectionalTSDF window) via ghost-margin
+# tiling, plus a common-voxel validation that tiling matches the single window where both fit.
+add_spatial_example(tiled_compact_demo tiled_compact_demo.cpp)
+target_link_libraries(tiled_compact_demo PRIVATE Engine::Core)
+
 # Headless SimpleTSDF-vs-DirectionalTSDF benchmark: accuracy (vs analytic ground truth) +
 # occupied-storage memory + host wall-clock speed, on the same shape_fixtures.h fixtures used
 # by tsdf_feature_compare/variance_adaptive_demo. No render/GUI deps.
