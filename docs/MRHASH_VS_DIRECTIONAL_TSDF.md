@@ -216,6 +216,23 @@
 
 ---
 
+## 대규모 씬 타일링 (`TiledCompactDirectionalTSDF`, `example2/tiled_compact_demo`)
+
+단일 Compact은 512³ voxel 창 상한(HW `shaderBufferInt64Atomics=false`). **타일링**으로 이를 넘는다: 공간을 타일(core 448 voxel)로 나눠 각 타일이 Compact 512³ 창 하나, **ghost 통합**(경계 근처 점은 인접 타일에도 통합 → 밴드 경계 정확), **core-only 추출**(중복 방지). 원래 목표(100μm dental, 전악 >51mm)의 실질 해법.
+
+**검증 (chair, 공통 voxel 2.38mm — 단일창도 됨):** Tiled(4타일) accuracy 2.48/completeness 1.45 vs 단일 Compact 2.49/1.45 → **rel-diff 0.4% / 0.3% 일치**(seam·중복 없음, ghost 통합 검증).
+
+**대규모 (chair, fine 1.0mm — 827 voxel > 512, 단일창 불가):**
+
+| | TileCount | nPoints | mem | accuracy | completeness |
+|---|---|---|---|---|---|
+| **Tiled @ 1mm** | **8** | 145,492 | **26 MB** | **1.84** | 1.48 |
+| 단일 Compact @ 1mm | 1 | 75,798 (부분만) | — | — | **133** (파손) |
+
+> **타일링 결론**: 단일 512³ 창을 넘는 1mm chair를 **타일링만 전체 복원**(단일창은 창 밖 slab을 조용히 버려 completeness 133mm로 파손). 타일 수 비례 저메모리(26 MB / 8타일 = ~3.3 MB/타일), 더 고운 voxel이라 accuracy도 향상(2.48→1.84). 단일창과 겹치는 해상도에선 정확도 동일. **임의 크기 씬을 저메모리로 — 프로덕션 large-scene 해결.**
+
+---
+
 ## 참고문헌
 - De Rebotti, Giacomini, Grisetti, Di Giammarino, *Resolution Where It Counts*, ACM TOG 2025.
 - Splietker & Behnke, *Directional TSDF: Modeling Surface Orientation for Coherent Meshes*, 2019 — [arXiv:1908.05146](https://arxiv.org/pdf/1908.05146).
