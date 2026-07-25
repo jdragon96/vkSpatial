@@ -194,7 +194,7 @@
 ### 종합 권고
 1. **달성됨 (per-voxel 저장)**: `CompactDirectionalTSDF` → Directional 정확도 @ ~Simple 메모리(25–28×↓), **실측**.
 2. **달성됨 (완전체 = per-voxel × variance-adaptive)**: `Compact-Dir(var-adaptive)` → Directional 정확도 @ **Simple 미만 메모리**(40–44×↓), **실측**.
-3. **프로덕션 진행됨**: (a) origin-relative movable 512³ 창 + 유닛 테스트 ✅ (b) 실 chair 스캔 E2E 검증 ✅ (c) merge/dedup 추출(`ExtractPointCloud(...,merge=true)`, DirectionalTSDF 클러스터링 이식) ✅ — 실데이터에서 completeness를 Directional 수준(1.45)까지. **남은 것**: 대규모 씬 타일링(HW `shaderBufferInt64Atomics=false`라 단일 해시는 512³ 상한; 스트리밍 DirectionalTSDF가 상보), 2-level 대신 진짜 multi-res MC(transitional voxel).
+3. **프로덕션 완료**: (a) origin-relative movable 512³ 창 + 유닛 테스트 ✅ (b) 실 chair 스캔 E2E 검증 ✅ (c) merge/dedup 추출(`ExtractPointCloud(...,merge=true)`) — 실데이터 completeness를 Directional 수준(1.45)까지 ✅ (d) **대규모 씬 타일링**(`TiledCompactDirectionalTSDF`, 위 "대규모 씬 타일링" 절 — chair 1mm 복원, HW `shaderBufferInt64Atomics=false` 단일해시 512³ 상한을 타일로 극복) ✅ (e) **조합 경계 정리**: `MergeCandidates`를 public static 유틸로 노출해 variance-adaptive 조합의 조립 점군에 적용 → fine↔coarse 경계의 within-voxel 이중점 welding(cylinder −9% 점, 정확도 불변) ✅. **논문식 진짜 multi-res *메시* MC(transitional voxel)는 메시 출력용 기법**이라 이 점군 파이프라인엔 비적용 — 서로 다른 voxel에 걸친 cross-voxel 경계 이중점은 문서화된 미소 특성으로 남김(메시 출력이 필요할 때 별도 도입).
 4. **대규모 씬**: 기존 DirectionalTSDF의 스트리밍 residency는 여전히 유효(Compact은 단일 해시) — 상보적.
 
 **Caveat**: Compact-Directional은 merge 없이 raw per-voxel 후보를 추출(그래서 nPoints가 Directional보다 적고 cylinder에선 더 정확); 키 범위(현재 512³ voxel origin-relative 창 — 이 GPU는 `shaderBufferInt64Atomics=false`라 더 넓은 64bit 키 불가, 대규모 씬은 스트리밍 DirectionalTSDF). 하이브리드/블록-낭비 수치의 일부는 여전히 투영(점유 카운트 기반)이나, **핵심 주장(Directional 정확도 @ ~Simple 메모리)은 Compact-Directional로 실측 완료**.
