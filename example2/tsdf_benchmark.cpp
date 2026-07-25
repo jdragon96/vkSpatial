@@ -725,16 +725,28 @@ namespace {
                 cellStats.empty() ? 0.0 : 100.0 * double(coarsenCells) / double(cellStats.size());
 
         // Adaptive surface = fine-Compact cloud points in high-var cells U coarse-Compact
-        // cloud points in low-var cells.
-        std::vector<Eigen::Vector3f> pts;
+        // cloud points in low-var cells, then merge/dedup to weld coincident points at the
+        // fine<->coarse cell boundaries (within-voxel double-coverage). Cross-boundary
+        // duplicates in DIFFERENT voxels are a residual point-pipeline characteristic -- the
+        // paper's transitional-voxel seam fix is a MESH technique that does not apply here.
+        std::vector<Eigen::Vector3f> pts, nrms;
         pts.reserve(fineCloud.points.size() + coarseCloud.points.size());
-        for (const auto &p : fineCloud.points)
-            if (isHighVar(p)) pts.push_back(p);
-        for (const auto &p : coarseCloud.points)
-            if (!isHighVar(p)) pts.push_back(p);
-        ev.nPoints = pts.size();
+        nrms.reserve(pts.capacity());
+        for (std::size_t i = 0; i < fineCloud.points.size(); ++i)
+            if (isHighVar(fineCloud.points[i])) {
+                pts.push_back(fineCloud.points[i]);
+                nrms.push_back(fineCloud.normals[i]);
+            }
+        for (std::size_t i = 0; i < coarseCloud.points.size(); ++i)
+            if (!isHighVar(coarseCloud.points[i])) {
+                pts.push_back(coarseCloud.points[i]);
+                nrms.push_back(coarseCloud.normals[i]);
+            }
+        const Engine::Spatial::OrientedPointCloud adaptive =
+                Engine::Spatial::CompactDirectionalTSDF::MergeCandidates(pts, nrms, classifyVoxel);
+        ev.nPoints = adaptive.points.size();
 
-        for (const auto &p : pts) {
+        for (const auto &p : adaptive.points) {
             const double e = double(fixtures::NearestDistance(shape, p));
             ev.overall.add(e);
             ev.perRegion[static_cast<int>(fixtures::ClassifyRegion(shape, p, classifyVoxel))]

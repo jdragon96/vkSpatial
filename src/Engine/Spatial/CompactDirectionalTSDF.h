@@ -102,6 +102,16 @@ namespace Engine::Spatial {
         // variance-adaptive-resolution benchmark (per-voxel/per-direction memory accounting).
         std::vector<CompactEntry> DownloadEntries() const;
 
+        // Cluster raw {position,normal} candidates into deduped points (ported from
+        // DirectionalTSDF::mergeCandidates): buckets by voxel floor(p/voxelSize); within a
+        // bucket, a candidate merges into a cluster only within posThresh (0.6*voxelSize) +
+        // cosThresh (30 deg) of its mean, with a hard 60 deg strong-split so corners keep
+        // separate points. Public static utility -- reusable on ANY oriented point set (e.g.
+        // the variance-adaptive combine's assembled cloud), not just this instance's extraction.
+        static OrientedPointCloud MergeCandidates(const std::vector<Eigen::Vector3f> &points,
+                                                  const std::vector<Eigen::Vector3f> &normals,
+                                                  float voxelSize);
+
         void Reset();
 
     private:
@@ -118,18 +128,6 @@ namespace Engine::Spatial {
         std::unique_ptr<Engine::Core::Buffer> m_normalBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_statBuffer;
         std::unique_ptr<Engine::Core::ComputePipeline> m_kernel;
-
-        // CPU clustering of raw {position,normal} candidates, ported from
-        // DirectionalTSDF::mergeCandidates (see DirectionalTSDF.cpp ~line 330). Compact's
-        // candidates carry no direction index (unlike DirectionalTSDF's DirectionalCandidate),
-        // so the split here is normal-based only -- no dirMask, no owner-group bookkeeping.
-        // Buckets candidates by voxel (floor(pos/m_voxelSize)); within a bucket, a candidate
-        // merges into an existing cluster only if the cluster's mean normal is within the
-        // strong-split cone (60 deg) AND the candidate is within posThresh/cosThresh of that
-        // cluster (30 deg, 0.6*voxelSize) -- otherwise it starts a new cluster (a corner keeps
-        // separate clusters), capped at 6 clusters/voxel (kNumDirections parity).
-        OrientedPointCloud MergeCandidates(const std::vector<Eigen::Vector3f> &points,
-                                           const std::vector<Eigen::Vector3f> &normals) const;
     };
 
 } // namespace Engine::Spatial

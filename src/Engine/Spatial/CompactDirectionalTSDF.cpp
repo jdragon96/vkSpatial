@@ -208,19 +208,19 @@ namespace Engine::Spatial {
         }
 
         if (!merge) return cloud;
-        return MergeCandidates(cloud.points, cloud.normals);
+        return MergeCandidates(cloud.points, cloud.normals, m_voxelSize);
     }
 
     OrientedPointCloud CompactDirectionalTSDF::MergeCandidates(
             const std::vector<Eigen::Vector3f> &points,
-            const std::vector<Eigen::Vector3f> &normals) const {
+            const std::vector<Eigen::Vector3f> &normals, float voxelSize) {
         struct Cluster {
             Eigen::Vector3f posSum = Eigen::Vector3f::Zero();
             Eigen::Vector3f nSum = Eigen::Vector3f::Zero();
             int count = 0;
         };
 
-        const float posThresh = 0.6f * m_voxelSize;  // positionMergeThreshold
+        const float posThresh = 0.6f * voxelSize;    // positionMergeThreshold
         const float cosThresh = 0.866f;              // normalMergeThreshold = 30 deg
         const float strongSplitCos = 0.5f;           // 60 deg -- never merge beyond this (corner)
 
@@ -229,9 +229,9 @@ namespace Engine::Spatial {
         for (size_t i = 0; i < nCand; ++i) {
             const Eigen::Vector3f &pos = points[i];
             const Eigen::Vector3f &nrm = normals[i];
-            const int vx = int(std::floor(pos.x() / m_voxelSize));
-            const int vy = int(std::floor(pos.y() / m_voxelSize));
-            const int vz = int(std::floor(pos.z() / m_voxelSize));
+            const int vx = int(std::floor(pos.x() / voxelSize));
+            const int vy = int(std::floor(pos.y() / voxelSize));
+            const int vz = int(std::floor(pos.z() / voxelSize));
             auto &clusters = buckets[VoxelKey(vx, vy, vz)];
 
             bool merged = false;
