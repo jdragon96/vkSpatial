@@ -38,6 +38,8 @@ namespace Engine::Spatial {
             int32_t baseX;
             int32_t baseY;
             int32_t baseZ;
+            uint32_t mode;
+            float truncation;
         };
 
         // Must match dominantAxis() in directional_tsdf_integrate.comp exactly.
@@ -283,7 +285,8 @@ namespace Engine::Spatial {
 
             const Eigen::Vector3i localBase = m_backend->LocalBase();
             ExtractPC epc{uint32_t(groupSlots.size()), m_voxelSize, m_maxCandidates,
-                          localBase.x(), localBase.y(), localBase.z()};
+                          localBase.x(), localBase.y(), localBase.z(),
+                          m_extractMode, m_truncation};
             m_extractKernel->Args(epc);
 
             Engine::Compute::CommandBatch batch(*m_ctx);

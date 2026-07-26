@@ -86,3 +86,19 @@ p      = center − c * voxelSize * grad / dot(grad, grad)
 | legacy/refined 두 점군 확보(독립 재추출 API 없음) | 동일 합성 입력으로 재-Build+재통합 2회가 기본(N≲1000 결정적이라 두 볼륨 동일); extract-only 재실행 헬퍼는 선택적 최적화 |
 | large-N 비결정성(기존 이슈) | feature-preservation과 동일하게 N≲1000 소형 형상 유지 |
 | 법선 오라클 불연속(능선/코너) | Edge band는 `ClassifyRegion`으로 이미 분리 → 법선각 집계에서 Edge는 참고치로만 해석 |
+
+## 실험 결과 (2026-07-24) — 음성(NEGATIVE): lite 접근 기각
+
+측정 하네스(`--dump`, 영역별 위치+법선각)로 legacy vs refined를 비교한 결과, **lite center-투영이 오히려 품질을 악화**시켜 이 접근을 기각한다.
+
+| 형상/영역 | Dir.mean(legacy) | DirRef.mean(refined) | 판정 |
+|---|---|---|---|
+| cube flat (결정적) | 0.0110 (max 0.0364) | 0.0115 (max 0.0491) | ↑ 나쁨 |
+| cube edge | 0.0267 | 0.0254 (max ↑ 0.1041) | mean ≈ |
+| cyl flat | 0.0118 | 0.0160 (+35%) | ↑ 나쁨 |
+| cyl curved | 0.0121 | 0.0149 (+23%) | ↑ 나쁨 |
+| cube flat 법선각(°) | 1.8773 | 1.8773 (동일) | 불변 |
+
+**결론**: (1) legacy 축-교차 선형보간이 이미 flat에서 near-optimal이라 voxel-center gradient Newton 투영으로는 못 이긴다. (2) 다시점 블렌딩된 방향 필드의 유한차분 gradient가 노이즈가 커서 center-투영이 더 튄다. (3) **lite는 위치만 건드려 법선을 원리적으로 개선 불가** — 그런데 FPFH/등록에 실제로 먹히는 건 법선. 공식의 단위/부호는 대수적으로 정확(오타 아님)함을 확인했으므로, 이는 구현 버그가 아니라 **접근법의 한계**다.
+
+**후속 결정**: 저장형 Gradient-SDF(full) — 복셀에 관측 법선 누적 → 정확한 법선(FPFH/등록 직결) + 신뢰할 gradient로 위치 투영 — 로 피봇. Task 1의 `NearestNormal` 오라클과 이 2-테이블 하네스(`SetSubvoxelRefine` 토글 = finite-diff 비교점 `g_refine==1`)는 full 평가에 그대로 재사용한다. Task 4(뷰어 refine-on 기본)는 미착수(refine를 기본으로 켜지 않음).
