@@ -67,6 +67,10 @@ namespace Engine::Spatial {
         // single-dominant-axis behavior exactly).
         void SetIntegrationQuality(const IntegrationQuality &q) { m_quality = q; }
 
+        // Extraction mode: 0 = legacy axis-crossing average, 1 = FD gradient projection,
+        // 2 = stored-gradient (normalize(sumN) normal + isosurface projection). Default 0.
+        void SetExtractMode(uint32_t mode) { m_extractMode = mode; }
+
         // Starts a frame: recomputes the local base (window centred on the hint, snapped to
         // the group grid) and resets the indexGrid to kInvalidPoolIndex.
         void BeginFrame(const Eigen::Vector3f &aabbCenterHint);
@@ -110,6 +114,13 @@ namespace Engine::Spatial {
         uint32_t PoolCapacity() const { return m_backend->PoolCapacity(); }
         Stats LastFrameStats() const { return m_stats; }
 
+        // Test/diagnostic seam: mutable backend handle (tests/diagnostics only), exposing host
+        // store, resident index, and lifecycle calls (BeginFrame/EnsureResident/etc). Mirrors the
+        // backend's own Debug* methods; not for per-frame use. Non-const (rather than the
+        // const-ref alternative) so callers can reach HostStore() without a const_cast —
+        // HostStore() itself is non-const on IResidencyBackend.
+        IResidencyBackend &DebugBackend() { return *m_backend; }
+
         // Result of the most recent BeginFrame classification (test/debug).
         ClassifyCounts DebugLastClassifyCounts() const { return m_lastCounts; }
 
@@ -125,6 +136,7 @@ namespace Engine::Spatial {
         float m_voxelSize = 0.1f;
         float m_truncation = 0.3f;
         IntegrationQuality m_quality;
+        uint32_t m_extractMode = 0;
 
         std::unique_ptr<IResidencyBackend> m_backend;
 

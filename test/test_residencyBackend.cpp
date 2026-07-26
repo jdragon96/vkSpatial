@@ -168,3 +168,104 @@ TEST(ResidencyBackend, CrossBackendReconstructionMatches) {
         EXPECT_LT((a[i].normal - b[i].normal).norm(), eps) << "point " << i;
     }
 }
+
+#include "Engine/Spatial/DirectionalVoxelConvert.h"
+
+TEST(DirectionalVoxelConvert, RoundTripPreservesValueWeightNormal) {
+    using namespace Engine::Spatial;
+    HostTsdfVoxel h{};
+    h.value = 0.5f; h.weight = 3.0f;
+    Eigen::Vector3f n = Eigen::Vector3f(0.2f, -0.3f, 0.9f).normalized();
+    h.nx = n.x(); h.ny = n.y(); h.nz = n.z();
+
+    const GpuTsdfVoxel g = HostVoxelToGpu(h);
+    EXPECT_EQ(g.sumW, uint32_t(std::lround(3.0 * kTsdfFixedScale)));
+    EXPECT_EQ(g.sumDW, int32_t(std::lround(0.5 * 3.0 * kTsdfFixedScale)));
+
+    const HostTsdfVoxel back = GpuVoxelToHost(g);
+    EXPECT_NEAR(back.value, 0.5f, 1e-3f);
+    EXPECT_NEAR(back.weight, 3.0f, 1e-3f);
+    EXPECT_NEAR(back.nx, n.x(), 2e-3f);
+    EXPECT_NEAR(back.ny, n.y(), 2e-3f);
+    EXPECT_NEAR(back.nz, n.z(), 2e-3f);
+}
+
+TEST(DirectionalVoxelConvert, DegenerateNormalStaysZero) {
+    using namespace Engine::Spatial;
+    GpuTsdfVoxel g{}; g.sumW = 10000; g.sumDW = 0; // sumN all zero
+    const HostTsdfVoxel back = GpuVoxelToHost(g);
+    EXPECT_FLOAT_EQ(back.nx, 0.0f);
+    EXPECT_FLOAT_EQ(back.ny, 0.0f);
+    EXPECT_FLOAT_EQ(back.nz, 0.0f);
+}
+
+TEST(ResidencyBackend, StreamingUploadRehydratesNormal) {
+    using namespace Engine::Spatial;
+    Engine::Core::Context ctx;
+    StreamingResidencyBackend be;
+    be.Build(ctx, /*poolCapacity=*/1024);
+
+    DirectionalGroupKey key{0, 0, 0, /*direction=*/4}; // +Z layer
+    DirectionalHostStore::Group g{};
+    const Eigen::Vector3f n = Eigen::Vector3f(0.0f, 0.0f, 1.0f);
+    for (auto &v : g) { v.value = 0.5f; v.weight = 2.0f; v.nx = n.x(); v.ny = n.y(); v.nz = n.z(); }
+    be.HostStore().Put(key, g);
+
+    be.BeginFrame(Eigen::Vector3i(0, 0, 0));
+    be.EnsureResident({key});
+    const auto back = be.DebugDownloadGroupVoxels(key); // uploaded sumN -> download normal
+
+    EXPECT_NEAR(back[0].nz, 1.0f, 2e-3f);
+    EXPECT_NEAR(back[0].nx, 0.0f, 2e-3f);
+    EXPECT_NEAR(back[0].value, 0.5f, 2e-3f);
+}
+
+TEST(ResidencyBackend, StreamingWriteBackPersistsNormalAcrossEviction) {
+    using namespace Engine::Spatial;
+    Engine::Core::Context ctx;
+    DirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.1f, 0.3f, 32768, 1u << 15, 1u << 16, ResidencyMode::Streaming);
+    tsdf.SetExtractMode(3); // hybrid (recommended); this test reads the host store, so it is
+                            // extract-mode-independent — integrate accumulates sumN regardless.
+
+    std::vector<Eigen::Vector3f> pts, nrm;
+    makePlane(pts, nrm); // +Z plane at origin, +Z normals
+    tsdf.Integrate(pts, nrm, Eigen::Vector3f(0, 0, 1), Eigen::Vector3f::Zero());
+
+    // Capture a resident +Z-layer group key BEFORE eviction. The write-set + 1-group halo
+    // (DirectionalTSDF::Integrate) registers every direction==4 group along the truncation-band
+    // ray box, including halo neighbors that never receive weight — so picking the first
+    // direction==4 match isn't enough; pick one that was actually observed (weight > 0), which
+    // is what the write-back-persists-normal assertion below needs to be meaningful.
+    DirectionalGroupKey zkey{}; bool found = false;
+    for (const auto &kv : tsdf.DebugBackend().ResidentIndex()) {
+        if (kv.first.direction != 4u) continue;
+        const auto g = tsdf.DebugDownloadGroupVoxels(kv.first);
+        const bool hasWeight = std::any_of(g.begin(), g.end(),
+                                           [](const auto &v) { return v.weight > 0.0f; });
+        if (hasWeight) { zkey = kv.first; found = true; break; }
+    }
+    ASSERT_TRUE(found) << "no +Z-layer group with observed weight became resident";
+
+    // Shift the window far away → origin groups leave the window → dirty write-back.
+    std::vector<Eigen::Vector3f> farPts, farNrm;
+    for (int i = -2; i <= 2; ++i)
+        for (int j = -2; j <= 2; ++j) { farPts.emplace_back(100.0f + i * 0.05f, j * 0.05f, 0.0f); farNrm.emplace_back(0, 0, 1); }
+    tsdf.Integrate(farPts, farNrm, Eigen::Vector3f(100, 0, 1), Eigen::Vector3f(100, 0, 0));
+    ASSERT_GT(tsdf.LastFrameStats().writeBackCount, 0u) << "no eviction happened";
+
+    // The evicted group now lives in the host store WITH its finalized normal.
+    auto &store = tsdf.DebugBackend().HostStore();
+    // Not the load-bearing check: Contains() is already true from the initial zero-fill upload.
+    // The weight>0 ⇒ nz≈1 checks below are what actually prove write-back persisted the normal.
+    ASSERT_TRUE(store.Contains(zkey));
+    const auto &g = store.Get(zkey);
+    bool sawNormal = false;
+    for (const auto &v : g)
+        if (v.weight > 0.0f) {
+            EXPECT_NEAR(v.nz, 1.0f, 2e-2f);
+            EXPECT_NEAR(v.nx, 0.0f, 2e-2f);
+            sawNormal = true;
+        }
+    EXPECT_TRUE(sawNormal) << "evicted +Z group had no observed voxels";
+}

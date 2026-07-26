@@ -63,6 +63,54 @@ namespace fixtures {
         return std::abs(outside + inside);
     }
 
+    // -------- exact outward unit normal at the nearest surface point (oracle for normals) --------
+    // At sharp features (cube edges/corners, cylinder rim) the true normal is discontinuous; this
+    // returns the box / 2D-box SDF gradient there (the bisector of the adjoining faces). Callers
+    // treat Edge-region normal error as a reference number only (see the feature-compare table).
+
+    inline Eigen::Vector3f NearestNormal(Shape s, const Eigen::Vector3f &p) {
+        if (s == Shape::Cube) {
+            const float qx = std::abs(p.x()) - kCubeHalf;
+            const float qy = std::abs(p.y()) - kCubeHalf;
+            const float qz = std::abs(p.z()) - kCubeHalf;
+            Eigen::Vector3f n((p.x() >= 0.0f ? 1.0f : -1.0f) * std::max(qx, 0.0f),
+                              (p.y() >= 0.0f ? 1.0f : -1.0f) * std::max(qy, 0.0f),
+                              (p.z() >= 0.0f ? 1.0f : -1.0f) * std::max(qz, 0.0f));
+            if (n.norm() > 1e-6f) return n.normalized();
+            // Inside (or exactly on a face): nearest face = axis with the largest (closest-to-0) q.
+            int axis = 0;
+            float best = qx;
+            if (qy > best) { best = qy; axis = 1; }
+            if (qz > best) { best = qz; axis = 2; }
+            Eigen::Vector3f e = Eigen::Vector3f::Zero();
+            e[axis] = p[axis] >= 0.0f ? 1.0f : -1.0f;
+            return e;
+        }
+        // Cylinder, axis +Z: 2D box SDF gradient in (radial, axial).
+        const float r = std::hypot(p.x(), p.y());
+        const float dr = r - kCylRadius;
+        const float dz = std::abs(p.z()) - kCylHalfZ;
+        const float zsign = p.z() >= 0.0f ? 1.0f : -1.0f;
+        Eigen::Vector3f n = Eigen::Vector3f::Zero();
+        if (r > 1e-6f) {
+            n.x() = (p.x() / r) * std::max(dr, 0.0f);
+            n.y() = (p.y() / r) * std::max(dr, 0.0f);
+        }
+        n.z() = zsign * std::max(dz, 0.0f);
+        if (n.norm() > 1e-6f) return n.normalized();
+        // Inside: side wall vs cap, whichever gap is closer to zero (the larger negative value).
+        if (dr >= dz && r > 1e-6f) return Eigen::Vector3f(p.x() / r, p.y() / r, 0.0f);
+        return Eigen::Vector3f(0.0f, 0.0f, zsign);
+    }
+
+    // Angle between two vectors in degrees (unit-normalized internally; 0 for a zero input).
+    inline float NormalAngleDeg(const Eigen::Vector3f &a, const Eigen::Vector3f &b) {
+        const float na = a.norm(), nb = b.norm();
+        if (na < 1e-12f || nb < 1e-12f) return 0.0f;
+        const float c = std::clamp(a.dot(b) / (na * nb), -1.0f, 1.0f);
+        return std::acos(c) * 180.0f / kPi;
+    }
+
     // -------- per-point region classification for the per-region error table --------
 
     inline Region ClassifyRegion(Shape s, const Eigen::Vector3f &p, float voxelSize) {

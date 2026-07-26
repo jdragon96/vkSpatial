@@ -1,6 +1,7 @@
 #include "Engine/Spatial/StreamingResidencyBackend.h"
 
 #include "Engine/Core/OneShotCommands.h"
+#include "Engine/Spatial/DirectionalVoxelConvert.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,7 +11,7 @@
 namespace Engine::Spatial {
 
     namespace {
-        constexpr uint32_t kGroupBytes = kVoxelsPerGroup * uint32_t(sizeof(GpuTsdfVoxel)); // 4096
+        constexpr uint32_t kGroupBytes = kVoxelsPerGroup * uint32_t(sizeof(GpuTsdfVoxel)); // 10240
         constexpr uint32_t kStageGroupCap = 4096; // max groups staged per H2D/D2H batch (chunked if exceeded)
 
         struct RegisterPC {
@@ -179,11 +180,8 @@ namespace Engine::Spatial {
                 for (uint32_t i = 0; i < chunk; ++i) {
                     const uint32_t slot = writeBack[base + i];
                     DirectionalHostStore::Group group{};
-                    for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
-                        const GpuTsdfVoxel &g = raw[size_t(i) * kVoxelsPerGroup + v];
-                        group[v].weight = float(g.sumW) / float(kTsdfFixedScale);
-                        group[v].value = g.sumW > 0 ? float(double(g.sumDW) / double(g.sumW)) : 0.0f;
-                    }
+                    for (uint32_t v = 0; v < kVoxelsPerGroup; ++v)
+                        group[v] = GpuVoxelToHost(raw[size_t(i) * kVoxelsPerGroup + v]);
                     m_hostStore.Put(m_slotKeys[slot], group);
                     m_freeSlots.push_back(slot);
                 }
@@ -250,10 +248,7 @@ namespace Engine::Spatial {
             const auto &pk = pending[i];
             const auto &group = m_hostStore.GetOrCreate(pk.key);
             for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
-                const HostTsdfVoxel &h = group[v];
-                GpuTsdfVoxel &g = voxStage[i * kVoxelsPerGroup + v];
-                g.sumW = uint32_t(std::lround(double(h.weight) * kTsdfFixedScale));
-                g.sumDW = int32_t(std::lround(double(h.value) * double(h.weight) * kTsdfFixedScale));
+                voxStage[i * kVoxelsPerGroup + v] = HostVoxelToGpu(group[v]);
             }
             metaStage[i] = ActiveGroupMeta{pk.key.gx, pk.key.gy, pk.key.gz,
                                            PackMeta(pk.key.direction, SlotState::ResidentClean, false, true)};
@@ -355,12 +350,8 @@ namespace Engine::Spatial {
         staging.Download(raw.data(), kGroupBytes);
 
         DirectionalHostStore::Group group{};
-        for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
-            group[v].weight = float(raw[v].sumW) / float(kTsdfFixedScale);
-            group[v].value = raw[v].sumW > 0
-                                     ? float(double(raw[v].sumDW) / double(raw[v].sumW))
-                                     : 0.0f;
-        }
+        for (uint32_t v = 0; v < kVoxelsPerGroup; ++v)
+            group[v] = GpuVoxelToHost(raw[v]);
         return group;
     }
 
