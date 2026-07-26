@@ -1,12 +1,175 @@
 #include "Engine/Spatial/AdaptiveVoxelGrid.h"
+#include "Engine/Spatial/MarchingCubesTables.h"
 
+#include <Eigen/Geometry> // Vector3f::cross
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
 #include <map>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace Engine::Spatial {
+
+    namespace {
+
+        // Hashes an integer voxel coordinate for the CPU Marching Cubes value map.
+        struct IVec3Hash {
+            size_t operator()(const std::array<int, 3> &v) const noexcept {
+                size_t h = std::hash<int>()(v[0]);
+                h = h * 31u + std::hash<int>()(v[1]);
+                h = h * 31u + std::hash<int>()(v[2]);
+                return h;
+            }
+        };
+
+        using VoxelValueMap = std::unordered_map<std::array<int, 3>, float, IVec3Hash>;
+
+        // Recovers the integer fine-voxel coordinate from a world-space centre; identical to
+        // buildMixed()'s vcoord lambda (v = lround(center/h - 0.5) per axis).
+        std::array<int, 3> fineCoordOf(const Eigen::Vector3f &center, float h) {
+            return {
+                    static_cast<int>(std::lround(center.x() / h - 0.5f)),
+                    static_cast<int>(std::lround(center.y() / h - 0.5f)),
+                    static_cast<int>(std::lround(center.z() / h - 0.5f))};
+        }
+
+        // Mirrors voxel_common.glsl's vertInterp: linear interpolation to the TSDF zero-crossing.
+        Eigen::Vector3f vertInterp(const Eigen::Vector3f &p1, const Eigen::Vector3f &p2, float v1, float v2) {
+            const float dv = v2 - v1;
+            if (std::abs(dv) < 1e-6f) return (p1 + p2) * 0.5f;
+            const float t = -v1 / dv;
+            return p1 + t * (p2 - p1);
+        }
+
+        // Runs single-resolution Marching Cubes over every cube whose 8 corners are all present
+        // in `values` (keyed by integer voxel coordinate), mirroring voxel_tsdf_mc.comp's
+        // processCube/edgeTable/triTable logic (tables transcribed in MarchingCubesTables.h).
+        // `cellSize` is the world-space size of one voxel at this level. Emitted vertices are
+        // welded to unique positions and given per-vertex area-weighted normals (mirrors
+        // SimpleTSDF::ExtractPointCloud's welding+normal step); the volume itself stores no
+        // normals.
+        AdaptiveMesh cpuMarchingCubes(const VoxelValueMap &values, float cellSize) {
+            AdaptiveMesh mesh;
+            if (values.empty()) return mesh;
+
+            // MC edge index -> corner-index pair (edge e connects CORNER[a] and CORNER[b]);
+            // matches voxel_tsdf_mc.comp's explicit ev[0..11] = vertInterp(p[a],p[b],...) list.
+            static constexpr int kEdgeCorners[12][2] = {
+                    {0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+
+            // Candidate cube-base coordinates: for each occupied voxel, the 8 cubes that could
+            // have it as one of their corners (mirrors voxel_tsdf_mc.comp main()'s dx,dy,dz in
+            // {-1,0} sweep over each sufficiently-observed voxel).
+            std::unordered_set<std::array<int, 3>, IVec3Hash> bases;
+            bases.reserve(values.size() * 8u);
+            for (const auto &kv : values) {
+                const auto &coord = kv.first;
+                for (int dx = -1; dx <= 0; ++dx)
+                    for (int dy = -1; dy <= 0; ++dy)
+                        for (int dz = -1; dz <= 0; ++dz)
+                            bases.insert({coord[0] + dx, coord[1] + dy, coord[2] + dz});
+            }
+
+            struct RawTri {
+                Eigen::Vector3f a, b, c;
+            };
+            std::vector<RawTri> tris;
+
+            for (const auto &base : bases) {
+                float sdf[8];
+                bool complete = true;
+                for (int c = 0; c < 8 && complete; ++c) {
+                    const std::array<int, 3> k{base[0] + mc::CORNER[c][0], base[1] + mc::CORNER[c][1],
+                                                base[2] + mc::CORNER[c][2]};
+                    const auto it = values.find(k);
+                    if (it == values.end()) {
+                        complete = false;
+                        break;
+                    }
+                    sdf[c] = it->second;
+                }
+                if (!complete) continue; // a missing corner: skip this cell (spec Task 3 rule)
+
+                int cubeIndex = 0;
+                for (int c = 0; c < 8; ++c)
+                    if (sdf[c] < 0.0f) cubeIndex |= (1 << c);
+
+                const int et = mc::edgeTable[cubeIndex];
+                if (et == 0) continue;
+
+                Eigen::Vector3f p[8];
+                for (int c = 0; c < 8; ++c)
+                    p[c] = Eigen::Vector3f(float(base[0] + mc::CORNER[c][0]), float(base[1] + mc::CORNER[c][1]),
+                                           float(base[2] + mc::CORNER[c][2])) *
+                           cellSize;
+
+                Eigen::Vector3f ev[12];
+                for (int e = 0; e < 12; ++e)
+                    if (et & (1 << e)) {
+                        const int a = kEdgeCorners[e][0], b = kEdgeCorners[e][1];
+                        ev[e] = vertInterp(p[a], p[b], sdf[a], sdf[b]);
+                    }
+
+                const int triBase = cubeIndex * 16;
+                for (int i = 0; i < 15; i += 3) {
+                    const int ei0 = mc::triTable[triBase + i];
+                    if (ei0 == -1) break;
+                    const int ei1 = mc::triTable[triBase + i + 1];
+                    const int ei2 = mc::triTable[triBase + i + 2];
+                    // Swap ei1/ei2 for outward-facing winding (mirrors voxel_tsdf_mc.comp).
+                    tris.push_back({ev[ei0], ev[ei2], ev[ei1]});
+                }
+            }
+
+            if (tris.empty()) return mesh;
+
+            // Weld coincident MC vertices onto a fine tolerance grid, accumulating area-weighted
+            // triangle normals -- mirrors SimpleTSDF::ExtractPointCloud.
+            const float weld = std::max(cellSize * 1e-3f, 1e-6f);
+            auto key = [weld](const Eigen::Vector3f &p) -> uint64_t {
+                constexpr int64_t kBias = 1 << 20;
+                constexpr uint64_t kMask = (1ull << 21) - 1;
+                const int64_t qx = int64_t(std::llround(p.x() / weld)) + kBias;
+                const int64_t qy = int64_t(std::llround(p.y() / weld)) + kBias;
+                const int64_t qz = int64_t(std::llround(p.z() / weld)) + kBias;
+                return (uint64_t(qx) & kMask) | ((uint64_t(qy) & kMask) << 21) | ((uint64_t(qz) & kMask) << 42);
+            };
+
+            std::unordered_map<uint64_t, uint32_t> lut;
+            std::vector<Eigen::Vector3f> nAccum;
+            for (const auto &t : tris) {
+                const Eigen::Vector3f fn = (t.b - t.a).cross(t.c - t.a); // area-weighted (|fn|=2*area)
+                std::array<uint32_t, 3> vi{};
+                int j = 0;
+                for (const Eigen::Vector3f &p : {t.a, t.b, t.c}) {
+                    const uint64_t k = key(p);
+                    const auto it = lut.find(k);
+                    uint32_t v;
+                    if (it == lut.end()) {
+                        v = static_cast<uint32_t>(mesh.vertices.size());
+                        lut.emplace(k, v);
+                        mesh.vertices.push_back(p);
+                        nAccum.push_back(Eigen::Vector3f::Zero());
+                    } else {
+                        v = it->second;
+                    }
+                    nAccum[v] += fn;
+                    vi[j++] = v;
+                }
+                mesh.triangles.emplace_back(int(vi[0]), int(vi[1]), int(vi[2]));
+            }
+
+            mesh.normals.resize(mesh.vertices.size());
+            for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+                const float len = nAccum[i].norm();
+                mesh.normals[i] = len > 1e-12f ? Eigen::Vector3f(nAccum[i] / len) : Eigen::Vector3f(0, 0, 1);
+            }
+            return mesh;
+        }
+
+    } // namespace
 
     void AdaptiveVoxelGrid::Build(Engine::Core::Context &ctx, float fineVoxelSize, float truncation,
                                   uint32_t hashCapacity, uint32_t maxPoints) {
@@ -59,8 +222,17 @@ namespace Engine::Spatial {
     }
 
     AdaptiveMesh AdaptiveVoxelGrid::ExtractMesh() {
-        // Task 4
-        return {};
+        if (m_mixedDirty) buildMixed();
+
+        // Task 3: single-resolution CPU MC over FINE (level==0) voxels only; coarse cells
+        // (level==1) are handled in Task 4's multi-resolution extension.
+        VoxelValueMap values;
+        values.reserve(m_mixed.size());
+        for (const auto &mv : m_mixed) {
+            if (mv.level != 0) continue;
+            values[fineCoordOf(mv.center, m_h)] = mv.tsdf;
+        }
+        return cpuMarchingCubes(values, m_h);
     }
 
     // Recovers each fine voxel's integer coordinate from its world-space centre, buckets

@@ -6,14 +6,21 @@
 // into 2x2x2 coarse blocks and coarsens flat/well-observed blocks; FineCount()/CoarseCount()
 // now read the merged result (lazily built, cached until the next Set*/Integrate/Reset).
 //
+// Task 3: single-resolution CPU Marching Cubes over fine (level==0) voxels only, using MC
+// tables transcribed verbatim from src/shader/voxel_common.glsl (MarchingCubesTables.h).
+// CpuMcMatchesGpuMcAllFine validates the CPU MC against SimpleTSDF's GPU MC
+// (ExtractPointCloud) on an all-fine grid via a one-directional Chamfer distance.
+//
 // Mirrors test_simpletsdf_variance.cpp's Context-skip pattern and example2/shape_fixtures.h
-// reuse (see docs/superpowers/plans/2026-07-26-adaptive-voxel-grid.md, Tasks 1-2).
+// reuse (see docs/superpowers/plans/2026-07-26-adaptive-voxel-grid.md, Tasks 1-3).
 #include "Engine/Spatial/AdaptiveVoxelGrid.h"
 #include "Engine/Spatial/SimpleTSDF.h"
 #include "Engine/Core/Context.h"
 #include "shape_fixtures.h"
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 
@@ -45,6 +52,18 @@ namespace {
     void integrateCubeSimple(Engine::Core::Context &ctx, Engine::Spatial::SimpleTSDF &s, float voxel) {
         (void) ctx;
         for (const auto &v : fixtures::SampleViews(fixtures::Shape::Cube, voxel)) s.Integrate(v.points, v.camPos);
+    }
+
+    // One-directional Chamfer distance: max over `from` of the nearest-neighbour distance to
+    // `to` (brute-force -- cube MC vertex counts are small, so this stays fast).
+    double maxNearestDist(const std::vector<Eigen::Vector3f> &from, const std::vector<Eigen::Vector3f> &to) {
+        double worst = 0.0;
+        for (const auto &p : from) {
+            float best = std::numeric_limits<float>::max();
+            for (const auto &q : to) best = std::min(best, (p - q).squaredNorm());
+            worst = std::max(worst, double(std::sqrt(best)));
+        }
+        return worst;
     }
 } // namespace
 
@@ -105,4 +124,28 @@ TEST(AdaptiveVoxelGrid, CoarseVoxelsAreFlat) { // coarse voxels have low varianc
     for (const auto &mv : a.DownloadMixedVoxels())
         if (mv.level == 1) EXPECT_FLOAT_EQ(mv.size, 0.10f);
     SUCCEED();
+}
+
+TEST(AdaptiveVoxelGrid, CpuMcMatchesGpuMcAllFine) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+    Engine::Core::Context &ctx = *h.ctx;
+
+    AdaptiveVoxelGrid a;
+    a.Build(ctx, kVoxel, kTrunc);
+    integrateCube(ctx, a, kVoxel);
+    a.SetVarianceThreshold(0.0f); // force all-fine (same rule as FineMatchesSimpleTSDF)
+    const Engine::Spatial::AdaptiveMesh m = a.ExtractMesh();
+
+    Engine::Spatial::SimpleTSDF s;
+    s.Build(ctx, kVoxel, kTrunc);
+    integrateCubeSimple(ctx, s, kVoxel);
+    const auto ref = s.ExtractPointCloud().points; // GPU MC vertices
+
+    ASSERT_FALSE(m.vertices.empty());
+    ASSERT_FALSE(ref.empty());
+
+    // One-directional Chamfer: every CPU-MC vertex has a close GPU-MC vertex.
+    const double d = maxNearestDist(m.vertices, ref);
+    EXPECT_LT(d, 0.05); // within one fine voxel
 }
