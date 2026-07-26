@@ -2,8 +2,12 @@
 // integration. FineCount() must passthrough to SimpleTSDF::FilledCount() until Task 2
 // implements the CPU variance merge (mixed-resolution grid).
 //
+// Task 2: CPU variance merge -> mixed-resolution grid. buildMixed() buckets fine voxels
+// into 2x2x2 coarse blocks and coarsens flat/well-observed blocks; FineCount()/CoarseCount()
+// now read the merged result (lazily built, cached until the next Set*/Integrate/Reset).
+//
 // Mirrors test_simpletsdf_variance.cpp's Context-skip pattern and example2/shape_fixtures.h
-// reuse (see docs/superpowers/plans/2026-07-26-adaptive-voxel-grid.md, Task 1).
+// reuse (see docs/superpowers/plans/2026-07-26-adaptive-voxel-grid.md, Tasks 1-2).
 #include "Engine/Spatial/AdaptiveVoxelGrid.h"
 #include "Engine/Spatial/SimpleTSDF.h"
 #include "Engine/Core/Context.h"
@@ -32,6 +36,16 @@ namespace {
             }
         }
     };
+
+    void integrateCube(Engine::Core::Context &ctx, AdaptiveVoxelGrid &a, float voxel) {
+        (void) ctx;
+        for (const auto &v : fixtures::SampleViews(fixtures::Shape::Cube, voxel)) a.Integrate(v.points, v.camPos);
+    }
+
+    void integrateCubeSimple(Engine::Core::Context &ctx, Engine::Spatial::SimpleTSDF &s, float voxel) {
+        (void) ctx;
+        for (const auto &v : fixtures::SampleViews(fixtures::Shape::Cube, voxel)) s.Integrate(v.points, v.camPos);
+    }
 } // namespace
 
 TEST(AdaptiveVoxelGrid, FineMatchesSimpleTSDF) {
@@ -50,5 +64,45 @@ TEST(AdaptiveVoxelGrid, FineMatchesSimpleTSDF) {
     avg.Build(ctx, kVoxel, kTrunc);
     for (const auto &v : views) avg.Integrate(v.points, v.camPos);
 
+    // Force nothing to coarsen (theta=0 is unreachable by a non-negative variance mean)
+    // so FineCount() reduces to the Task-1 fine-passthrough semantics.
+    avg.SetVarianceThreshold(0.0f);
     EXPECT_EQ(avg.FineCount(), size_t(ref.FilledCount()));
+}
+
+TEST(AdaptiveVoxelGrid, CoarsensFlatKeepsMemoryLower) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+    Engine::Core::Context &ctx = *h.ctx;
+
+    AdaptiveVoxelGrid a;
+    a.Build(ctx, kVoxel, kTrunc);
+    integrateCube(ctx, a, kVoxel);
+    a.SetVariancePercentile(0.6f); // coarsen the low-variance 60%
+
+    const auto mixed = a.DownloadMixedVoxels();
+    ASSERT_FALSE(mixed.empty());
+    EXPECT_GT(a.CoarseCount(), 0u); // some flat blocks coarsened
+
+    Engine::Spatial::SimpleTSDF allFine;
+    allFine.Build(ctx, kVoxel, kTrunc);
+    integrateCubeSimple(ctx, allFine, kVoxel);
+    const size_t allFineCount = size_t(allFine.FilledCount());
+
+    EXPECT_LT(a.FineCount() + a.CoarseCount(), allFineCount); // total voxels reduced vs all-fine
+}
+
+TEST(AdaptiveVoxelGrid, CoarseVoxelsAreFlat) { // coarse voxels have low variance by construction
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+    Engine::Core::Context &ctx = *h.ctx;
+
+    AdaptiveVoxelGrid a;
+    a.Build(ctx, kVoxel, kTrunc);
+    integrateCube(ctx, a, kVoxel);
+    a.SetVariancePercentile(0.5f);
+
+    for (const auto &mv : a.DownloadMixedVoxels())
+        if (mv.level == 1) EXPECT_FLOAT_EQ(mv.size, 0.10f);
+    SUCCEED();
 }
