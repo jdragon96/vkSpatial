@@ -256,6 +256,8 @@ TEST(ResidencyBackend, StreamingWriteBackPersistsNormalAcrossEviction) {
 
     // The evicted group now lives in the host store WITH its finalized normal.
     auto &store = tsdf.DebugBackend().HostStore();
+    // Not the load-bearing check: Contains() is already true from the initial zero-fill upload.
+    // The weight>0 ⇒ nz≈1 checks below are what actually prove write-back persisted the normal.
     ASSERT_TRUE(store.Contains(zkey));
     const auto &g = store.Get(zkey);
     bool sawNormal = false;

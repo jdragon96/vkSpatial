@@ -64,7 +64,7 @@ namespace Engine::Spatial {
     struct GpuTsdfVoxel {
         int32_t sumDW = 0;
         uint32_t sumW = 0;
-        int32_t sumNx = 0; // Σ n·w·TSDF_SCALE per direction layer (measure-first: not persisted)
+        int32_t sumNx = 0; // Σ n·w·TSDF_SCALE per direction layer (finalized to HostTsdfVoxel normal on write-back, rehydrated on upload)
         int32_t sumNy = 0;
         int32_t sumNz = 0;
     }; // 20B

@@ -143,7 +143,7 @@ namespace Engine::Spatial {
     }
 
     DirectionalHostStore::Group UnifiedResidencyBackend::DebugDownloadGroupVoxels(const DirectionalGroupKey &key) {
-        DirectionalHostStore::Group out{}; // value/weight form
+        DirectionalHostStore::Group out{}; // value/weight+normal form
         auto it = m_slotOf.find(key);
         if (it == m_slotOf.end()) return out;
         auto *pool = static_cast<GpuTsdfVoxel *>(m_pool.mapped);
