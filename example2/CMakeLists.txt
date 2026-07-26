@@ -34,6 +34,13 @@ target_link_libraries(tiled_compact_demo PRIVATE Engine::Core)
 # by tsdf_feature_compare/variance_adaptive_demo. No render/GUI deps.
 add_spatial_example(tsdf_benchmark tsdf_benchmark.cpp)
 target_link_libraries(tsdf_benchmark PRIVATE Engine::Core)
+
+# AdaptiveVoxelGrid Task 5: headless measurement demo -- FineCount/CoarseCount, total-voxel
+# reduction vs all-fine SimpleTSDF::FilledCount(), and mesh accuracy (maxNearestDist) across a
+# percentile sweep, for both the cube and cylinder fixtures. No render/GUI deps.
+add_spatial_example(adaptive_voxel_grid_demo adaptive_voxel_grid_demo.cpp)
+target_link_libraries(adaptive_voxel_grid_demo PRIVATE Engine::Spatial Engine::Core)
+
 add_spatial_example(bvh_benchmark bvh_benchmark.cpp)
 add_spatial_example(scan_dataset_gen scan_dataset_gen.cpp)
 
