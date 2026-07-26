@@ -114,10 +114,10 @@ namespace {
         std::array<RegionStat, kNumRegions> dirStatsRefined{};     // refined position error
         std::array<RegionStat, kNumRegions> dirNormStats{};        // legacy normal-angle error
         std::array<RegionStat, kNumRegions> dirNormStatsRefined{}; // refined normal-angle error
-        std::vector<Eigen::Vector3f> dirPtsStored;         // mode 2 positions
-        std::vector<Eigen::Vector3f> dirNormalsStored;     // mode 2 normals
-        std::array<RegionStat, kNumRegions> dirStatsStored{};     // stored position error
-        std::array<RegionStat, kNumRegions> dirNormStatsStored{}; // stored normal-angle error
+        std::vector<Eigen::Vector3f> dirPtsHybrid;         // mode 3 (hybrid) positions
+        std::vector<Eigen::Vector3f> dirNormalsHybrid;     // mode 3 (hybrid) normals
+        std::array<RegionStat, kNumRegions> dirStatsHybrid{};     // hybrid position error
+        std::array<RegionStat, kNumRegions> dirNormStatsHybrid{}; // hybrid normal-angle error
     };
 
     CompareResult RunCompare(Engine::Core::Context &ctx, Shape shape, float voxel,
@@ -163,16 +163,20 @@ namespace {
             r.dirNormalsRefined.push_back(e.normal);
         }
 
-        // ---- DirectionalTSDF, stored-gradient extraction (mode 2) ----
-        Engine::Spatial::DirectionalTSDF dirStored;
-        dirStored.Build(ctx, voxel, truncation);
-        dirStored.SetIntegrationQuality({3, 4, true});
-        dirStored.SetExtractMode(2);
+        // ---- DirectionalTSDF, hybrid extraction (mode 3) ----
+        // Mode 2 (stored-gradient) projects position along the accumulated normal
+        // (center - c*trunc*n): measured to win normals but REGRESS position ~10x (cube flat
+        // 0.112 vs legacy 0.011 mm). Mode 3 keeps the accurate legacy zero-crossing position
+        // AND the denoised stored normal -> best of both (position == legacy, normal == stored).
+        Engine::Spatial::DirectionalTSDF dirHybrid;
+        dirHybrid.Build(ctx, voxel, truncation);
+        dirHybrid.SetIntegrationQuality({3, 4, true});
+        dirHybrid.SetExtractMode(3);
         for (const auto &v : r.views)
-            dirStored.Integrate(v.points, v.normals, v.camPos, Eigen::Vector3f::Zero());
-        for (const auto &e : dirStored.PointCloud()) {
-            r.dirPtsStored.push_back(e.position);
-            r.dirNormalsStored.push_back(e.normal);
+            dirHybrid.Integrate(v.points, v.normals, v.camPos, Eigen::Vector3f::Zero());
+        for (const auto &e : dirHybrid.PointCloud()) {
+            r.dirPtsHybrid.push_back(e.position);
+            r.dirNormalsHybrid.push_back(e.normal);
         }
 
         accumulate(shape, voxel, r.simplePts, r.simpleStats);
@@ -180,8 +184,8 @@ namespace {
         accumulate(shape, voxel, r.dirPtsRefined, r.dirStatsRefined);
         accumulateNormals(shape, voxel, r.dirPts, r.dirNormals, r.dirNormStats);
         accumulateNormals(shape, voxel, r.dirPtsRefined, r.dirNormalsRefined, r.dirNormStatsRefined);
-        accumulate(shape, voxel, r.dirPtsStored, r.dirStatsStored);
-        accumulateNormals(shape, voxel, r.dirPtsStored, r.dirNormalsStored, r.dirNormStatsStored);
+        accumulate(shape, voxel, r.dirPtsHybrid, r.dirStatsHybrid);
+        accumulateNormals(shape, voxel, r.dirPtsHybrid, r.dirNormalsHybrid, r.dirNormStatsHybrid);
         return r;
     }
 
@@ -192,40 +196,40 @@ namespace {
         std::printf("=== tsdf_feature_compare  shape=%s  voxel=%.3f  truncation=%.3f ===\n",
                     shapeName, voxel, truncation);
         std::printf("views=%zu  nInput=%zu (max/view=%zu)  nSimple=%zu  nDir=%zu  nDirRefined=%zu  "
-                    "nDirStored=%zu\n",
+                    "nDirHybrid=%zu\n",
                     r.views.size(), r.nInput, r.maxPerView, r.simplePts.size(), r.dirPts.size(),
-                    r.dirPtsRefined.size(), r.dirPtsStored.size());
+                    r.dirPtsRefined.size(), r.dirPtsHybrid.size());
 
         std::printf("[position error mm]\n");
         std::printf("%-7s | %11s %11s | %11s %11s | %11s %11s | %11s %11s\n", "region",
                     "Simple.mean", "Simple.max", "Dir.mean", "Dir.max", "FD.mean", "FD.max",
-                    "Stored.mean", "Stored.max");
+                    "Hybrid.mean", "Hybrid.max");
         std::printf("--------+-------------------------+-------------------------"
                     "+-------------------------+-------------------------\n");
         for (int reg = 0; reg < kNumRegions; ++reg) {
             if (r.simpleStats[reg].count == 0 && r.dirStats[reg].count == 0 &&
-                r.dirStatsRefined[reg].count == 0 && r.dirStatsStored[reg].count == 0)
+                r.dirStatsRefined[reg].count == 0 && r.dirStatsHybrid[reg].count == 0)
                 continue;
             std::printf("%-7s | %9.4f %11.4f | %9.4f %11.4f | %9.4f %11.4f | %9.4f %11.4f\n",
                         regionName(reg), r.simpleStats[reg].mean(), r.simpleStats[reg].maxErr,
                         r.dirStats[reg].mean(), r.dirStats[reg].maxErr,
                         r.dirStatsRefined[reg].mean(), r.dirStatsRefined[reg].maxErr,
-                        r.dirStatsStored[reg].mean(), r.dirStatsStored[reg].maxErr);
+                        r.dirStatsHybrid[reg].mean(), r.dirStatsHybrid[reg].maxErr);
         }
 
         std::printf("[normal-angle error deg]  (edge = reference only, normal is discontinuous)\n");
         std::printf("%-7s | %11s %11s | %11s %11s | %11s %11s\n", "region", "Dir.mean", "Dir.max",
-                    "FD.mean", "FD.max", "Stored.mean", "Stored.max");
+                    "FD.mean", "FD.max", "Hybrid.mean", "Hybrid.max");
         std::printf("--------+-------------------------+-------------------------"
                     "+-------------------------\n");
         for (int reg = 0; reg < kNumRegions; ++reg) {
             if (r.dirNormStats[reg].count == 0 && r.dirNormStatsRefined[reg].count == 0 &&
-                r.dirNormStatsStored[reg].count == 0)
+                r.dirNormStatsHybrid[reg].count == 0)
                 continue;
             std::printf("%-7s | %9.4f %11.4f | %9.4f %11.4f | %9.4f %11.4f\n", regionName(reg),
                         r.dirNormStats[reg].mean(), r.dirNormStats[reg].maxErr,
                         r.dirNormStatsRefined[reg].mean(), r.dirNormStatsRefined[reg].maxErr,
-                        r.dirNormStatsStored[reg].mean(), r.dirNormStatsStored[reg].maxErr);
+                        r.dirNormStatsHybrid[reg].mean(), r.dirNormStatsHybrid[reg].maxErr);
         }
         std::printf("(position mm; angle deg; 1 world unit == 1 mm)\n");
     }

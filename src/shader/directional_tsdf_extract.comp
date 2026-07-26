@@ -123,6 +123,15 @@ void main() {
             pos = voxelCenter - c * g_truncation * nhat;
             n = nhat;
         }
+    } else if (g_mode == 3u) {
+        // Hybrid: legacy interpolated zero-crossing position (best position) with the denoised
+        // stored normal (best normal). Falls back to the FD gradient normal when the normal
+        // accumulator is degenerate. Measured to keep legacy position accuracy AND stored-normal
+        // accuracy, unlike mode 2 which trades ~10x position error for the good normal.
+        vec3 sumN = vec3(float(center.sumNx), float(center.sumNy), float(center.sumNz));
+        float sl = length(sumN);
+        pos = posSum / float(crossings);
+        n = (sl < 1e-6) ? (grad / len) : (sumN / sl);
     } else if (g_mode == 1u) {
         vec3 voxelCenter = (vec3(v) + vec3(0.5)) * g_voxelSize;
         vec3 stepv = c * g_voxelSize * grad / dot(grad, grad);
