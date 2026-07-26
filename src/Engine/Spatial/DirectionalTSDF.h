@@ -114,6 +114,12 @@ namespace Engine::Spatial {
         uint32_t PoolCapacity() const { return m_backend->PoolCapacity(); }
         Stats LastFrameStats() const { return m_stats; }
 
+        // Test/diagnostic seam: read-only view of the residency backend (host store, resident
+        // index). Mirrors the backend's own Debug* methods; not for per-frame use. Non-const
+        // (rather than the const-ref alternative) so callers can reach HostStore() without a
+        // const_cast — HostStore() itself is non-const on IResidencyBackend.
+        IResidencyBackend &DebugBackend() { return *m_backend; }
+
         // Result of the most recent BeginFrame classification (test/debug).
         ClassifyCounts DebugLastClassifyCounts() const { return m_lastCounts; }
 

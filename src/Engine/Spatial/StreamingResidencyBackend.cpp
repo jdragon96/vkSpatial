@@ -180,11 +180,8 @@ namespace Engine::Spatial {
                 for (uint32_t i = 0; i < chunk; ++i) {
                     const uint32_t slot = writeBack[base + i];
                     DirectionalHostStore::Group group{};
-                    for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
-                        const GpuTsdfVoxel &g = raw[size_t(i) * kVoxelsPerGroup + v];
-                        group[v].weight = float(g.sumW) / float(kTsdfFixedScale);
-                        group[v].value = g.sumW > 0 ? float(double(g.sumDW) / double(g.sumW)) : 0.0f;
-                    }
+                    for (uint32_t v = 0; v < kVoxelsPerGroup; ++v)
+                        group[v] = GpuVoxelToHost(raw[size_t(i) * kVoxelsPerGroup + v]);
                     m_hostStore.Put(m_slotKeys[slot], group);
                     m_freeSlots.push_back(slot);
                 }
