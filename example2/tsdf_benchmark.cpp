@@ -98,6 +98,7 @@
 #include "shape_fixtures.h"
 
 #include "Engine/Core/Context.h"
+#include "Engine/Spatial/AdaptiveVoxelGrid.h"
 #include "Engine/Spatial/CompactDirectionalTSDF.h"
 #include "Engine/Spatial/DirectionalTSDF.h"
 #include "Engine/Spatial/DirectionalTSDFTypes.h"
@@ -448,6 +449,35 @@ namespace {
         row.nPoints = built.cloud.points.size();
         row.memKB = double(built.tsdf.FilledCount()) * 16.0 / 1024.0;
         ScoreAgainstGT(shape, classifyVoxel, built.cloud.points, row);
+        return row;
+    }
+
+    // ---- AdaptiveVoxelGrid (MrHash paper core): fine SimpleTSDF + CPU variance merge (2^3
+    // blocks -> coarse when block mean sigma^2 < percentile threshold) + multi-resolution
+    // Marching Cubes. Accuracy = mesh-vertex distance to GT (same fixtures::NearestDistance
+    // metric as every other row). memKB = the mixed-grid representation (FineCount+CoarseCount)
+    // *16B -- the adaptive benefit. NOTE: the current impl keeps the fine level GPU-resident
+    // (the reduction is in the extracted/stored representation, not GPU VRAM).
+    Row RunAdaptiveVoxelGrid(Engine::Core::Context &ctx, Shape shape, float voxel,
+                             const std::vector<fixtures::View> &views, float percentile) {
+        Engine::Spatial::AdaptiveVoxelGrid avg;
+        avg.Build(ctx, voxel, kTruncation);
+        avg.SetVariancePercentile(percentile);
+
+        const auto t0 = std::chrono::steady_clock::now();
+        for (const auto &v : views) avg.Integrate(v.points, v.camPos);
+        const Engine::Spatial::AdaptiveMesh mesh = avg.ExtractMesh();
+        const auto t1 = std::chrono::steady_clock::now();
+
+        Row row;
+        row.shape = ShapeName(shape);
+        char m[48];
+        std::snprintf(m, sizeof(m), "AdaptiveVoxelGrid(p%.2f)", percentile);
+        row.method = m;
+        row.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        row.nPoints = mesh.vertices.size();
+        row.memKB = double(avg.FineCount() + avg.CoarseCount()) * 16.0 / 1024.0;
+        ScoreAgainstGT(shape, voxel, mesh.vertices, row);
         return row;
     }
 
@@ -1149,6 +1179,8 @@ int main(int argc, char **argv) {
         rows.push_back(compactMergedRow);
         rows.push_back(compactAdaptive.row);
         rows.push_back(hybridRow);
+        rows.push_back(RunAdaptiveVoxelGrid(ctx, shape, voxel, views, 0.50f));
+        rows.push_back(RunAdaptiveVoxelGrid(ctx, shape, voxel, views, 0.90f));
         sigmaRows.insert(sigmaRows.end(), sweep.begin(), sweep.end());
         compactSigmaRows.insert(compactSigmaRows.end(), compactAdaptive.sweep.begin(),
                                 compactAdaptive.sweep.end());
