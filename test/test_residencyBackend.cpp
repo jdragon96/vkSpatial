@@ -168,3 +168,33 @@ TEST(ResidencyBackend, CrossBackendReconstructionMatches) {
         EXPECT_LT((a[i].normal - b[i].normal).norm(), eps) << "point " << i;
     }
 }
+
+#include "Engine/Spatial/DirectionalVoxelConvert.h"
+
+TEST(DirectionalVoxelConvert, RoundTripPreservesValueWeightNormal) {
+    using namespace Engine::Spatial;
+    HostTsdfVoxel h{};
+    h.value = 0.5f; h.weight = 3.0f;
+    Eigen::Vector3f n = Eigen::Vector3f(0.2f, -0.3f, 0.9f).normalized();
+    h.nx = n.x(); h.ny = n.y(); h.nz = n.z();
+
+    const GpuTsdfVoxel g = HostVoxelToGpu(h);
+    EXPECT_EQ(g.sumW, uint32_t(std::lround(3.0 * kTsdfFixedScale)));
+    EXPECT_EQ(g.sumDW, int32_t(std::lround(0.5 * 3.0 * kTsdfFixedScale)));
+
+    const HostTsdfVoxel back = GpuVoxelToHost(g);
+    EXPECT_NEAR(back.value, 0.5f, 1e-3f);
+    EXPECT_NEAR(back.weight, 3.0f, 1e-3f);
+    EXPECT_NEAR(back.nx, n.x(), 2e-3f);
+    EXPECT_NEAR(back.ny, n.y(), 2e-3f);
+    EXPECT_NEAR(back.nz, n.z(), 2e-3f);
+}
+
+TEST(DirectionalVoxelConvert, DegenerateNormalStaysZero) {
+    using namespace Engine::Spatial;
+    GpuTsdfVoxel g{}; g.sumW = 10000; g.sumDW = 0; // sumN all zero
+    const HostTsdfVoxel back = GpuVoxelToHost(g);
+    EXPECT_FLOAT_EQ(back.nx, 0.0f);
+    EXPECT_FLOAT_EQ(back.ny, 0.0f);
+    EXPECT_FLOAT_EQ(back.nz, 0.0f);
+}

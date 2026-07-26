@@ -49,11 +49,15 @@ namespace Engine::Spatial {
         }
     };
 
-    // Host store / wire format: running-average form (value = avg SDF, weight = total weight).
+    // Host store / wire format: running-average form (value = avg SDF, weight = total
+    // weight) plus the finalized unit surface normal (v1: 3×f32; oct compression deferred).
     struct HostTsdfVoxel {
         float value = 0.0f;
         float weight = 0.0f;
-    }; // 8B
+        float nx = 0.0f;
+        float ny = 0.0f;
+        float nz = 0.0f;
+    }; // 20B
 
     // GPU active-pool format: fixed-point accumulators so the integrate kernel can atomicAdd
     // (GLSL has no float atomics). Conversion: sumW = weight*scale, sumDW = value*weight*scale.
@@ -106,7 +110,8 @@ namespace Engine::Spatial {
     };
 
     static_assert(std::is_standard_layout_v<HostTsdfVoxel>);
-    static_assert(sizeof(HostTsdfVoxel) == 8);
+    static_assert(sizeof(HostTsdfVoxel) == 20);
+    static_assert(offsetof(HostTsdfVoxel, nx) == 8);
     static_assert(std::is_standard_layout_v<GpuTsdfVoxel>);
     static_assert(sizeof(GpuTsdfVoxel) == 20);
     static_assert(offsetof(GpuTsdfVoxel, sumW) == 4);
