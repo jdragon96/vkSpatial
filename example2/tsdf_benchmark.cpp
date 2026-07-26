@@ -154,6 +154,7 @@ namespace {
         std::string shape;
         std::string method;
         double buildMs = 0.0;
+        double integrateMs = 0.0; // pure integration (excludes extract); 0 = not measured
         std::size_t nPoints = 0;
         double memKB = 0.0;
         ErrStats overall;
@@ -170,9 +171,9 @@ namespace {
     }
 
     void PrintHeader() {
-        std::printf("%-9s %-20s %10s %9s %10s %10s %10s %9s %9s %9s\n", "shape", "method",
-                    "build_ms", "nPoints", "mem_KB", "acc_mean", "acc_rmse", "edge", "flat",
-                    "curved");
+        std::printf("%-9s %-20s %10s %10s %9s %10s %10s %10s %9s %9s %9s\n", "shape", "method",
+                    "build_ms", "integ_ms", "nPoints", "mem_KB", "acc_mean", "acc_rmse", "edge",
+                    "flat", "curved");
         std::printf("---------------------------------------------------------------------"
                     "--------------------------------------\n");
     }
@@ -181,8 +182,13 @@ namespace {
         const auto &e = r.perRegion[static_cast<int>(Region::Edge)];
         const auto &f = r.perRegion[static_cast<int>(Region::Flat)];
         const auto &c = r.perRegion[static_cast<int>(Region::Curved)];
-        std::printf("%-9s %-20s %10.3f %9zu %10.2f %s %s %s %s %s\n", r.shape.c_str(),
-                    r.method.c_str(), r.buildMs, r.nPoints, r.memKB,
+        char integ[16];
+        if (r.integrateMs > 0.0)
+            std::snprintf(integ, sizeof(integ), "%.3f", r.integrateMs);
+        else
+            std::snprintf(integ, sizeof(integ), "n/a");
+        std::printf("%-9s %-20s %10.3f %10s %9zu %10.2f %s %s %s %s %s\n", r.shape.c_str(),
+                    r.method.c_str(), r.buildMs, integ, r.nPoints, r.memKB,
                     FmtErr(r.overall.mean(), r.overall.count > 0, 10).c_str(),
                     FmtErr(r.overall.rmse(), r.overall.count > 0, 10).c_str(),
                     FmtErr(e.mean(), e.count > 0, 9).c_str(),
@@ -407,6 +413,7 @@ namespace {
         Engine::Spatial::SimpleTSDF tsdf;
         Engine::Spatial::OrientedPointCloud cloud;
         double buildMs = 0.0;
+        double integrateMs = 0.0;
     };
 
     BuiltSimple BuildSimpleTSDF(Engine::Core::Context &ctx, float voxelSize,
@@ -416,9 +423,11 @@ namespace {
 
         const auto t0 = std::chrono::steady_clock::now();
         for (const auto &v : views) out.tsdf.Integrate(v.points, v.camPos);
+        const auto tm = std::chrono::steady_clock::now();
         out.cloud = out.tsdf.ExtractPointCloud();
         const auto t1 = std::chrono::steady_clock::now();
 
+        out.integrateMs = std::chrono::duration<double, std::milli>(tm - t0).count();
         out.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         return out;
     }
@@ -433,9 +442,11 @@ namespace {
 
         const auto t0 = std::chrono::steady_clock::now();
         for (const auto &v : views) out.tsdf.Integrate(v.points, v.normals, v.camPos);
+        const auto tm = std::chrono::steady_clock::now();
         out.cloud = out.tsdf.ExtractPointCloud();
         const auto t1 = std::chrono::steady_clock::now();
 
+        out.integrateMs = std::chrono::duration<double, std::milli>(tm - t0).count();
         out.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         return out;
     }
@@ -446,6 +457,7 @@ namespace {
         row.shape = ShapeName(shape);
         row.method = method;
         row.buildMs = built.buildMs;
+        row.integrateMs = built.integrateMs;
         row.nPoints = built.cloud.points.size();
         row.memKB = double(built.tsdf.FilledCount()) * 16.0 / 1024.0;
         ScoreAgainstGT(shape, classifyVoxel, built.cloud.points, row);
@@ -466,6 +478,7 @@ namespace {
 
         const auto t0 = std::chrono::steady_clock::now();
         for (const auto &v : views) avg.Integrate(v.points, v.camPos);
+        const auto tm = std::chrono::steady_clock::now();
         const Engine::Spatial::AdaptiveMesh mesh = avg.ExtractMesh();
         const auto t1 = std::chrono::steady_clock::now();
 
@@ -474,6 +487,7 @@ namespace {
         char m[48];
         std::snprintf(m, sizeof(m), "AdaptiveVoxelGrid(p%.2f)", percentile);
         row.method = m;
+        row.integrateMs = std::chrono::duration<double, std::milli>(tm - t0).count();
         row.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         row.nPoints = mesh.vertices.size();
         row.memKB = double(avg.FineCount() + avg.CoarseCount()) * 16.0 / 1024.0;
@@ -617,6 +631,7 @@ namespace {
         const auto t1 = std::chrono::steady_clock::now();
 
         row.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        row.integrateMs = sumIntegrateMs; // authoritative: Directional runs extract inside Integrate
         const auto &cloud = dir.PointCloud();
         row.nPoints = cloud.size();
         row.memKB = double(dir.HostStore().Size()) * 4096.0 / 1024.0;
@@ -662,12 +677,14 @@ namespace {
 
         const auto t0 = std::chrono::steady_clock::now();
         for (const auto &v : views) cd.Integrate(v.points, v.normals, v.camPos);
+        const auto tm = std::chrono::steady_clock::now();
         const Engine::Spatial::OrientedPointCloud cloud = cd.ExtractPointCloud();
         const auto t1 = std::chrono::steady_clock::now();
 
         Row row;
         row.shape = ShapeName(shape);
         row.method = "Compact-Directional";
+        row.integrateMs = std::chrono::duration<double, std::milli>(tm - t0).count();
         row.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         row.nPoints = cloud.points.size();
         row.memKB = double(cd.FilledCount()) * 16.0 / 1024.0; // occupied entries * sizeof(DirEntry)
@@ -685,6 +702,7 @@ namespace {
         Row mergedRow;
         mergedRow.shape = ShapeName(shape);
         mergedRow.method = "Compact-Directional(merged)";
+        mergedRow.integrateMs = row.integrateMs; // same integrate; merge is extraction-only
         mergedRow.buildMs =
                 row.buildMs + std::chrono::duration<double, std::milli>(t3 - t2).count();
         mergedRow.nPoints = mergedCloud.points.size();
@@ -814,9 +832,11 @@ namespace {
             cdFine.Integrate(v.points, v.normals, v.camPos);
             cdCoarse.Integrate(v.points, v.normals, v.camPos);
         }
+        const auto tm = std::chrono::steady_clock::now();
         const Engine::Spatial::OrientedPointCloud fineCloud = cdFine.ExtractPointCloud();
         const Engine::Spatial::OrientedPointCloud coarseCloud = cdCoarse.ExtractPointCloud();
         const auto t1 = std::chrono::steady_clock::now();
+        const double integrateMs = std::chrono::duration<double, std::milli>(tm - t0).count();
         const double buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
         const std::vector<Engine::Spatial::CompactEntry> fineEntries = cdFine.DownloadEntries();
@@ -846,6 +866,7 @@ namespace {
         row.shape = ShapeName(shape);
         row.method = "Compact-Dir(var-adaptive)";
         row.buildMs = buildMs;
+        row.integrateMs = integrateMs;
         if (!out.sweep.empty()) {
             const std::size_t midIdx = std::min<std::size_t>(1, out.sweep.size() - 1);
             const SigmaRow &mid = out.sweep[midIdx];
