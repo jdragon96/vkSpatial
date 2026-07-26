@@ -19,10 +19,13 @@
 #include "shape_fixtures.h"
 #include <gtest/gtest.h>
 
+#include <Eigen/Geometry> // Vector3f::cross
+#include <array>
 #include <cmath>
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
 
 using Engine::Spatial::AdaptiveVoxelGrid;
 
@@ -64,6 +67,44 @@ namespace {
             worst = std::max(worst, double(std::sqrt(best)));
         }
         return worst;
+    }
+
+    // Grid-hash spot-check (Task 4 Step 1): true iff no two DISTINCT vertices lie strictly
+    // closer than `eps` apart (identical/welded-together positions, distance ~0, are fine --
+    // only *near*-duplicates that should have been welded but weren't are a failure).
+    bool noNearDuplicates(const std::vector<Eigen::Vector3f> &verts, float eps) {
+        if (verts.empty()) return true;
+        const float cell = std::max(eps, 1e-6f);
+        struct BinHash {
+            size_t operator()(const std::array<int64_t, 3> &b) const noexcept {
+                size_t h = std::hash<int64_t>()(b[0]);
+                h = h * 31u + std::hash<int64_t>()(b[1]);
+                h = h * 31u + std::hash<int64_t>()(b[2]);
+                return h;
+            }
+        };
+        auto binOf = [cell](const Eigen::Vector3f &p) {
+            return std::array<int64_t, 3>{static_cast<int64_t>(std::floor(p.x() / cell)),
+                                           static_cast<int64_t>(std::floor(p.y() / cell)),
+                                           static_cast<int64_t>(std::floor(p.z() / cell))};
+        };
+        std::unordered_map<std::array<int64_t, 3>, std::vector<int>, BinHash> grid;
+        for (int i = 0; i < static_cast<int>(verts.size()); ++i) {
+            const auto b = binOf(verts[i]);
+            for (int dx = -1; dx <= 1; ++dx)
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dz = -1; dz <= 1; ++dz) {
+                        const std::array<int64_t, 3> nb{b[0] + dx, b[1] + dy, b[2] + dz};
+                        const auto it = grid.find(nb);
+                        if (it == grid.end()) continue;
+                        for (int j : it->second) {
+                            const float d = (verts[i] - verts[j]).norm();
+                            if (d > 1e-9f && d < eps) return false;
+                        }
+                    }
+            grid[b].push_back(i);
+        }
+        return true;
     }
 } // namespace
 
@@ -148,4 +189,51 @@ TEST(AdaptiveVoxelGrid, CpuMcMatchesGpuMcAllFine) {
     // One-directional Chamfer: every CPU-MC vertex has a close GPU-MC vertex.
     const double d = maxNearestDist(m.vertices, ref);
     EXPECT_LT(d, 0.05); // within one fine voxel
+}
+
+TEST(AdaptiveVoxelGrid, MeshAccuracyVsAllFine) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+    Engine::Core::Context &ctx = *h.ctx;
+
+    AdaptiveVoxelGrid fineOnly;
+    fineOnly.Build(ctx, kVoxel, kTrunc);
+    integrateCube(ctx, fineOnly, kVoxel);
+    fineOnly.SetVarianceThreshold(0.0f); // force all-fine reference
+    const Engine::Spatial::AdaptiveMesh refM = fineOnly.ExtractMesh();
+
+    AdaptiveVoxelGrid adp;
+    adp.Build(ctx, kVoxel, kTrunc);
+    integrateCube(ctx, adp, kVoxel);
+    adp.SetVariancePercentile(0.6f); // coarsen the flat majority
+    const Engine::Spatial::AdaptiveMesh m = adp.ExtractMesh();
+
+    ASSERT_GT(adp.CoarseCount(), 0u);
+    ASSERT_FALSE(m.vertices.empty());
+    ASSERT_FALSE(refM.vertices.empty());
+
+    const double d = maxNearestDist(m.vertices, refM.vertices);
+    EXPECT_LT(d, 0.10); // within one coarse voxel (2*kVoxel)
+}
+
+TEST(AdaptiveVoxelGrid, NoDegenerateOrDuplicateVerts) {
+    CtxHolder h;
+    if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
+    Engine::Core::Context &ctx = *h.ctx;
+
+    AdaptiveVoxelGrid a;
+    a.Build(ctx, kVoxel, kTrunc);
+    integrateCube(ctx, a, kVoxel);
+    a.SetVariancePercentile(0.6f);
+    const Engine::Spatial::AdaptiveMesh m = a.ExtractMesh();
+
+    ASSERT_FALSE(m.triangles.empty());
+    for (const auto &t : m.triangles) { // no zero-area triangles
+        const auto &A = m.vertices[t.x()];
+        const auto &B = m.vertices[t.y()];
+        const auto &C = m.vertices[t.z()];
+        EXPECT_GT((B - A).cross(C - A).norm(), 1e-9f);
+    }
+    // No two welded vertices closer than the collapse epsilon (0.25*h) except identical.
+    EXPECT_TRUE(noNearDuplicates(m.vertices, 0.25f * kVoxel));
 }
