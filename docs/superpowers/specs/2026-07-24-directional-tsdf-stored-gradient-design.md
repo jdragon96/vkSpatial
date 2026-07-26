@@ -111,3 +111,39 @@ struct GpuTsdfVoxel {
 | 20B 메모리 2.5×(~335MB @ 기본 poolCapacity) | M4 Max UMA 여유; 부족 시 실험에서 poolCapacity 축소, 압축은 후속 |
 | cylinder 비결정성(base에 large-N fix 없음) | cube를 결정적 primary 오라클로; cylinder는 다회 mean, 필요시 main rebase |
 | gradient 비지속(measure-first) | 단일 윈도우 실험엔 무영향(eviction 없음); 이득 확인 후 host-store/wire 후속 |
+
+## Post-persistence validation (2026-07-26)
+
+Tasks 1-4(committed: `HostTsdfVoxel`에 법선 저장 + Streaming upload rehydrate + write-back persist + Unified 공유 변환)가 host↔GPU 변환만 건드렸음을 확인하기 위해, integrate `sumN` 누적·extract mode-3 수학은 그대로인 채 `tsdf_feature_compare --dump`로 mode 3(hybrid: legacy 위치 + stored `normalize(sumN)` 법선)를 재측정했다. **이 빌드의 하네스 컬럼명은 `Stored`가 아니라 `Hybrid`**(mode 3, 이전 커밋에서 개명됨).
+
+**Build**: `VULKAN_SDK=/usr/local cmake --build build --target tsdf_feature_compare -j` → 성공.
+
+**cube**(결정적, 1회 실행):
+```
+[position error mm]
+region  | Simple.mean  Simple.max |    Dir.mean     Dir.max |     FD.mean      FD.max | Hybrid.mean  Hybrid.max
+flat    |    0.0458      0.0702 |    0.0110      0.0364 |    0.0115      0.0491 |    0.0110      0.0364
+edge    |    0.0496      0.1303 |    0.0267      0.0707 |    0.0254      0.1041 |    0.0268      0.0727
+[normal-angle error deg]
+region  |    Dir.mean     Dir.max |     FD.mean      FD.max | Hybrid.mean  Hybrid.max
+flat    |    1.8773     19.9028 |    1.8773     19.9028 |    0.0000      0.0000
+edge    |   31.4978    100.6975 |   31.3046    101.5440 |   28.4104     90.0000
+```
+Hybrid flat 위치 = **0.0110**(legacy와 동일), 법선각 = **0.0000°**(vs legacy 1.8773°) — pre-persistence baseline과 **정확히 일치**.
+
+**cylinder**(3회 실행, 지터 확인 — base가 large-N fix 미포함이라 nDir/nDirHybrid 점 개수만 ±1-2점 흔들림, Hybrid mean/max는 3회 모두 사실상 동일):
+```
+[position error mm]
+region  | Simple.mean  Simple.max |    Dir.mean     Dir.max |     FD.mean      FD.max | Hybrid.mean  Hybrid.max
+flat    |    0.0475      0.2469 |    0.0118      0.2103 |    0.0160      0.2103 |    0.0118      0.2103
+curved  |    0.0487      1.5000 |    0.0121      0.0602 |    0.0149      0.1073 |    0.0122      0.0602
+edge    |    0.0614      0.2033 |    0.0299      0.1500 |    0.0299      0.1493 |    0.0299      0.1500
+[normal-angle error deg]
+region  |    Dir.mean     Dir.max |     FD.mean      FD.max | Hybrid.mean  Hybrid.max
+flat    |    7.5344     97.2006 |    7.5252     97.4250 |    0.6600     89.7570
+curved  |   12.6603/12.6528/12.6472 (mean≈12.65)  104.0521 |   12.4843    104.0521 |    2.0042/2.0037/2.0044 (mean≈2.004)      9.5618
+edge    |   35.5622    156.7635 |   34.6360    151.4159 |   27.1873     90.0000
+```
+Hybrid flat 위치 ≈ **0.0118**, 법선각 ≈ **0.66°**(vs legacy 7.53°); Hybrid curved 위치 ≈ **0.0121-0.0122**, 법선각 ≈ **2.00-2.01°**(vs legacy ≈12.65°) — 3회 모두 baseline(pos 0.0118/0.0122, normal 0.66°/2.01°)과 오차범위 내 일치.
+
+**결론**: cube(결정적)·cylinder(3회 mean) 모두 mode-3(Hybrid) 위치·법선각이 gradient persistence 도입 전후로 **변화 없음**(측정 오차 내 동일). Interpretation gate 통과 — 예상대로 host round-trip만 바뀌고 accumulate/extract 수학은 불변임을 확인.
