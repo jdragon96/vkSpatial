@@ -1,5 +1,7 @@
 #include "Engine/Spatial/UnifiedResidencyBackend.h"
 
+#include "Engine/Spatial/DirectionalVoxelConvert.h"
+
 #include <cstring>
 #include <stdexcept>
 
@@ -147,8 +149,7 @@ namespace Engine::Spatial {
         auto *pool = static_cast<GpuTsdfVoxel *>(m_pool.mapped);
         const GpuTsdfVoxel *g = pool + size_t(it->second) * kVoxelsPerGroup;
         for (uint32_t i = 0; i < kVoxelsPerGroup; ++i) {
-            out[i].weight = float(g[i].sumW) / float(kTsdfFixedScale);
-            out[i].value = g[i].sumW ? float(g[i].sumDW) / float(g[i].sumW) : 0.0f;
+            out[i] = GpuVoxelToHost(g[i]);
         }
         return out;
     }
