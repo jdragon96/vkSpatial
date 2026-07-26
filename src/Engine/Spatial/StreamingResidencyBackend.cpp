@@ -1,6 +1,7 @@
 #include "Engine/Spatial/StreamingResidencyBackend.h"
 
 #include "Engine/Core/OneShotCommands.h"
+#include "Engine/Spatial/DirectionalVoxelConvert.h"
 
 #include <algorithm>
 #include <cmath>
@@ -250,13 +251,7 @@ namespace Engine::Spatial {
             const auto &pk = pending[i];
             const auto &group = m_hostStore.GetOrCreate(pk.key);
             for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
-                const HostTsdfVoxel &h = group[v];
-                GpuTsdfVoxel &g = voxStage[i * kVoxelsPerGroup + v];
-                g.sumW = uint32_t(std::lround(double(h.weight) * kTsdfFixedScale));
-                g.sumDW = int32_t(std::lround(double(h.value) * double(h.weight) * kTsdfFixedScale));
-                g.sumNx = 0;
-                g.sumNy = 0;
-                g.sumNz = 0;
+                voxStage[i * kVoxelsPerGroup + v] = HostVoxelToGpu(group[v]);
             }
             metaStage[i] = ActiveGroupMeta{pk.key.gx, pk.key.gy, pk.key.gz,
                                            PackMeta(pk.key.direction, SlotState::ResidentClean, false, true)};
@@ -358,12 +353,8 @@ namespace Engine::Spatial {
         staging.Download(raw.data(), kGroupBytes);
 
         DirectionalHostStore::Group group{};
-        for (uint32_t v = 0; v < kVoxelsPerGroup; ++v) {
-            group[v].weight = float(raw[v].sumW) / float(kTsdfFixedScale);
-            group[v].value = raw[v].sumW > 0
-                                     ? float(double(raw[v].sumDW) / double(raw[v].sumW))
-                                     : 0.0f;
-        }
+        for (uint32_t v = 0; v < kVoxelsPerGroup; ++v)
+            group[v] = GpuVoxelToHost(raw[v]);
         return group;
     }
 

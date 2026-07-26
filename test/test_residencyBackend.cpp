@@ -198,3 +198,24 @@ TEST(DirectionalVoxelConvert, DegenerateNormalStaysZero) {
     EXPECT_FLOAT_EQ(back.ny, 0.0f);
     EXPECT_FLOAT_EQ(back.nz, 0.0f);
 }
+
+TEST(ResidencyBackend, StreamingUploadRehydratesNormal) {
+    using namespace Engine::Spatial;
+    Engine::Core::Context ctx;
+    StreamingResidencyBackend be;
+    be.Build(ctx, /*poolCapacity=*/1024);
+
+    DirectionalGroupKey key{0, 0, 0, /*direction=*/4}; // +Z layer
+    DirectionalHostStore::Group g{};
+    const Eigen::Vector3f n = Eigen::Vector3f(0.0f, 0.0f, 1.0f);
+    for (auto &v : g) { v.value = 0.5f; v.weight = 2.0f; v.nx = n.x(); v.ny = n.y(); v.nz = n.z(); }
+    be.HostStore().Put(key, g);
+
+    be.BeginFrame(Eigen::Vector3i(0, 0, 0));
+    be.EnsureResident({key});
+    const auto back = be.DebugDownloadGroupVoxels(key); // uploaded sumN -> download normal
+
+    EXPECT_NEAR(back[0].nz, 1.0f, 2e-3f);
+    EXPECT_NEAR(back[0].nx, 0.0f, 2e-3f);
+    EXPECT_NEAR(back[0].value, 0.5f, 2e-3f);
+}
