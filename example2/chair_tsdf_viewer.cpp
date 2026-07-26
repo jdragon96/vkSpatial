@@ -75,7 +75,8 @@ namespace {
         if (out.points.empty()) return false;
         out.centroid /= float(out.points.size());
         if (out.meanNormal.norm() > 1e-6f) out.meanNormal.normalize();
-        else out.meanNormal = Eigen::Vector3f(0, 0, 1);
+        else
+            out.meanNormal = Eigen::Vector3f(0, 0, 1);
         return true;
     }
 
@@ -147,9 +148,12 @@ namespace {
 
     const char *MethodName(int method) {
         switch (method) {
-            case 0: return "Simple";
-            case 1: return "Directional";
-            default: return "Compact";
+            case 0:
+                return "Simple";
+            case 1:
+                return "Directional";
+            default:
+                return "Compact";
         }
     }
 
@@ -164,9 +168,12 @@ namespace {
     // Flat per-method identity color (colorMode == 1).
     Rgb MethodColor(int method) {
         switch (method) {
-            case 0: return {160, 160, 160}; // Simple: grey
-            case 1: return {230, 140, 30};  // Directional: orange
-            default: return {30, 180, 180}; // Compact: teal
+            case 0:
+                return {160, 160, 160}; // Simple: grey
+            case 1:
+                return {230, 140, 30}; // Directional: orange
+            default:
+                return {30, 180, 180}; // Compact: teal
         }
     }
 
@@ -190,7 +197,7 @@ namespace {
             // SimpleTSDF: normal-free baseline (w=1 per observation).
             SimpleTSDF tsdf;
             tsdf.Build(ctx, voxelSize, truncation, 1u << 22, 1u << 17);
-            for (const Frame &fr : frames)
+            for (const Frame &fr: frames)
                 tsdf.Integrate(fr.points, camFor(fr));
             recon = tsdf.ExtractPointCloud();
             memKB = double(tsdf.FilledCount()) * 16.0 / 1024.0;
@@ -201,7 +208,7 @@ namespace {
             tsdf.Build(ctx, voxelSize, truncation, 1u << 18, 1u << 17, 1u << 21,
                        ResidencyMode::Unified);
             tsdf.SetIntegrationQuality({3, 4, true});
-            for (const Frame &fr : frames)
+            for (const Frame &fr: frames)
                 tsdf.Integrate(fr.points, fr.normals, camFor(fr), center);
             recon = tsdf.ExtractOrientedCloud();
             memKB = double(tsdf.HostStore().Size()) * 4096.0 / 1024.0;
@@ -214,7 +221,7 @@ namespace {
                     bbMin - Eigen::Vector3f::Constant(truncation + voxelSize);
             tsdf.Build(ctx, voxelSize, truncation, 1u << 22, 1u << 17, windowMinCorner);
             tsdf.SetIntegrationQuality({3, 4, true});
-            for (const Frame &fr : frames)
+            for (const Frame &fr: frames)
                 tsdf.Integrate(fr.points, fr.normals, camFor(fr));
             recon = tsdf.ExtractPointCloud(1u << 21, /*merge=*/true);
             memKB = double(tsdf.FilledCount()) * 16.0 / 1024.0;
@@ -230,9 +237,9 @@ namespace {
         // for an interactive viewer. Dim grey so the extracted surface reads clearly on top.
         std::vector<PointVertex> inputVerts;
         size_t inputEstimate = 0;
-        for (const Frame &fr : frames) inputEstimate += (fr.points.size() + 3) / 4;
+        for (const Frame &fr: frames) inputEstimate += (fr.points.size() + 3) / 4;
         inputVerts.reserve(inputEstimate);
-        for (const Frame &fr : frames)
+        for (const Frame &fr: frames)
             for (size_t i = 0; i < fr.points.size(); i += 4) {
                 const Eigen::Vector3f &p = fr.points[i];
                 inputVerts.push_back({{p.x(), p.y(), p.z()}, {130, 140, 150, 255}});
@@ -303,8 +310,8 @@ int main(int argc, char **argv) {
         // ---- scene bbox -> center/extent/voxelSize/truncation (all three methods share these) ----
         Eigen::Vector3f bbMin = frames[0].points[0], bbMax = frames[0].points[0];
         size_t totalIn = 0;
-        for (const auto &fr : frames)
-            for (const auto &p : fr.points) {
+        for (const auto &fr: frames)
+            for (const auto &p: fr.points) {
                 bbMin = bbMin.cwiseMin(p);
                 bbMax = bbMax.cwiseMax(p);
                 ++totalIn;
@@ -334,7 +341,7 @@ int main(int argc, char **argv) {
         // (0.05/100) would clip almost the entire model. near=1mm is comfortably inside the
         // trackball's min orbit distance; far covers >12x the scene radius with margin.
         camera.SetPerspective(60.0f * 3.14159265f / 180.0f, aspect, 1.0f,
-                               std::max(5000.0f, radius * 12.0f));
+                              std::max(5000.0f, radius * 12.0f));
         camera.SetOrbit(vkMath::Vec3(center.x(), center.y(), center.z()), radius * 2.2f);
 
         ChairViewerState state;
@@ -411,12 +418,12 @@ int main(int argc, char **argv) {
 
             if (!camera.IsTrackballDragging()) {
                 camera.BeginTrackballDrag(e.x, e.y, static_cast<int>(size.width),
-                                           static_cast<int>(size.height));
+                                          static_cast<int>(size.height));
                 return;
             }
 
             camera.DragTrackball(e.x, e.y, static_cast<int>(size.width),
-                                  static_cast<int>(size.height));
+                                 static_cast<int>(size.height));
             e.handled = true;
         });
         trackball.Add(Engine::Render::MouseEventType::ButtonUp, [&](Engine::Render::MouseEvent &e) {
@@ -427,6 +434,17 @@ int main(int argc, char **argv) {
             camera.SetDistance(std::clamp(
                     camera.GetDistance() * std::exp(static_cast<float>(-e.scrollY) * 0.08f),
                     radius * 0.2f, radius * 20.0f));
+            e.handled = true;
+        });
+        // Right-drag: pan (translate) the view in the current view plane.
+        trackball.Add(Engine::Render::MouseEventType::Drag, [&](Engine::Render::MouseEvent &e) {
+            if (e.button != Engine::Render::MouseButton::Right)
+                return;
+            const VkExtent2D size = app.GetWindow().FramebufferSize();
+            if (size.width == 0 || size.height == 0)
+                return;
+            camera.Pan(e.deltaX, e.deltaY, static_cast<int>(size.width),
+                       static_cast<int>(size.height));
             e.handled = true;
         });
 
@@ -451,7 +469,14 @@ int main(int argc, char **argv) {
 
                 if (state.dirty) {
                     vkDeviceWaitIdle(ctx.device);
-                    Rebuild(state, ctx, *pointCloudPass, frames, center, bbMin, voxelSize,
+                    Rebuild(
+                            state,
+                            ctx,
+                            *pointCloudPass,
+                            frames,
+                            center,
+                            bbMin,
+                            voxelSize,
                             truncation);
                 }
 

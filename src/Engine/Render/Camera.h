@@ -2,6 +2,7 @@
 
 #include "utilities/Math.h"
 
+#include <cmath>
 #include <memory>
 
 namespace Engine::Render {
@@ -94,6 +95,25 @@ namespace Engine::Render {
 
         void EndTrackballDrag() {
             m_dragging = false;
+        }
+
+        // Pan (translate) the orbit target in the current view plane by a screen-space drag,
+        // grab-style: the world point under the cursor tracks the cursor. Speed scales with
+        // orbit distance and vertical FOV, so it feels the same at any zoom. Perspective only:
+        // Perspective() sets m_projection(1,1) = -1 / tan(fovY/2), so tan(fovY/2) = 1/|P(1,1)|.
+        void Pan(double dxPixels, double dyPixels, int width, int height) {
+            if (width <= 0 || height <= 0)
+                return;
+            const float tanHalfFovY = 1.0f / std::abs(m_projection(1, 1));
+            const float worldPerPixel =
+                    2.0f * m_distance * tanHalfFovY / static_cast<float>(height);
+            const vkMath::Vec3 right =
+                    (m_orientation * vkMath::Vec3(1.0f, 0.0f, 0.0f)).normalized();
+            const vkMath::Vec3 up =
+                    (m_orientation * vkMath::Vec3(0.0f, 1.0f, 0.0f)).normalized();
+            m_target += right * (-static_cast<float>(dxPixels) * worldPerPixel)
+                        + up * (static_cast<float>(dyPixels) * worldPerPixel);
+            updateOrbitView();
         }
 
         Projection GetProjectionType() const { return m_projectionType; }
