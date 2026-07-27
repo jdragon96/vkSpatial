@@ -129,7 +129,7 @@ void main() {
         float voxel2point = depth - dot(vCenter - cam, rayDir);
         if (abs(voxel2point) > trunc) continue;
 
-        float value = clamp(voxel2point / trunc, -1.0, 1.0);
+        float sdf = clamp(voxel2point / trunc, -1.0, 1.0);
 
         for (int di = 0; di < dirCount; di++) {
             float w = viewFactor * rel[di];
@@ -140,7 +140,7 @@ void main() {
 
             uint slot = findOrInsert(key);
             if (slot == ~0u) continue;
-            atomicAdd(g_hash[slot].sumDW, int(value * w * TSDF_SCALE));
+            atomicAdd(g_hash[slot].sumDW, int(sdf * w * TSDF_SCALE));
             atomicAdd(g_hash[slot].sumW,  uint(w * TSDF_SCALE));
         }
     }

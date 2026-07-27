@@ -1,21 +1,17 @@
 #version 460
 layout(local_size_x = 64) in;
 
-// CompactDirectionalTSDF extraction: one thread per hash slot. Emits a surface point per
-// occupied (voxel, direction) entry that has a per-direction zero crossing, with a
-// central-difference gradient normal. Sign crossings are compared ONLY within the same
-// direction layer (DirectionalTSDF invariant), but neighbours are found by HASH PROBE
-// instead of DirectionalTSDF's group/pool addressing.
-//
-// Ported from: directional_tsdf_extract.comp (crossing + gradient + candidate emission),
-//              voxel_tsdf_mc.comp (getTSDF probe -> fetchValue).
-
 #define TSDF_SCALE  10000
 #define MIN_WEIGHT  (TSDF_SCALE / 2)
 
 #include "voxel_common.glsl"   // EMPTY_KEY, MAX_PROBE, wangHash
 
-struct DirEntry { uint key; int sumDW; uint sumW; uint pad; };
+struct DirEntry {
+    uint key;
+    int  weightedDistanceSum;  // sum of (signed distance * weight)
+    uint weightSum;            // sum of weights
+    uint pad;
+};
 
 layout(std430, set = 0, binding = 0) readonly buffer HashTable  { DirEntry g_hash[]; };
 layout(std430, set = 0, binding = 1)          buffer Candidates { float g_cand[]; };
@@ -30,104 +26,137 @@ layout(push_constant) uniform PC {
     int   g_originZ;
 };
 
-// ORIGIN-RELATIVE pack/unpack -- see compact_directional_integrate.comp's packDirKey doc.
-// Returns false (caller must skip/treat as absent) when the voxel falls outside the movable
-// 512^3-voxel window.
-bool packDirKey(ivec3 c, uint dir, out uint key) {
-    ivec3 lv = c - ivec3(g_originX, g_originY, g_originZ);
-    if (lv.x < 0 || lv.x > 511 || lv.y < 0 || lv.y > 511 || lv.z < 0 || lv.z > 511) {
+// Pack a world voxel coordinate + direction layer into a 32-bit hash key.
+// Returns false when the voxel lies outside the 512^3 movable window.
+bool packDirKey(ivec3 voxel, uint direction, out uint key) {
+    ivec3 localVoxel = voxel - ivec3(g_originX, g_originY, g_originZ);
+    if (localVoxel.x < 0 || localVoxel.x > 511 ||
+        localVoxel.y < 0 || localVoxel.y > 511 ||
+        localVoxel.z < 0 || localVoxel.z > 511) {
         key = 0u;
         return false;
     }
-    key = ((uint(lv.x) & 0x1FFu) << 21u)
-        | ((uint(lv.y) & 0x1FFu) << 12u)
-        | ((uint(lv.z) & 0x1FFu) << 3u)
-        |  (dir & 0x7u);
+    key = ((uint(localVoxel.x) & 0x1FFu) << 21u)
+        | ((uint(localVoxel.y) & 0x1FFu) << 12u)
+        | ((uint(localVoxel.z) & 0x1FFu) <<  3u)
+        |  (direction & 0x7u);
     return true;
 }
 
-void unpackDirKey(uint key, out ivec3 c, out uint dir) {
-    ivec3 lv;
-    lv.x = int((key >> 21u) & 0x1FFu);
-    lv.y = int((key >> 12u) & 0x1FFu);
-    lv.z = int((key >>  3u) & 0x1FFu);
-    dir = key & 0x7u;
-    c = lv + ivec3(g_originX, g_originY, g_originZ);
+// Reverse of packDirKey: recover the world voxel coordinate and direction layer.
+void unpackDirKey(uint key, out ivec3 voxel, out uint direction) {
+    ivec3 localVoxel;
+    localVoxel.x = int((key >> 21u) & 0x1FFu);
+    localVoxel.y = int((key >> 12u) & 0x1FFu);
+    localVoxel.z = int((key >>  3u) & 0x1FFu);
+    direction = key & 0x7u;
+    voxel = localVoxel + ivec3(g_originX, g_originY, g_originZ);
 }
 
-// Hash probe for (nv, dir). Ported from voxel_tsdf_mc.comp's getTSDF: from wangHash(key),
-// MAX_PROBE linear probes; false on EMPTY_KEY hit, weight below MIN_WEIGHT, or nv outside the
+// Hash probe for (voxel, direction). Ported from voxel_tsdf_mc.comp's getTSDF: from wangHash(key),
+// MAX_PROBE linear probes; false on EMPTY_KEY hit, weight below MIN_WEIGHT, or voxel outside the
 // movable window.
-bool fetchValue(ivec3 nv, uint dir, out float val) {
-    val = 0.0;
+bool fetchDirectionalValue(ivec3 voxel, uint direction, out float value) {
+    value = 0.0;
     uint key;
-    if (!packDirKey(nv, dir, key)) return false;
+    if (!packDirKey(voxel, direction, key)) return false;
     uint slot = wangHash(key) % g_hashCapacity;
-    for (uint p = 0u; p < MAX_PROBE; p++) {
-        DirEntry e = g_hash[(slot + p) % g_hashCapacity];
-        if (e.key == EMPTY_KEY) return false;
-        if (e.key == key) {
-            if (e.sumW < uint(MIN_WEIGHT)) return false;
-            val = float(e.sumDW) / float(e.sumW);
+    for (uint probe = 0u; probe < MAX_PROBE; probe++) {
+        DirEntry entry = g_hash[(slot + probe) % g_hashCapacity];
+        if (entry.key == EMPTY_KEY) return false;
+        if (entry.key == key) {
+            if (entry.weightSum < uint(MIN_WEIGHT)) return false;
+            value = float(entry.weightedDistanceSum) / float(entry.weightSum);
             return true;
         }
     }
     return false;
 }
 
-void main() {
-    uint idx = gl_GlobalInvocationID.x;
-    if (idx >= g_hashCapacity) return;
-
-    DirEntry e = g_hash[idx];
-    if (e.key == EMPTY_KEY) return;
-    if (e.sumW < uint(MIN_WEIGHT)) return;
-
-    ivec3 v; uint dir;
-    unpackDirKey(e.key, v, dir);
-    float c = float(e.sumDW) / float(e.sumW);
-
-    // Zero crossings against the three +axis neighbours (same direction layer only).
-    vec3 posSum = vec3(0.0);
-    int crossings = 0;
+int estimateCrossingPosition(ivec3 voxel, uint direction, float centerValue, out vec3 outPosition) {
+    vec3 positionSum = vec3(0.0);
+    int  crossingCount = 0;
     for (int axis = 0; axis < 3; axis++) {
-        ivec3 nv = v; nv[axis] += 1;
-        float nVal;
-        if (!fetchValue(nv, dir, nVal)) continue;
-        if ((c > 0.0) == (nVal > 0.0)) continue;
-        if (c == nVal) continue;
-        float t = c / (c - nVal);
-        vec3 crossPos = (vec3(v) + vec3(0.5)) * g_voxelSize;
-        crossPos[axis] += t * g_voxelSize;
-        posSum += crossPos;
-        crossings++;
-    }
-    if (crossings == 0) return;
+        ivec3 neighborVoxel = voxel;
+        neighborVoxel[axis] += 1;
 
-    // Normal: central-difference gradient in the same layer (one-sided fallback).
-    vec3 grad = vec3(0.0);
+        float neighborValue;
+        if (!fetchDirectionalValue(neighborVoxel, direction, neighborValue)) continue;
+        if ((centerValue > 0.0) == (neighborValue > 0.0)) continue;  // same sign: no crossing
+        if (centerValue == neighborValue) continue;                  // guard divide-by-zero
+
+        float interpolant = centerValue / (centerValue - neighborValue);
+        vec3  crossingPosition = (vec3(voxel) + vec3(0.5)) * g_voxelSize;
+        crossingPosition[axis] += interpolant * g_voxelSize;
+
+        positionSum += crossingPosition;
+        crossingCount++;
+    }
+    outPosition = (crossingCount > 0) ? positionSum / float(crossingCount) : vec3(0.0);
+    return crossingCount;
+}
+
+// Estimate the surface normal from the central-difference gradient of the TSDF in the
+// same direction layer, falling back to a one-sided difference when a neighbour is missing.
+// Returns false when the gradient is too small to yield a stable direction.
+bool estimateNormal(ivec3 voxel, uint direction, float centerValue, out vec3 outNormal) {
+    vec3 gradient = vec3(0.0);
     for (int axis = 0; axis < 3; axis++) {
-        ivec3 vp = v; vp[axis] += 1;
-        ivec3 vm = v; vm[axis] -= 1;
-        float fp, fm;
-        bool hp = fetchValue(vp, dir, fp);
-        bool hm = fetchValue(vm, dir, fm);
-        if (hp && hm) grad[axis] = (fp - fm) * 0.5;
-        else if (hp)  grad[axis] = fp - c;
-        else if (hm)  grad[axis] = c - fm;
+        ivec3 forwardVoxel  = voxel; forwardVoxel[axis]  += 1;
+        ivec3 backwardVoxel = voxel; backwardVoxel[axis] -= 1;
+
+        float forwardValue, backwardValue;
+        bool hasForward  = fetchDirectionalValue(forwardVoxel,  direction, forwardValue);
+        bool hasBackward = fetchDirectionalValue(backwardVoxel, direction, backwardValue);
+
+        if (hasForward && hasBackward) gradient[axis] = (forwardValue - backwardValue) * 0.5;
+        else if (hasForward)           gradient[axis] = forwardValue - centerValue;
+        else if (hasBackward)          gradient[axis] = centerValue - backwardValue;
     }
-    float len = length(grad);
-    if (len < 1e-6) return;
+    float gradientLength = length(gradient);
+    if (gradientLength < 1e-6) {
+        outNormal = vec3(0.0);
+        return false;
+    }
+    outNormal = gradient / gradientLength;
+    return true;
+}
 
-    uint outIdx = atomicAdd(g_count, 1u);
-    if (outIdx >= g_maxCandidates) return;
+// Append one oriented surface point to the candidate buffer. The counter is always
+// advanced (so g_count reflects total attempts); returns false when the buffer is full.
+bool writeCandidate(vec3 position, vec3 normal) {
+    uint outputIndex = atomicAdd(g_count, 1u);
+    if (outputIndex >= g_maxCandidates) return false;
 
-    vec3 pos = posSum / float(crossings);
-    vec3 n   = grad / len;
-    g_cand[outIdx * 6u + 0u] = pos.x;
-    g_cand[outIdx * 6u + 1u] = pos.y;
-    g_cand[outIdx * 6u + 2u] = pos.z;
-    g_cand[outIdx * 6u + 3u] = n.x;
-    g_cand[outIdx * 6u + 4u] = n.y;
-    g_cand[outIdx * 6u + 5u] = n.z;
+    uint base = outputIndex * 6u;
+    g_cand[base + 0u] = position.x;
+    g_cand[base + 1u] = position.y;
+    g_cand[base + 2u] = position.z;
+    g_cand[base + 3u] = normal.x;
+    g_cand[base + 4u] = normal.y;
+    g_cand[base + 5u] = normal.z;
+    return true;
+}
+
+void main() 
+{
+    uint entryIndex = gl_GlobalInvocationID.x;
+    if (entryIndex >= g_hashCapacity) return;
+
+    DirEntry entry = g_hash[entryIndex];
+    if (entry.key == EMPTY_KEY) return;
+    if (entry.weightSum < uint(MIN_WEIGHT)) return;
+
+    ivec3 voxel;
+    uint  direction;
+    unpackDirKey(entry.key, voxel, direction);
+    float centerValue = float(entry.weightedDistanceSum) / float(entry.weightSum);
+
+    vec3 surfacePosition;
+    if (estimateCrossingPosition(voxel, direction, centerValue, surfacePosition) == 0) return;
+
+    vec3 surfaceNormal;
+    if (!estimateNormal(voxel, direction, centerValue, surfaceNormal)) return;
+
+    writeCandidate(surfacePosition, surfaceNormal);
 }

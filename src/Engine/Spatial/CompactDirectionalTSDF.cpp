@@ -138,11 +138,10 @@ namespace Engine::Spatial {
         std::vector<DirEntry> entries(m_hashCapacity);
         m_hashBuffer->Download(entries.data(), m_hashCapacity * sizeof(DirEntry));
 
-        // Same occupancy gate as compact_directional_extract.comp's MIN_WEIGHT (TSDF_SCALE/2).
         const uint32_t kMinWeight = static_cast<uint32_t>(kTsdfScale) / 2u;
 
         out.reserve(entries.size());
-        for (const DirEntry &e : entries) {
+        for (const DirEntry &e: entries) {
             if (e.key == EMPTY_KEY) continue;
             if (e.sumW < kMinWeight) continue;
 
@@ -159,7 +158,8 @@ namespace Engine::Spatial {
 
             CompactEntry ce;
             ce.center = (Eigen::Vector3f(float(vx), float(vy), float(vz)) +
-                         Eigen::Vector3f::Constant(0.5f)) * m_voxelSize;
+                         Eigen::Vector3f::Constant(0.5f)) *
+                        m_voxelSize;
             ce.direction = dir;
             ce.tsdf = float(e.sumDW) / float(e.sumW);
             ce.weight = float(e.sumW) / float(kTsdfScale);
@@ -220,9 +220,9 @@ namespace Engine::Spatial {
             int count = 0;
         };
 
-        const float posThresh = 0.6f * voxelSize;    // positionMergeThreshold
-        const float cosThresh = 0.866f;              // normalMergeThreshold = 30 deg
-        const float strongSplitCos = 0.5f;           // 60 deg -- never merge beyond this (corner)
+        const float posThresh = 0.6f * voxelSize; // positionMergeThreshold
+        const float cosThresh = 0.866f;           // normalMergeThreshold = 30 deg
+        const float strongSplitCos = 0.5f;        // 60 deg -- never merge beyond this (corner)
 
         std::unordered_map<uint64_t, std::vector<Cluster>> buckets;
         const size_t nCand = std::min(points.size(), normals.size());
@@ -235,7 +235,7 @@ namespace Engine::Spatial {
             auto &clusters = buckets[VoxelKey(vx, vy, vz)];
 
             bool merged = false;
-            for (auto &cl : clusters) {
+            for (auto &cl: clusters) {
                 const Eigen::Vector3f mean = cl.posSum / float(cl.count);
                 const Eigen::Vector3f meanN = cl.nSum.normalized();
                 if (nrm.dot(meanN) < strongSplitCos) continue; // strong split: cannot merge
@@ -252,8 +252,8 @@ namespace Engine::Spatial {
         }
 
         OrientedPointCloud out;
-        for (auto &bucket : buckets)
-            for (auto &cl : bucket.second) {
+        for (auto &bucket: buckets)
+            for (auto &cl: bucket.second) {
                 out.points.push_back(cl.posSum / float(cl.count));
                 out.normals.push_back(cl.nSum.normalized());
             }
