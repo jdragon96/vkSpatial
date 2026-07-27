@@ -48,6 +48,9 @@ namespace Engine::Spatial {
         // Applied to each tile's CompactDirectionalTSDF on creation.
         void SetIntegrationQuality(const IntegrationQuality &q) { m_quality = q; }
 
+        // Integrate SDF form, forwarded to every tile (default true = point-to-plane).
+        void SetPointToPlane(bool on) { m_pointToPlane = on; }
+
         // Route each point to its owning tile plus any adjacent tile whose ghost band it falls in,
         // then integrate the per-tile sublists (lazily creating+building touched tiles).
         void Integrate(const std::vector<Eigen::Vector3f> &points,
@@ -98,6 +101,7 @@ namespace Engine::Spatial {
         int m_ghost = 0;                                    // G (set in Build)
         Eigen::Vector3i m_origin = Eigen::Vector3i::Zero(); // O
         IntegrationQuality m_quality;
+        bool m_pointToPlane = true; // forwarded to each tile (matches CompactDirectionalTSDF default)
 
         std::unordered_map<TileKey, std::unique_ptr<CompactDirectionalTSDF>, TileKeyHash> m_tiles;
     };

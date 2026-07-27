@@ -57,6 +57,7 @@ namespace Engine::Spatial {
         tsdf->Build(*m_ctx, m_voxelSize, m_truncation, m_hashCapacityPerTile, m_maxPointsPerFrame,
                     windowMinCorner);
         tsdf->SetIntegrationQuality(m_quality);
+        tsdf->SetPointToPlane(m_pointToPlane);
         CompactDirectionalTSDF *ptr = tsdf.get();
         m_tiles.emplace(key, std::move(tsdf));
         return ptr;

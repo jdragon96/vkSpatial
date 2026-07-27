@@ -99,6 +99,7 @@
 
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/AdaptiveVoxelGrid.h"
+#include "Engine/Spatial/AdvancedTSDF.h"
 #include "Engine/Spatial/CompactDirectionalTSDF.h"
 #include "Engine/Spatial/DirectionalTSDF.h"
 #include "Engine/Spatial/DirectionalTSDFTypes.h"
@@ -719,6 +720,34 @@ namespace {
         return {row, mergedRow};
     }
 
+    // AdvancedTSDF — the canonical best-of-all class (same compact + stored-gradient +
+    // point-to-plane recipe as Compact-Directional, over the user-style advanced_tsdf_*
+    // shaders, with the centred default window). Confirms parity + honours --p2p.
+    Row RunAdvanced(Engine::Core::Context &ctx, Shape shape, float voxel, uint32_t maxDir,
+                    const std::vector<fixtures::View> &views) {
+        Engine::Spatial::AdvancedTSDF adv;
+        adv.Build(ctx, voxel, kTruncation); // centred default window (voxelSize-independent)
+        adv.SetPointToPlane(g_p2p);
+        adv.SetIntegrationQuality({maxDir, 4, true});
+
+        const auto t0 = std::chrono::steady_clock::now();
+        for (const auto &v : views) adv.Integrate(v.points, v.normals, v.camPos);
+        const auto tm = std::chrono::steady_clock::now();
+        const Engine::Spatial::OrientedPointCloud cloud = adv.ExtractPointCloud();
+        const auto t1 = std::chrono::steady_clock::now();
+
+        Row row;
+        row.shape = ShapeName(shape);
+        row.method = "Advanced";
+        row.integrateMs = std::chrono::duration<double, std::milli>(tm - t0).count();
+        row.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        row.nPoints = cloud.points.size();
+        row.memKB = double(adv.FilledCount()) * double(sizeof(Engine::Spatial::AdvDirEntry)) /
+                    1024.0;
+        ScoreAgainstGT(shape, voxel, cloud.points, row);
+        return row;
+    }
+
     // ---- Compact-Dir(var-adaptive): the two orthogonal memory axes COMBINED --------------
     //
     // Axis 1 (Compact-Directional): DirectionalTSDF's per-direction accuracy stored one
@@ -1209,6 +1238,7 @@ int main(int argc, char **argv) {
         rows.push_back(compactMergedRow);
         rows.push_back(compactAdaptive.row);
         rows.push_back(hybridRow);
+        rows.push_back(RunAdvanced(ctx, shape, voxel, maxDir, views));
         rows.push_back(RunAdaptiveVoxelGrid(ctx, shape, voxel, views, 0.50f));
         rows.push_back(RunAdaptiveVoxelGrid(ctx, shape, voxel, views, 0.90f));
         sigmaRows.insert(sigmaRows.end(), sweep.begin(), sweep.end());
