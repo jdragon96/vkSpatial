@@ -155,3 +155,27 @@ TEST(CompactDirectional, DirEntryIs24Bytes) {
     EXPECT_EQ(offsetof(DirEntry, sumNx), 12u);
     EXPECT_EQ(offsetof(DirEntry, sumNz), 20u);
 }
+
+TEST(CompactDirectional, IntegrateAccumulatesStoredNormal) {
+    Engine::Core::Context ctx;
+    Engine::Spatial::CompactDirectionalTSDF tsdf;
+    tsdf.Build(ctx, 0.05f, 0.15f);           // voxel, truncation
+    tsdf.SetIntegrationQuality({1, 4, true}); // single dominant dir, view weight on
+
+    // A planar patch at z=0 with +Z normals, camera on +Z looking down.
+    std::vector<Eigen::Vector3f> pts, nrm;
+    for (int i = -6; i <= 6; ++i)
+        for (int j = -6; j <= 6; ++j) { pts.emplace_back(i*0.02f, j*0.02f, 0.0f); nrm.emplace_back(0,0,1); }
+    tsdf.Integrate(pts, nrm, Eigen::Vector3f(0, 0, 1));
+
+    auto entries = tsdf.DownloadEntries();
+    ASSERT_GT(entries.size(), 0u);
+    int checked = 0;
+    for (const auto& e : entries) {
+        if (e.weight <= 0.0f) continue;
+        EXPECT_NEAR(e.normal.z(), 1.0f, 1e-2f);
+        EXPECT_NEAR(e.normal.x(), 0.0f, 1e-2f);
+        ++checked;
+    }
+    EXPECT_GT(checked, 0);
+}

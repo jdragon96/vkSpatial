@@ -40,6 +40,7 @@ namespace Engine::Spatial {
         uint32_t direction;
         float tsdf;
         float weight;
+        Eigen::Vector3f normal;   // v1: normalize(sumN); zero if degenerate
     };
 
     // DirectionalTSDF accuracy at ~SimpleTSDF memory: a per-voxel flat hash keyed by
@@ -78,6 +79,10 @@ namespace Engine::Spatial {
         Eigen::Vector3i OriginVoxel() const { return m_originVoxel; }
 
         void SetIntegrationQuality(const IntegrationQuality &q) { m_quality = q; }
+
+        // v1: integrate SDF form. true = point-to-plane (removes grazing bias, default),
+        // false = projective ray distance. Flows into integrate PC g_pointToPlane.
+        void SetPointToPlane(bool on) { m_pointToPlane = on; }
 
         // Integrate a normal-carrying point cloud observed from cameraPos. Normals drive both
         // the dominant-direction selection (topK) and the view-angle weight. points and normals
@@ -127,6 +132,7 @@ namespace Engine::Spatial {
         uint32_t m_maxPoints = 0;
         Eigen::Vector3i m_originVoxel = Eigen::Vector3i::Constant(-256); // see Build's windowMinCorner
         IntegrationQuality m_quality; // defaults: single dominant direction, no view weight
+        bool m_pointToPlane = true; // v1 default: point-to-plane
 
         std::unique_ptr<Engine::Core::Buffer> m_hashBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_pointBuffer;

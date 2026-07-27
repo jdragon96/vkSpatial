@@ -19,6 +19,7 @@ layout(push_constant) uniform PC {
     int   g_originX;
     int   g_originY;
     int   g_originZ;
+    uint  g_pointToPlane;   // v1: 1 = point-to-plane, 0 = projective
 };
 
 struct DirEntry { uint key; int sumDW; uint sumW; int sumNx; int sumNy; int sumNz; };
@@ -126,7 +127,9 @@ void main() {
         ivec3 v         = ivec3(floor(samplePos / g_voxelSize));
         vec3  vCenter   = (vec3(v) + vec3(0.5)) * g_voxelSize;
 
-        float voxel2point = depth - dot(vCenter - cam, rayDir);
+        float voxel2point = (g_pointToPlane != 0u)
+                                ? dot(vCenter - p, normalize(nrm))   // point-to-plane
+                                : depth - dot(vCenter - cam, rayDir); // projective
         if (abs(voxel2point) > trunc) continue;
 
         float sdf = clamp(voxel2point / trunc, -1.0, 1.0);
@@ -142,6 +145,9 @@ void main() {
             if (slot == ~0u) continue;
             atomicAdd(g_hash[slot].sumDW, int(sdf * w * TSDF_SCALE));
             atomicAdd(g_hash[slot].sumW,  uint(w * TSDF_SCALE));
+            atomicAdd(g_hash[slot].sumNx, int(nrm.x * w * TSDF_SCALE));
+            atomicAdd(g_hash[slot].sumNy, int(nrm.y * w * TSDF_SCALE));
+            atomicAdd(g_hash[slot].sumNz, int(nrm.z * w * TSDF_SCALE));
         }
     }
 }

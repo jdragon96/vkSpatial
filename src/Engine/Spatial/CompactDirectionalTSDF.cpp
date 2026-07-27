@@ -32,6 +32,7 @@ namespace Engine::Spatial {
             int32_t originX;
             int32_t originY;
             int32_t originZ;
+            uint32_t pointToPlane;
         };
 
         // Must match the push_constant block in compact_directional_extract.comp.
@@ -121,7 +122,8 @@ namespace Engine::Spatial {
                 cameraPos.x(), cameraPos.y(), cameraPos.z(),
                 m_quality.maxDirections, m_quality.dirExponent,
                 m_quality.viewAngleWeight ? 1u : 0u,
-                m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z()};
+                m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z(),
+                uint32_t(m_pointToPlane ? 1u : 0u)};
         m_kernel->Args(pc).DispatchElements(N);
     }
 
@@ -163,6 +165,9 @@ namespace Engine::Spatial {
             ce.direction = dir;
             ce.tsdf = float(e.sumDW) / float(e.sumW);
             ce.weight = float(e.sumW) / float(kTsdfScale);
+            Eigen::Vector3f sumN(float(e.sumNx), float(e.sumNy), float(e.sumNz));
+            float nlen = sumN.norm();
+            ce.normal = nlen > 1e-6f ? Eigen::Vector3f(sumN / nlen) : Eigen::Vector3f::Zero();
             out.push_back(ce);
         }
         return out;
