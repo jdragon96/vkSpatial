@@ -1,6 +1,6 @@
 # Compact Best-TSDF v1 — 설계 (measure-first 통합)
 
-> **한 줄 요약:** 측정으로 확정된 "최고의 TSDF" 레시피를 **CompactDirectionalTSDF(flat-hash, block 대비 ~28× 저메모리, RMSE 중립)** 위에 통합한다. v1 = **compact + stored-gradient(mode-3) + point-to-plane**. 이 셋만으로 *block DirectionalTSDF급 정확도를 ~28×↓ 메모리로* 얻는다. variance-adaptive·at-rest 양자화·full streaming은 후속.
+> **한 줄 요약:** 측정으로 확정된 "최고의 TSDF" 레시피를 **CompactDirectionalTSDF(flat-hash, block 대비 ~11–19×↓ 저메모리[실측 §10; 초기 ~28× 추정은 gradient 이전 16B 엔트리 기준], RMSE 중립)** 위에 통합한다. v1 = **compact + stored-gradient(mode-3) + point-to-plane**. 이 셋만으로 *block DirectionalTSDF급 정확도를 ~11–19×↓ 메모리로(실측 §10)* 얻는다. variance-adaptive·at-rest 양자화·full streaming은 후속.
 
 > 상태: 설계(브레인스토밍 승인 — (C) compact-v1). 다음: writing-plans.
 > 수식은 GitHub/마크다운 뷰어에서 렌더됩니다.
@@ -9,7 +9,7 @@
 
 ## 0. 근거 (이 세션의 측정)
 tsdf_benchmark(cube/cylinder, analytic GT)로 측정된 사실:
-- **저장:** block DirectionalTSDF 6144 KB(cube) vs **Compact-Directional 219 KB = ~28×↓**, RMSE 중립(0.0223 vs 0.0223). block-granularity 낭비 56×.
+- **저장:** block DirectionalTSDF 6144 KB(cube) vs **Compact-Directional 219 KB = ~28×↓**(16B pre-gradient entry 기준; v1의 24B stored-gradient entry는 ~11–19×↓ 실측, §10 참고), RMSE 중립(0.0223 vs 0.0223). block-granularity 낭비 56×.
 - **정확도(A1 point-to-plane, 이번 세션 측정):** 투영→point-to-plane 전환 시 **flat 거의 완벽**(cube 0.011→0.00001), **edge −15~32%**, **mean −45~62%**. 비용 0(integrate 시간 동일).
 - **stored-gradient(mode-3):** block 경로에서 이미 머지·검증(denoised 법선 + 서브복셀 위치; cube 법선각 1.88°→0.00°).
 - **결론:** compact(메모리) + stored-gradient(법선) + point-to-plane(flat/edge) = 최고 조합. 단 stored-gradient는 현재 **block 전용** → compact로 포팅이 v1의 핵심.
@@ -17,7 +17,7 @@ tsdf_benchmark(cube/cylinder, analytic GT)로 측정된 사실:
 ## 1. 목표 · 범위
 
 ### 1.1 목표
-- CompactDirectionalTSDF를 **block DirectionalTSDF급 정확도**로 끌어올리되 **~28×↓ 메모리** 유지.
+- CompactDirectionalTSDF를 **block DirectionalTSDF급 정확도**로 끌어올리되 **~11–19×↓ 메모리**(실측 §10; 초기 목표는 16B 기준 ~28×↓였음) 유지.
 - extraction **RMSE 최소화**: point-to-plane(flat/edge) + stored-gradient mode-3(법선/서브복셀).
 
 ### 1.2 범위 (v1 Core)
@@ -129,7 +129,7 @@ else            /* fallback: central-difference gradient (estimateNormal) */;
 - (Q3) 추출 위치도 저장 gradient로 서브복셀 정제(analytic projection) 재시도할지 — block에서 mode-2가 위치 악화였으므로 기본 제외.
 
 ## 9. 참조
-- 이번 세션 측정: tsdf_benchmark A1 결과(flat/edge/mean), Compact-Directional 메모리(28×).
+- 이번 세션 측정: tsdf_benchmark A1 결과(flat/edge/mean), Compact-Directional 메모리(측정 §10: ~11–19×; 최초 28×는 16B pre-gradient 기준).
 - 내부: `2026-07-26-highprecision-submap-tsdf-design.md`(후속 streaming/양자화), `2026-07-24-directional-tsdf-stored-gradient-design.md`(mode-3), `COMPACT_VS_DIRECTIONAL_TSDF.md`(28× 근거), 구현 `src/Engine/Spatial/CompactDirectionalTSDF.*`.
 
 ---
