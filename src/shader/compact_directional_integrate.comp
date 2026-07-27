@@ -21,7 +21,7 @@ layout(push_constant) uniform PC {
     int   g_originZ;
 };
 
-struct DirEntry { uint key; int sumDW; uint sumW; uint pad; };
+struct DirEntry { uint key; int sumDW; uint sumW; int sumNx; int sumNy; int sumNz; };
 
 layout(std430, set = 0, binding = 0) buffer HashTable { DirEntry g_hash[]; };
 layout(std430, set = 0, binding = 1) readonly buffer Points  { float g_points[];  };

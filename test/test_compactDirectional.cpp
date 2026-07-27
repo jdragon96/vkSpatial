@@ -147,3 +147,11 @@ TEST(CompactDirectionalTSDF, OriginRelativeWindowWorks) {
                "from the origin; got "
             << oldCloud.points.size() << " points -- movable-window property not proven";
 }
+
+TEST(CompactDirectional, DirEntryIs24Bytes) {
+    using Engine::Spatial::DirEntry;
+    static_assert(sizeof(DirEntry) == 24, "DirEntry must be 24B (key+sumDW+sumW+sumN)");
+    EXPECT_EQ(offsetof(DirEntry, sumW), 8u);
+    EXPECT_EQ(offsetof(DirEntry, sumNx), 12u);
+    EXPECT_EQ(offsetof(DirEntry, sumNz), 20u);
+}

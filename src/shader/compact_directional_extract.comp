@@ -10,7 +10,9 @@ struct DirEntry {
     uint key;
     int  weightedDistanceSum;  // sum of (signed distance * weight)
     uint weightSum;            // sum of weights
-    uint pad;
+    int  sumNx;                // stored gradient (Σ n·w·SCALE)
+    int  sumNy;
+    int  sumNz;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer HashTable  { DirEntry g_hash[]; };

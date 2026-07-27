@@ -7,6 +7,7 @@
 #include "Engine/Spatial/OrientedPointCloud.h"
 
 #include <Eigen/Core>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -14,17 +15,21 @@
 namespace Engine::Spatial {
 
     // Per-(voxel,direction) hash entry -- the compact-directional analogue of SimpleTSDF's
-    // TSDFEntry. 16 bytes (same per-entry cost as SimpleTSDF), but keyed on (voxel, direction)
-    // so it stores DirectionalTSDF's 6 direction layers WITHOUT the 8^3=512-voxel blocks:
-    // only occupied (voxel,dir) pairs consume storage. `pad` is unused (kept for 16-byte
-    // alignment / SimpleTSDF parity). Layout must match DirEntry in the compact_directional_*
-    // shaders.
+    // TSDFEntry. 24 bytes, keyed on (voxel, direction) so it stores DirectionalTSDF's 6
+    // direction layers WITHOUT the 8^3=512-voxel blocks: only occupied (voxel,dir) pairs
+    // consume storage. sumNx/sumNy/sumNz accumulate a stored gradient (surface normal) for
+    // point-to-plane extraction (was a 4-byte `pad` field prior to Compact Best-TSDF v1).
+    // Layout must match DirEntry in the compact_directional_* shaders.
     struct DirEntry {
         uint32_t key;   // packDirKey(voxel, dir); 0xFFFFFFFF = empty
         int32_t sumDW;  // sum(value_i * w_i) * 10000, value = clamp(sdf/trunc, -1, 1)
         uint32_t sumW;  // sum(w_i)          * 10000
-        uint32_t pad;   // unused
-    };
+        int32_t sumNx;  // sum(n_i * w_i)    * 10000  (stored gradient; was pad)
+        int32_t sumNy;
+        int32_t sumNz;
+    }; // 24 bytes. Layout must match DirEntry in compact_directional_{integrate,extract}.comp.
+    static_assert(sizeof(DirEntry) == 24, "DirEntry must be 24 bytes");
+    static_assert(offsetof(DirEntry, sumNx) == 12);
 
     // Per-(voxel,direction) readback for variance-adaptive-resolution experiments (mirrors
     // SimpleTSDF::VoxelStat / DownloadVoxels): world-space voxel centre, the direction layer

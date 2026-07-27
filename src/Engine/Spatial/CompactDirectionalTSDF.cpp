@@ -98,7 +98,7 @@ namespace Engine::Spatial {
     }
 
     void CompactDirectionalTSDF::Reset() {
-        std::vector<DirEntry> empty(m_hashCapacity, {EMPTY_KEY, 0, 0u, 0u});
+        std::vector<DirEntry> empty(m_hashCapacity, {EMPTY_KEY, 0, 0u, 0, 0, 0});
         m_hashBuffer->Upload(empty.data(), m_hashCapacity * sizeof(DirEntry));
         const uint32_t zero = 0;
         m_statBuffer->Upload(&zero, sizeof(uint32_t));
