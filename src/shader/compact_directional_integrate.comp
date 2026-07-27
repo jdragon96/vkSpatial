@@ -122,14 +122,17 @@ void main() {
     float trunc = g_truncation;
     int   steps = int(ceil(trunc / g_voxelSize)) + 1;
 
+    // Point-to-plane needs a unit normal; guard degenerate normals (fall back to projective).
+    bool usePlane = (g_pointToPlane != 0u) && (dot(nrm, nrm) > 1e-12);
+    vec3 nrmN     = usePlane ? normalize(nrm) : vec3(0.0);
+
     for (int t = -steps; t <= steps; t++) {
         vec3  samplePos = p + rayDir * (float(t) * g_voxelSize);
         ivec3 v         = ivec3(floor(samplePos / g_voxelSize));
         vec3  vCenter   = (vec3(v) + vec3(0.5)) * g_voxelSize;
 
-        float voxel2point = (g_pointToPlane != 0u)
-                                ? dot(vCenter - p, normalize(nrm))   // point-to-plane
-                                : depth - dot(vCenter - cam, rayDir); // projective
+        float voxel2point = usePlane ? dot(vCenter - p, nrmN)
+                                     : depth - dot(vCenter - cam, rayDir);
         if (abs(voxel2point) > trunc) continue;
 
         float sdf = clamp(voxel2point / trunc, -1.0, 1.0);
