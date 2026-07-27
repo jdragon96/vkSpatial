@@ -124,6 +124,11 @@ namespace {
     constexpr float kTruncation = 0.3f;
     constexpr int kNumRegions = 3; // Flat, Curved, Edge
 
+    // Compact Best-TSDF v1 (2026-07-27): point-to-plane toggle for the Compact-Directional row
+    // (CompactDirectionalTSDF::SetPointToPlane), gated behind --p2p so the default run still
+    // reports the legacy projective-distance behaviour.
+    bool g_p2p = false;
+
     const char *ShapeName(Shape s) { return s == Shape::Cube ? "cube" : "cylinder"; }
 
     // Running mean + RMSE over per-point ground-truth errors.
@@ -673,6 +678,7 @@ namespace {
                                                    const std::vector<fixtures::View> &views) {
         Engine::Spatial::CompactDirectionalTSDF cd;
         cd.Build(ctx, voxel, kTruncation);
+        cd.SetPointToPlane(g_p2p);
         cd.SetIntegrationQuality({maxDir, 4, true});
 
         const auto t0 = std::chrono::steady_clock::now();
@@ -687,7 +693,8 @@ namespace {
         row.integrateMs = std::chrono::duration<double, std::milli>(tm - t0).count();
         row.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         row.nPoints = cloud.points.size();
-        row.memKB = double(cd.FilledCount()) * 16.0 / 1024.0; // occupied entries * sizeof(DirEntry)
+        row.memKB = double(cd.FilledCount()) * double(sizeof(Engine::Spatial::DirEntry)) /
+                    1024.0; // occupied entries * sizeof(DirEntry) (24B as of Compact Best-TSDF v1)
         ScoreAgainstGT(shape, voxel, cloud.points, row);
 
         // Merged extraction: SAME build/integrate (cd's hash table above is untouched by
@@ -1101,6 +1108,8 @@ int main(int argc, char **argv) {
             shapeArg = argv[++i];
         } else if (a == "--maxdir" && i + 1 < argc) {
             maxDir = static_cast<uint32_t>(std::stoul(argv[++i]));
+        } else if (a == "--p2p") {
+            g_p2p = true;
         }
     }
 
