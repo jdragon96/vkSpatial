@@ -157,8 +157,15 @@ void main()
     vec3 surfacePosition;
     if (estimateCrossingPosition(voxel, direction, centerValue, surfacePosition) == 0) return;
 
+    // mode-3 hybrid: stored-gradient normal (denoised), central-difference fallback.
+    vec3 sumN = vec3(float(entry.sumNx), float(entry.sumNy), float(entry.sumNz));
+    float sumNlen = length(sumN);
     vec3 surfaceNormal;
-    if (!estimateNormal(voxel, direction, centerValue, surfaceNormal)) return;
+    if (sumNlen > 1e-6) {
+        surfaceNormal = sumN / sumNlen;
+    } else if (!estimateNormal(voxel, direction, centerValue, surfaceNormal)) {
+        return; // degenerate: no stored gradient and no finite-difference gradient
+    }
 
     writeCandidate(surfacePosition, surfaceNormal);
 }

@@ -179,3 +179,27 @@ TEST(CompactDirectional, IntegrateAccumulatesStoredNormal) {
     }
     EXPECT_GT(checked, 0);
 }
+
+TEST(CompactDirectional, ExtractUsesStoredGradientNormal) {
+    Engine::Core::Context ctx;
+    Engine::Spatial::CompactDirectionalTSDF tsdf;
+    // Explicit symmetric window (voxel 0.05 -> 512*0.05=25.6m span, [-12.8,+12.8]).
+    // The default windowMinCorner is calibrated for voxelSize=0.1 (span [-25.6,+25.6]);
+    // at voxelSize=0.05 the same corner only reaches world [-25.6, 0.0), which would
+    // clip this test's origin-straddling plane and make the zero-crossing unobservable
+    // on the +side regardless of the normal source under test.
+    tsdf.Build(ctx, 0.05f, 0.15f, 1u << 20, 1u << 15, Eigen::Vector3f(-12.8f, -12.8f, -12.8f));
+    tsdf.SetIntegrationQuality({1, 4, true});
+
+    std::vector<Eigen::Vector3f> pts, nrm;
+    for (int i = -8; i <= 8; ++i)
+        for (int j = -8; j <= 8; ++j) { pts.emplace_back(i*0.02f, j*0.02f, 0.0f); nrm.emplace_back(0,0,1); }
+    tsdf.Integrate(pts, nrm, Eigen::Vector3f(0, 0, 1));
+
+    auto cloud = tsdf.ExtractPointCloud(1u << 18, /*merge=*/false);
+    ASSERT_GT(cloud.normals.size(), 0u);
+    double meanNz = 0.0;
+    for (const auto& n : cloud.normals) meanNz += n.z();
+    meanNz /= double(cloud.normals.size());
+    EXPECT_GT(meanNz, 0.99); // stored-gradient normals ~ +Z, denoised
+}
