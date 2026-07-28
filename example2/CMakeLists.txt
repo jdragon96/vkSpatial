@@ -44,6 +44,13 @@ target_link_libraries(adaptive_voxel_grid_demo PRIVATE Engine::Spatial Engine::C
 add_spatial_example(bvh_benchmark bvh_benchmark.cpp)
 add_spatial_example(scan_dataset_gen scan_dataset_gen.cpp)
 
+# Folder → TSDF evaluator (headless, no render/GUI): read every frame_*.ply in a folder,
+# integrate into AdvancedTSDF, extract, and score the surface against ground_truth.ply (RMSE).
+# Per-frame camera position is estimated from each cloud, so it works on any oriented-point PLY
+# folder (object_scan_viewer output or otherwise). AdvancedTSDF compiles its shaders at runtime.
+add_spatial_example(tsdf_folder_eval tsdf_folder_eval.cpp)
+target_link_libraries(tsdf_folder_eval PRIVATE Engine::Core)
+
 # Registers raw scanData/frame_*.ply frames with Engine::Registration before feeding
 # DirectionalTSDF (drops the "already pre-registered" assumption the chair benchmark makes).
 add_spatial_example(registration_chair_demo registration_chair_demo.cpp)
@@ -124,6 +131,14 @@ if (GLSLC_EXECUTABLE)
     add_spatial_example(chair_tsdf_viewer chair_tsdf_viewer.cpp PointCloudPass.cpp ImGuiPass.cpp)
     target_link_libraries(chair_tsdf_viewer PRIVATE Engine::Render imgui Engine::Core)
     add_compiled_shaders(chair_tsdf_viewer CHAIR_VIEWER_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
+
+    # Object scan viewer: load a mesh (PLY/OBJ), centre it at the origin, orbit a spiral trackball
+    # camera, capture per-view world-space point clouds (saved as frame_%04d.ply), and WATCH the
+    # scan camera orbit the object live (no TSDF here — reconstruction is tsdf_folder_eval).
+    # --no-view = headless capture+save.
+    add_spatial_example(object_scan_viewer object_scan_viewer.cpp PointCloudPass.cpp ImGuiPass.cpp)
+    target_link_libraries(object_scan_viewer PRIVATE Engine::Render imgui Engine::Core)
+    add_compiled_shaders(object_scan_viewer SCAN_VIEWER_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
 else ()
     message(WARNING "cube_render2/shadow_map/blinn_phong examples skipped because glslc was not found")
 endif ()
