@@ -32,6 +32,8 @@ layout(push_constant) uniform PC {
 	int   g_originX;
 	int   g_originY;
 	int   g_originZ;
+	float g_truncation;   // A2: needed to scale the stored-gradient derivative
+	uint  g_hermite;      // A2: 1 = cubic-Hermite zero-crossing, 0 = linear
 };
 
 /// *********************************************
@@ -85,13 +87,55 @@ bool fetchDirectionalValue(ivec3 voxel, uint direction, out float value)
 	return false;
 }
 
+// A2: hash probe returning both value and stored-gradient normal (for Hermite interpolation).
+bool fetchDirectionalValueAndNormal(ivec3 voxel, uint direction, out float value, out vec3 normal)
+{
+	value = 0.0;
+	normal = vec3(0.0);
+	uint key;
+	if (!packDirKey(voxel, direction, key)) return false;
+	uint slot = wangHash(key) % g_hashCapacity;
+	for (uint probe = 0u; probe < MAX_PROBE; probe++) {
+		DirEntry entry = g_hash[(slot + probe) % g_hashCapacity];
+		if (entry.key == EMPTY_KEY) return false;
+		if (entry.key == key)
+		{
+			if (entry.sumW < uint(MIN_WEIGHT)) return false;
+			value = float(entry.sumDW) / float(entry.sumW);
+			vec3 sumN = vec3(float(entry.sumNx), float(entry.sumNy), float(entry.sumNz));
+			float len = length(sumN);
+			normal = (len > 1e-6) ? sumN / len : vec3(0.0);
+			return true;
+		}
+	}
+	return false;
+}
+
+// A2: root of the cubic Hermite through endpoints (0: value c0, slope g0) and (1: c1, g1),
+// Newton from the linear seed. g = d(value)/d(param) = n_axis · voxel / truncation.
+float hermiteRoot(float c0, float c1, float g0, float g1)
+{
+	float t = c0 / (c0 - c1); // linear seed
+	for (int it = 0; it < 3; it++) {
+		float t2 = t * t, t3 = t2 * t;
+		float p  = (2.0*t3 - 3.0*t2 + 1.0) * c0 + (t3 - 2.0*t2 + t) * g0
+		         + (-2.0*t3 + 3.0*t2) * c1 + (t3 - t2) * g1;
+		float dp = (6.0*t2 - 6.0*t) * c0 + (3.0*t2 - 4.0*t + 1.0) * g0
+		         + (-6.0*t2 + 6.0*t) * c1 + (3.0*t2 - 2.0*t) * g1;
+		if (abs(dp) < 1e-8) break;
+		t = clamp(t - p / dp, 0.0, 1.0);
+	}
+	return t;
+}
+
 /// *********************************************
 /// Surface position
 /// *********************************************
 // Estimate the surface position by scanning the three +axis neighbours in the same
 // direction layer for zero crossings and averaging their interpolated positions.
 // Returns the number of crossings; outPosition holds the average when non-zero.
-int estimateCrossingPosition(ivec3 voxel, uint direction, float centerValue, out vec3 outPosition)
+int estimateCrossingPosition(ivec3 voxel, uint direction, float centerValue, vec3 centerNormal,
+                             out vec3 outPosition)
 {
 	vec3 positionSum = vec3(0.0);
 	int  crossingCount = 0;
@@ -100,12 +144,21 @@ int estimateCrossingPosition(ivec3 voxel, uint direction, float centerValue, out
 		neighborVoxel[axis] += 1;
 
 		float neighborValue;
-		if (!fetchDirectionalValue(neighborVoxel, direction, neighborValue)) continue;
+		vec3  neighborNormal;
+		if (!fetchDirectionalValueAndNormal(neighborVoxel, direction, neighborValue, neighborNormal)) continue;
 		if ((centerValue > 0.0) == (neighborValue > 0.0)) continue;  // same sign: no crossing
 		if (centerValue == neighborValue) continue;                  // guard divide-by-zero
 
-		float interpolant = centerValue / (centerValue - neighborValue);
-		vec3  crossingPosition = (vec3(voxel) + vec3(0.5)) * g_voxelSize;
+		float interpolant;
+		if (g_hermite != 0u) {
+			// A2 gradient-augmented (cubic Hermite): slope = n_axis · voxel / truncation.
+			float g0 = centerNormal[axis]   * g_voxelSize / g_truncation;
+			float g1 = neighborNormal[axis] * g_voxelSize / g_truncation;
+			interpolant = hermiteRoot(centerValue, neighborValue, g0, g1);
+		} else {
+			interpolant = centerValue / (centerValue - neighborValue);
+		}
+		vec3 crossingPosition = (vec3(voxel) + vec3(0.5)) * g_voxelSize;
 		crossingPosition[axis] += interpolant * g_voxelSize;
 
 		positionSum += crossingPosition;
@@ -182,16 +235,20 @@ void main()
 	unpackDirKey(entry.key, voxel, direction);
 	float centerValue = float(entry.sumDW) / float(entry.sumW);
 
-	// 1. Position: legacy interpolated zero-crossing (best position).
-	vec3 surfacePosition;
-	if (estimateCrossingPosition(voxel, direction, centerValue, surfacePosition) == 0) return;
-
-	// 2. Normal: stored gradient (denoised, mode-3), central-difference fallback.
+	// Stored-gradient normal (denoised, mode-3); also feeds the A2 Hermite position slope.
 	vec3  storedGradient = vec3(float(entry.sumNx), float(entry.sumNy), float(entry.sumNz));
 	float gradientLength = length(storedGradient);
-	vec3  surfaceNormal;
+	vec3  centerNormal = (gradientLength > 1e-6) ? storedGradient / gradientLength : vec3(0.0);
+
+	// 1. Position: zero-crossing interpolation (linear, or A2 gradient-augmented Hermite).
+	vec3 surfacePosition;
+	if (estimateCrossingPosition(voxel, direction, centerValue, centerNormal, surfacePosition) == 0)
+		return;
+
+	// 2. Normal: stored gradient, central-difference fallback when degenerate.
+	vec3 surfaceNormal;
 	if (gradientLength > 1e-6) {
-		surfaceNormal = storedGradient / gradientLength;
+		surfaceNormal = centerNormal;
 	} else if (!estimateNormalFallback(voxel, direction, centerValue, surfaceNormal)) {
 		return; // degenerate: no stored gradient and no finite-difference gradient
 	}

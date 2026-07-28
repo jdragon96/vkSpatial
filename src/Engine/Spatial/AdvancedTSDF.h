@@ -72,6 +72,14 @@ namespace Engine::Spatial {
         // best); false = projective ray distance. Flows into the integrate push-constant.
         void SetPointToPlane(bool on) { m_pointToPlane = on; }
 
+        // A1 (measure-first): surface-proximity confidence weight lambda in [0,1] applied to
+        // each observation (down-weights band voxels far from the surface). 0 = off/uniform.
+        void SetConfidenceWeight(float lambda) { m_confWeight = lambda; }
+
+        // A2 (measure-first): cubic-Hermite (gradient-augmented) zero-crossing position instead
+        // of linear. Uses the stored gradient at both endpoints. false = linear (default).
+        void SetHermitePosition(bool on) { m_hermite = on; }
+
         // Integrate a normal-carrying point cloud observed from cameraPos. Normals drive the
         // dominant-direction selection, the view-angle weight, and the stored gradient.
         void Integrate(const std::vector<Eigen::Vector3f> &points,
@@ -105,6 +113,8 @@ namespace Engine::Spatial {
         Eigen::Vector3i m_originVoxel = Eigen::Vector3i::Constant(-256); // centred default
         IntegrationQuality m_quality;
         bool m_pointToPlane = true; // measured-best default
+        float m_confWeight = 0.5f;  // A1: adopted (measured cube RMSE -29%); 0 disables
+        bool m_hermite = false;     // A2: off by default (no measured gain on synthetic fixtures)
 
         std::unique_ptr<Engine::Core::Buffer> m_hashBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_pointBuffer;

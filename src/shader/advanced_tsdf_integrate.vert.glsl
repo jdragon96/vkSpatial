@@ -37,6 +37,7 @@ layout(push_constant) uniform PC {
 	int   g_originY;
 	int   g_originZ;
 	uint  g_pointToPlane;   // 1 = point-to-plane SDF (removes grazing bias), 0 = projective
+	float g_confWeight;     // A1: surface-proximity confidence lambda in [0,1] (0 = uniform/off)
 };
 
 layout(std430, set = 0, binding = 0) buffer HashTable
@@ -193,10 +194,14 @@ void Integrate(
 		if (abs(voxel2point) > truncateFactor) continue;
 		float tsdf = clamp(voxel2point / truncateFactor, -1.0, 1.0);
 
+		// A1: surface-proximity confidence — down-weight band voxels far from the surface
+		//     (|tsdf|→1) relative to near-surface ones (|tsdf|→0). lambda=0 disables it.
+		float confidence = 1.0 - g_confWeight * abs(tsdf);
+
 		// 2.2. Accumulate the weighted TSDF and the observed normal (stored gradient)
 		//      into every selected direction layer.
 		for (int di = 0; di < dirCount; di++) {
-			float w = viewReliabilityFactor * reliability[di];
+			float w = viewReliabilityFactor * reliability[di] * confidence;
 			if (w <= 0.0) continue;
 
 			uint key;

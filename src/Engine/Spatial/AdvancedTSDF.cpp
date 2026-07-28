@@ -30,6 +30,7 @@ namespace Engine::Spatial {
             int32_t originY;
             int32_t originZ;
             uint32_t pointToPlane;
+            float confWeight;
         };
 
         // Must match the push_constant block in advanced_tsdf_extract.vert.glsl.
@@ -40,6 +41,8 @@ namespace Engine::Spatial {
             int32_t originX;
             int32_t originY;
             int32_t originZ;
+            float truncation;
+            uint32_t hermite;
         };
 
         // floor(worldMinCorner / voxelSize), component-wise.
@@ -121,7 +124,7 @@ namespace Engine::Spatial {
                 m_quality.maxDirections, m_quality.dirExponent,
                 m_quality.viewAngleWeight ? 1u : 0u,
                 m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z(),
-                uint32_t(m_pointToPlane ? 1u : 0u)};
+                uint32_t(m_pointToPlane ? 1u : 0u), m_confWeight};
         m_kernel->Args(pc).DispatchElements(N);
     }
 
@@ -181,7 +184,8 @@ namespace Engine::Spatial {
         countBuf.Upload(&zero, sizeof(uint32_t));
 
         ExtractPC pc{m_voxelSize, m_hashCapacity, maxCandidates,
-                     m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z()};
+                     m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z(),
+                     m_truncation, uint32_t(m_hermite ? 1u : 0u)};
 
         Engine::Core::ComputePipeline kernel(*m_ctx);
         kernel.Build("advanced_tsdf_extract.vert.glsl")
