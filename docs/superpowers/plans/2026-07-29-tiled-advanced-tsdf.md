@@ -92,21 +92,22 @@ TEST(TiledCompact, FloorDivRoundsTowardNegInf) {
 
 // A patch that fits inside one tile core AND a single CompactDirectionalTSDF window must extract
 // to the same surface through the tiled coordinator as through a bare backend (tiling adds no
-// error where it isn't needed). voxel 0.05 -> tile-0 core [0,22.4); pick a patch inside [0,12.8)
-// so the bare window (centered, [-12.8,12.8)) also holds it.
+// error where it isn't needed). voxel 0.05 -> tile-0 core [0,22.4); center the patch at (6,6,6),
+// inside one core on EVERY axis (clear of the z=0 tile boundary + its G=4-voxel ghost band, which
+// would otherwise split it across tiles) and inside the bare centered window [-12.8,12.8).
 TEST(TiledCompact, TilingMatchesSingleWindowWhereItFits) {
     Engine::Core::Context ctx;
     std::vector<Vector3f> pts, nrm;
-    makePlane(pts, nrm, Vector3f(6.0f, 6.0f, 0.0f), 4.0f, 30);
+    makePlane(pts, nrm, Vector3f(6.0f, 6.0f, 6.0f), 4.0f, 30);
 
     TiledCompactDirectionalTSDF tiled;
     tiled.Build(ctx, 0.05f, 0.15f);
-    tiled.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 1.0f));
+    tiled.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
     const OrientedPointCloud tiledCloud = tiled.ExtractPointCloud(/*merge=*/false);
 
     CompactDirectionalTSDF single;
     single.Build(ctx, 0.05f, 0.15f, 1u << 20, 1u << 15, Vector3f(-12.8f, -12.8f, -12.8f));
-    single.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 1.0f));
+    single.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
     const OrientedPointCloud singleCloud = single.ExtractPointCloud(1u << 18, /*merge=*/false);
 
     ASSERT_GT(tiledCloud.points.size(), 100u);
@@ -520,21 +521,22 @@ namespace {
 
 } // namespace
 
-// Tiling adds no error where a single AdvancedTSDF window already fits (patch inside tile-0 core
-// and the centered default window [-12.8,12.8) at voxel 0.05).
+// Tiling adds no error where a single AdvancedTSDF window already fits. Patch centered at (6,6,6):
+// inside tile-0's core on every axis (clear of tile boundaries + ghost bands, so TileCount==1) and
+// inside the centered default window [-12.8,12.8) at voxel 0.05.
 TEST(TiledAdvanced, TilingMatchesSingleWindowWhereItFits) {
     Engine::Core::Context ctx;
     std::vector<Vector3f> pts, nrm;
-    makePlane(pts, nrm, Vector3f(6.0f, 6.0f, 0.0f), 4.0f, 30);
+    makePlane(pts, nrm, Vector3f(6.0f, 6.0f, 6.0f), 4.0f, 30);
 
     TiledAdvancedTSDF tiled;
     tiled.Build(ctx, 0.05f, 0.15f);
-    tiled.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 1.0f));
+    tiled.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
     const OrientedPointCloud tiledCloud = tiled.ExtractPointCloud(/*merge=*/false);
 
     AdvancedTSDF single;
     single.Build(ctx, 0.05f, 0.15f); // default centered window covers [-12.8, 12.8)
-    single.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 1.0f));
+    single.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
     const OrientedPointCloud singleCloud = single.ExtractPointCloud(1u << 18, /*merge=*/false);
 
     ASSERT_GT(tiledCloud.points.size(), 100u);
@@ -572,13 +574,13 @@ TEST(TiledAdvanced, PlaneSpanningTilesIsSeamFree) {
 TEST(TiledAdvanced, OnlyTouchedTilesAllocated) {
     Engine::Core::Context ctx;
     std::vector<Vector3f> a, an, b, bn;
-    makePlane(a, an, Vector3f(6.0f, 6.0f, 0.0f), 4.0f, 20);    // tile (0,0,0)
-    makePlane(b, bn, Vector3f(106.0f, 6.0f, 0.0f), 4.0f, 20);  // x~2120 vox -> tile (4,0,0)
+    makePlane(a, an, Vector3f(6.0f, 6.0f, 6.0f), 4.0f, 20);    // tile (0,0,0)
+    makePlane(b, bn, Vector3f(106.0f, 6.0f, 6.0f), 4.0f, 20);  // x~2120 vox -> tile (4,0,0)
 
     TiledAdvancedTSDF tiled;
     tiled.Build(ctx, 0.05f, 0.15f);
-    tiled.Integrate(a, an, Vector3f(6.0f, 6.0f, 1.0f));
-    tiled.Integrate(b, bn, Vector3f(106.0f, 6.0f, 1.0f));
+    tiled.Integrate(a, an, Vector3f(6.0f, 6.0f, 7.0f));
+    tiled.Integrate(b, bn, Vector3f(106.0f, 6.0f, 7.0f));
     EXPECT_EQ(tiled.TileCount(), 2u);
 }
 
@@ -587,18 +589,18 @@ TEST(TiledAdvanced, OnlyTouchedTilesAllocated) {
 TEST(TiledAdvanced, A1A2SettersReachTiles) {
     Engine::Core::Context ctx;
     std::vector<Vector3f> pts, nrm;
-    makePlane(pts, nrm, Vector3f(6.0f, 6.0f, 0.0f), 4.0f, 40);
+    makePlane(pts, nrm, Vector3f(6.0f, 6.0f, 6.0f), 4.0f, 40);
 
     TiledAdvancedTSDF off;
     off.Build(ctx, 0.05f, 0.15f);
     off.SetConfidenceWeight(0.0f);
-    off.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 1.0f));
+    off.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
     const size_t nOff = off.ExtractPointCloud(/*merge=*/false).points.size();
 
     TiledAdvancedTSDF on;
     on.Build(ctx, 0.05f, 0.15f);
     on.SetConfidenceWeight(0.5f);
-    on.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 1.0f));
+    on.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
     const size_t nOn = on.ExtractPointCloud(/*merge=*/false).points.size();
 
     ASSERT_GT(nOff, 0u);
@@ -608,7 +610,7 @@ TEST(TiledAdvanced, A1A2SettersReachTiles) {
     TiledAdvancedTSDF herm;
     herm.Build(ctx, 0.05f, 0.15f);
     herm.SetHermitePosition(true);
-    herm.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 1.0f));
+    herm.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
     EXPECT_GT(herm.ExtractPointCloud(/*merge=*/false).points.size(), 0u);
 }
 ```
