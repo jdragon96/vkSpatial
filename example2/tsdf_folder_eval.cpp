@@ -10,6 +10,8 @@
 
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/AdvancedTSDF.h"
+#include "Engine/Spatial/OrientedPointCloud.h"
+#include "Engine/Spatial/TiledAdvancedTSDF.h"
 
 #include <Eigen/Core>
 #include <algorithm>
@@ -248,16 +250,17 @@ int main(int argc, char **argv) {
         const float maxSpan = span.maxCoeff();
         const int margin = int(std::ceil(trunc / voxel)) + 2;            // truncation ghost band
         const long axisVox = long(std::ceil(maxSpan / voxel)) + 2L * margin;
-        if (axisVox > 512) {
+        const bool forceSingle = flag(argc, argv, "--single");
+        if (axisVox > 512 && forceSingle) {
             const float minVoxel = maxSpan / float(512 - 2 * margin);
             std::fprintf(stderr,
                          "error: voxel %.4f too fine — object spans %ld voxels/axis but a single "
-                         "AdvancedTSDF window is 512^3.\n"
-                         "  use --voxel >= %.4f  (object max-span %.3f / %d), or tile the scene "
-                         "(TiledCompactDirectionalTSDF).\n",
-                         voxel, axisVox, minVoxel, maxSpan, 512 - 2 * margin);
+                         "AdvancedTSDF window is 512^3 (--single).\n"
+                         "  drop --single to auto-tile, or use --voxel >= %.4f.\n",
+                         voxel, axisVox, minVoxel);
             return 3;
         }
+        const bool useTiled = axisVox > 512; // exceeds one window -> tile
         // Place the window's min corner a margin below the object; scale the hash to the expected
         // surface-shell entry count (bbox-surface proxy, x2 load headroom, clamped).
         const Vector3f windowMinCorner = bbMin - float(margin) * Vector3f::Constant(voxel);
@@ -277,18 +280,34 @@ int main(int argc, char **argv) {
                     axisVox, hashCap, maxPts, windowMinCorner.x(), windowMinCorner.y(),
                     windowMinCorner.z());
 
-        // Integrate + extract.
+        // Integrate + extract (single window if it fits, else tiled).
         Engine::Core::Context ctx;
-        Engine::Spatial::AdvancedTSDF tsdf;
-        tsdf.Build(ctx, voxel, trunc, hashCap, maxPts, windowMinCorner);
-        tsdf.SetIntegrationQuality({3, 4, true});
-        tsdf.SetPointToPlane(p2p);
-        tsdf.SetConfidenceWeight(conf);
-        tsdf.SetHermitePosition(hermite);
-        for (const auto &fr: frames) tsdf.Integrate(fr.pts, fr.nrm, fr.cam);
-        const auto recon = tsdf.ExtractPointCloud(1u << 21, /*merge=*/true);
-        std::printf("integrated: %zu frames → %u occupied entries\n", frames.size(),
-                    tsdf.FilledCount());
+        Engine::Spatial::OrientedPointCloud recon;
+        if (useTiled) {
+            std::printf("path      : TILED (scene exceeds one 512^3 window)\n");
+            Engine::Spatial::TiledAdvancedTSDF tiled;
+            tiled.Build(ctx, voxel, trunc, /*hashCapPerTile=*/1u << 21, /*maxPtsPerFrame=*/maxPts);
+            tiled.SetIntegrationQuality({3, 4, true});
+            tiled.SetPointToPlane(p2p);
+            tiled.SetConfidenceWeight(conf);
+            tiled.SetHermitePosition(hermite);
+            for (const auto &fr: frames) tiled.Integrate(fr.pts, fr.nrm, fr.cam);
+            recon = tiled.ExtractPointCloud(/*merge=*/true);
+            std::printf("integrated: %zu frames → %u tiles, %u occupied entries (ghost-inflated)\n",
+                        frames.size(), tiled.TileCount(), tiled.FilledCount());
+        } else {
+            std::printf("path      : SINGLE 512^3 window\n");
+            Engine::Spatial::AdvancedTSDF tsdf;
+            tsdf.Build(ctx, voxel, trunc, hashCap, maxPts, windowMinCorner);
+            tsdf.SetIntegrationQuality({3, 4, true});
+            tsdf.SetPointToPlane(p2p);
+            tsdf.SetConfidenceWeight(conf);
+            tsdf.SetHermitePosition(hermite);
+            for (const auto &fr: frames) tsdf.Integrate(fr.pts, fr.nrm, fr.cam);
+            recon = tsdf.ExtractPointCloud(1u << 21, /*merge=*/true);
+            std::printf("integrated: %zu frames → %u occupied entries\n", frames.size(),
+                        tsdf.FilledCount());
+        }
         std::printf("extracted : %zu oriented points\n", recon.points.size());
 
         // RMSE vs ground truth (accuracy: recon→GT, completeness: GT→recon).
