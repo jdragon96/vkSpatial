@@ -584,34 +584,61 @@ TEST(TiledAdvanced, OnlyTouchedTilesAllocated) {
     EXPECT_EQ(tiled.TileCount(), 2u);
 }
 
-// A1 (confidence weight) reaches the tiles: changing it changes the extracted surface; A2
-// (Hermite) runs and still produces a surface.
+// A1 (confidence weight) and A2 (Hermite) reach the tiles: changing each setter SHIFTS the
+// extracted surface. Uses a multi-view cylinder — on a curved surface each voxel is observed with
+// a different tsdf per view, so the settings are observable. (A flat single-view plane is scale-
+// invariant to both: sumDW/sumW cancels the weight, and a constant gradient makes the Hermite root
+// equal the linear one — and the point count never changes either way, since zero-crossing voxels
+// are geometry-fixed.) We therefore assert the surface SHIFTS via nearest-neighbour distance, not
+// that the count changes. If a setter failed to forward, both runs would use the tile default and
+// the clouds would coincide (maxNearest ~ 0). Measured margins: A1(projective) ~2.6e-3, A2 ~6e-4.
 TEST(TiledAdvanced, A1A2SettersReachTiles) {
     Engine::Core::Context ctx;
-    std::vector<Vector3f> pts, nrm;
-    makePlane(pts, nrm, Vector3f(6.0f, 6.0f, 6.0f), 4.0f, 40);
+    const Vector3f ctr(6.0f, 6.0f, 6.0f);
+    std::vector<Vector3f> pts, nrm; // cylinder (radial normals) centered off any tile boundary
+    for (int a = 0; a < 120; ++a) {
+        const float th = 2.0f * float(M_PI) * float(a) / 120.0f;
+        const float c = std::cos(th), s = std::sin(th);
+        for (int k = 0; k <= 30; ++k) {
+            const float z = -0.4f + 0.8f * float(k) / 30.0f;
+            pts.emplace_back(ctr.x() + 0.3f * c, ctr.y() + 0.3f * s, ctr.z() + z);
+            nrm.emplace_back(c, s, 0.0f);
+        }
+    }
+    const std::vector<Vector3f> camDirs = {{1, 0, 0}, {0, 1, 0}, {-1, 0, 0}, {0, -1, 0}};
 
-    TiledAdvancedTSDF off;
-    off.Build(ctx, 0.05f, 0.15f);
-    off.SetConfidenceWeight(0.0f);
-    off.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
-    const size_t nOff = off.ExtractPointCloud(/*merge=*/false).points.size();
+    auto run = [&](bool p2p, float conf, bool hermite) {
+        TiledAdvancedTSDF t;
+        t.Build(ctx, 0.02f, 0.06f);
+        t.SetIntegrationQuality({2, 4, true});
+        t.SetPointToPlane(p2p);
+        t.SetConfidenceWeight(conf);
+        t.SetHermitePosition(hermite);
+        for (const auto &cd : camDirs) {
+            std::vector<Vector3f> vp, vn;
+            for (size_t i = 0; i < pts.size(); ++i)
+                if (nrm[i].dot(cd) > 0.3f) { vp.push_back(pts[i]); vn.push_back(nrm[i]); }
+            t.Integrate(vp, vn, ctr + cd * 5.0f);
+        }
+        return t.ExtractPointCloud(/*merge=*/false);
+    };
 
-    TiledAdvancedTSDF on;
-    on.Build(ctx, 0.05f, 0.15f);
-    on.SetConfidenceWeight(0.5f);
-    on.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
-    const size_t nOn = on.ExtractPointCloud(/*merge=*/false).points.size();
+    // A1: projective mode makes each voxel's tsdf view-dependent, so confidence weighting shifts
+    // the fused surface measurably.
+    const OrientedPointCloud confOff = run(/*p2p=*/false, 0.0f, false);
+    const OrientedPointCloud confOn = run(/*p2p=*/false, 0.8f, false);
+    ASSERT_GT(confOff.points.size(), 100u);
+    ASSERT_GT(confOn.points.size(), 100u);
+    EXPECT_GT(maxNearest(confOff.points, confOn.points), 1e-4f)
+            << "SetConfidenceWeight had no effect -> A1 not reaching tiles";
 
-    ASSERT_GT(nOff, 0u);
-    ASSERT_GT(nOn, 0u);
-    EXPECT_NE(nOff, nOn) << "SetConfidenceWeight had no effect -> A1 not reaching tiles";
-
-    TiledAdvancedTSDF herm;
-    herm.Build(ctx, 0.05f, 0.15f);
-    herm.SetHermitePosition(true);
-    herm.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
-    EXPECT_GT(herm.ExtractPointCloud(/*merge=*/false).points.size(), 0u);
+    // A2: Hermite moves the sub-voxel zero-crossing on the curved surface.
+    const OrientedPointCloud hermOff = run(/*p2p=*/true, 0.5f, false);
+    const OrientedPointCloud hermOn = run(/*p2p=*/true, 0.5f, true);
+    ASSERT_GT(hermOff.points.size(), 100u);
+    ASSERT_GT(hermOn.points.size(), 100u);
+    EXPECT_GT(maxNearest(hermOff.points, hermOn.points), 1e-4f)
+            << "SetHermitePosition had no effect -> A2 not reaching tiles";
 }
 ```
 
