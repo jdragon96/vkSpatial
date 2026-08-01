@@ -8,6 +8,7 @@
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
 #include "Engine/Spatial/AdvancedTSDF.h"
+#include "Engine/Spatial/TiledAdvancedTSDF.h"
 
 #include "imgui.h"
 
@@ -224,7 +225,7 @@ int main(int argc, char **argv) {
         const std::string dir = strArg(argc, argv, "--dir", "");
         if (dir.empty() || !fs::is_directory(dir)) {
             std::cerr << "usage: voxel_fill_debugger --dir <folder> [--voxel v] [--trunc t] "
-                         "[--no-p2p] [--conf L] [--hermite] [--wthresh w] [--dump]\n";
+                         "[--no-p2p] [--conf L] [--hermite] [--wthresh w] [--tile-hash N] [--dump]\n";
             return 2;
         }
 
@@ -274,62 +275,34 @@ int main(int argc, char **argv) {
         const float trunc = floatArg(argc, argv, "--trunc", voxel * 3.0f);
         const float wThreshArg = floatArg(argc, argv, "--wthresh", 0.0f);
 
-        // AdvancedTSDF is a SINGLE movable 512^3-voxel window (no tiling in this debugger — see
-        // tsdf_folder_eval/TiledAdvancedTSDF for that). Size and place the window to the data;
-        // refuse voxel sizes that would need more than one window.
-        const float maxSpan = span.maxCoeff();
-        const int margin = int(std::ceil(trunc / voxel)) + 2; // truncation ghost band
-        const long axisVox = long(std::ceil(maxSpan / voxel)) + 2L * margin;
-        if (axisVox > 512) {
-            const float minVoxel = maxSpan / float(512 - 2 * margin);
-            std::fprintf(stderr,
-                         "error: voxel %.4f too fine — object spans %ld voxels/axis but a single "
-                         "AdvancedTSDF window is 512^3.\n  use --voxel >= %.4f (single-window "
-                         "debugger; tiling is out of scope).\n",
-                         voxel, axisVox, minVoxel);
-            return 3;
-        }
-        const Vector3f windowMinCorner = bbMin - float(margin) * Vector3f::Constant(voxel);
-        const double surf = 2.0 * double(span.x() * span.y() + span.y() * span.z() +
-                                         span.z() * span.x());
-        const double shell = 2.0 * double(trunc) / double(voxel);
-        const double estEntries = (surf / (double(voxel) * double(voxel))) * shell * 1.5;
-        const uint32_t hashCap =
-                std::max(1u << 20, nextPow2(uint32_t(std::min(estEntries * 2.0, double(1u << 24)))));
+        // TiledAdvancedTSDF hashes into as many 512^3 windows (tiles) as the scene needs — only
+        // touched tiles are allocated — so ANY voxel size works (no single-window limit). Each
+        // tile's core is drawn as a "window box"; --tile-hash sizes each tile's hash.
+        const uint32_t tileHash =
+                nextPow2(uint32_t(floatArg(argc, argv, "--tile-hash", float(1u << 20))));
         const uint32_t maxPts = nextPow2(uint32_t(std::max<std::size_t>(maxFramePts, 1u << 15)));
 
         Engine::Core::Context ctx;
-        Engine::Spatial::AdvancedTSDF tsdf;
-        tsdf.Build(ctx, voxel, trunc, hashCap, maxPts, windowMinCorner);
-        tsdf.SetIntegrationQuality({3, 4, true});
-        tsdf.SetPointToPlane(p2p);
-        tsdf.SetConfidenceWeight(conf);
-        tsdf.SetHermitePosition(hermite);
-
-        // World-space bounds of the movable 512^3 window the TSDF hashes into (constant after
-        // Build). Voxels outside this box are dropped at integration, so this box = the reachable
-        // region; the "allocated" box (from downloaded entries) grows inside it per frame.
-        const int kWindow = 512;
-        const Eigen::Vector3i originVoxel = tsdf.OriginVoxel();
-        const Vector3f winMin = originVoxel.cast<float>() * voxel;
-        const Vector3f winMax = (originVoxel + Eigen::Vector3i::Constant(kWindow)).cast<float>() * voxel;
+        Engine::Spatial::TiledAdvancedTSDF tiled;
+        tiled.Build(ctx, voxel, trunc, tileHash, maxPts);
+        tiled.SetIntegrationQuality({3, 4, true});
+        tiled.SetPointToPlane(p2p);
+        tiled.SetConfidenceWeight(conf);
+        tiled.SetHermitePosition(hermite);
 
         const int nFrames = int(frames.size());
         voxdbg::FillTracker tracker(voxel);
 
         std::printf("dir       : %s  (%d frames, extent %.4f)\n", dir.c_str(), nFrames, extent);
-        std::printf("advanced  : voxel %.4f, trunc %.4f, hashCap %u, window %ld vox/axis\n", voxel,
-                    trunc, hashCap, axisVox);
+        std::printf("tiled adv : voxel %.4f, trunc %.4f, core %d vox/tile, per-tile hash %u "
+                    "(~%.0f MB/tile)\n",
+                    voxel, trunc, tiled.CoreVoxels(), tileHash, double(tileHash) * 24.0 / 1e6);
 
         // Headless per-frame stats: no window, no render deps touched.
         if (flag(argc, argv, "--dump") || flag(argc, argv, "--no-view")) {
-            const Vector3f winSize = winMax - winMin;
-            std::printf("window box: min(%.2f,%.2f,%.2f) max(%.2f,%.2f,%.2f) size(%.2f,%.2f,%.2f)\n",
-                        winMin.x(), winMin.y(), winMin.z(), winMax.x(), winMax.y(), winMax.z(),
-                        winSize.x(), winSize.y(), winSize.z());
             for (int f = 0; f < nFrames; ++f) {
-                tsdf.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
-                const auto entries = tsdf.DownloadEntries();
+                tiled.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
+                const auto entries = tiled.DownloadEntries();
                 const auto isNew = tracker.update(entries, f);
                 std::size_t below = 0;
                 for (const auto &e: entries)
@@ -338,9 +311,10 @@ int main(int argc, char **argv) {
                 for (char c: isNew) nnew += (c != 0);
                 Vector3f aMn, aMx, aSz = Vector3f::Zero();
                 if (entriesAabb(entries, voxel, aMn, aMx)) aSz = aMx - aMn;
-                std::printf("frame %3d: occupied %zu  new %zu  below-wthresh %zu  "
+                std::printf("frame %3d: occupied %zu  new %zu  below-wthresh %zu  tiles %u  "
                             "allocBox(%.2f,%.2f,%.2f)\n",
-                            f, entries.size(), nnew, below, aSz.x(), aSz.y(), aSz.z());
+                            f, entries.size(), nnew, below, tiled.TileCount(), aSz.x(), aSz.y(),
+                            aSz.z());
             }
             std::printf("[--dump] done.\n");
             return 0;
@@ -398,13 +372,13 @@ int main(int argc, char **argv) {
             if (nFrames == 0) return;
             vkDeviceWaitIdle(appCtx.device);
             if (target < state.shown) {
-                tsdf.Reset();
+                tiled.Reset();
                 tracker.reset();
                 state.shown = -1;
             }
             for (int f = state.shown + 1; f <= target; ++f) {
-                tsdf.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
-                curEntries = tsdf.DownloadEntries();
+                tiled.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
+                curEntries = tiled.DownloadEntries();
                 curNew = tracker.update(curEntries, f);
             }
             state.shown = target;
@@ -427,8 +401,14 @@ int main(int argc, char **argv) {
             pushCloud(in, frames[std::clamp(state.shown, 0, nFrames - 1)].pts, 100, 110, 120);
             pc->SetPointSet(2, in);
             pc->SetPointSet(3, cameraMarker(frames[std::clamp(state.shown, 0, nFrames - 1)].cam));
-            // 512^3 window box (cyan, constant) + currently-allocated voxel box (orange, grows).
-            pc->SetPointSet(4, boxEdges(winMin, winMax, voxel, 40, 220, 220));
+            // One window box per touched tile (cyan) — the tiling grows as frames fill space —
+            // plus the currently-allocated voxel box (orange).
+            std::vector<PointVertex> tileBoxes;
+            for (const auto &b: tiled.CoreBoxes()) {
+                const std::vector<PointVertex> e = boxEdges(b.first, b.second, voxel, 40, 220, 220);
+                tileBoxes.insert(tileBoxes.end(), e.begin(), e.end());
+            }
+            pc->SetPointSet(4, tileBoxes);
             Vector3f aMn, aMx;
             if (entriesAabb(curEntries, voxel, aMn, aMx))
                 pc->SetPointSet(5, boxEdges(aMn, aMx, voxel, 255, 160, 40));
@@ -472,7 +452,7 @@ int main(int argc, char **argv) {
             if (ImGui::Checkbox("new this frame", &state.showNew)) pc->SetVisible(1, state.showNew);
             if (ImGui::Checkbox("input", &state.showInput)) pc->SetVisible(2, state.showInput);
             if (ImGui::Checkbox("camera", &state.showCamera)) pc->SetVisible(3, state.showCamera);
-            if (ImGui::Checkbox("window box (512^3)", &state.showWindowBox))
+            if (ImGui::Checkbox("tile windows", &state.showWindowBox))
                 pc->SetVisible(4, state.showWindowBox);
             if (ImGui::Checkbox("allocated box", &state.showAllocBox))
                 pc->SetVisible(5, state.showAllocBox);
@@ -482,7 +462,8 @@ int main(int argc, char **argv) {
             for (const auto &e: curEntries)
                 if (voxdbg::belowThreshold(e.weight, state.wThresh)) ++below;
             ImGui::Text("below thresh: %zu", below);
-            ImGui::Text("window box: %.1f (=512 x %.3f)", float(kWindow) * voxel, voxel);
+            ImGui::Text("tiles: %u (core %d vox = %.1f units)", tiled.TileCount(),
+                        tiled.CoreVoxels(), float(tiled.CoreVoxels()) * voxel);
             Vector3f aMn, aMx;
             if (entriesAabb(curEntries, voxel, aMn, aMx)) {
                 const Vector3f sz = aMx - aMn;
