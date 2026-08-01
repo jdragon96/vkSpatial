@@ -1,16 +1,3 @@
-// Voxel-fill debugger — read every frame_*.ply in a folder, integrate them into AdvancedTSDF
-// FRAME BY FRAME (not all at once), and watch which (voxel,direction) hash entries fill in as
-// frames accumulate. Colors by tsdf-sign / weight / fill-frame / direction; a weight threshold
-// highlights the low-confidence "extraction drop-out" entries that would get discarded at
-// export time. This is a debugging aid for holes/coverage, not a reconstruction tool
-// (tsdf_folder_eval does that, headless, with RMSE scoring).
-//
-//   ./voxel_fill_debugger --dir scans/dragon [--voxel v] [--trunc t] [--no-p2p] [--conf L]
-//        [--hermite] [--wthresh w] [--dump | --no-view]
-//
-// Per-frame camera position is ESTIMATED from each cloud (centroid + k·mean-normal), same as
-// tsdf_folder_eval, so this works on any folder of oriented-point PLYs.
-
 #include "ImGuiPass.h"
 #include "PointCloudPass.h"
 #include "VoxelFillDebug.h"
@@ -65,7 +52,11 @@ namespace {
     uint32_t nextPow2(uint32_t v) {
         if (v <= 1) return 1;
         --v;
-        v |= v >> 1; v |= v >> 2; v |= v >> 4; v |= v >> 8; v |= v >> 16;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
         return v + 1;
     }
 
@@ -135,7 +126,7 @@ namespace {
 
     void pushCloud(std::vector<PointVertex> &out, const std::vector<Vector3f> &pts,
                    uint8_t r, uint8_t g, uint8_t b) {
-        for (const auto &p : pts) out.push_back({{p.x(), p.y(), p.z()}, {r, g, b, 255}});
+        for (const auto &p: pts) out.push_back({{p.x(), p.y(), p.z()}, {r, g, b, 255}});
     }
 
     // A small red camera marker: the eye plus a short segment toward the origin (view direction).
@@ -147,6 +138,46 @@ namespace {
             v.push_back({{p.x(), p.y(), p.z()}, {255, 40, 40, 255}});
         }
         return v;
+    }
+
+    ///////////////////////////////////////////////////////////////////////////////////////////
+    // New: bounding-box wireframes as point sets (PointCloudPass draws points only).
+    ///////////////////////////////////////////////////////////////////////////////////////////
+
+    // Sample points along the 12 edges of an AABB [mn,mx]; density ~ one point per voxel along the
+    // longest edge (capped), so the box reads as a wireframe in the point renderer.
+    std::vector<PointVertex> boxEdges(const Vector3f &mn, const Vector3f &mx, float voxel,
+                                      uint8_t r, uint8_t g, uint8_t b) {
+        std::vector<PointVertex> v;
+        const Vector3f c[8] = {{mn.x(), mn.y(), mn.z()}, {mx.x(), mn.y(), mn.z()},
+                               {mx.x(), mx.y(), mn.z()}, {mn.x(), mx.y(), mn.z()},
+                               {mn.x(), mn.y(), mx.z()}, {mx.x(), mn.y(), mx.z()},
+                               {mx.x(), mx.y(), mx.z()}, {mn.x(), mx.y(), mx.z()}};
+        static const int E[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
+                                     {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        const int per = std::clamp(int((mx - mn).maxCoeff() / std::max(1e-6f, voxel)), 24, 512);
+        for (const auto &e: E)
+            for (int i = 0; i <= per; ++i) {
+                const float t = float(i) / float(per);
+                const Vector3f p = c[e[0]] + t * (c[e[1]] - c[e[0]]);
+                v.push_back({{p.x(), p.y(), p.z()}, {r, g, b, 255}});
+            }
+        return v;
+    }
+
+    // AABB of downloaded voxel entries, expanded by half a voxel to the true voxel extent.
+    bool entriesAabb(const std::vector<AdvancedEntry> &e, float voxel, Vector3f &mn, Vector3f &mx) {
+        if (e.empty()) return false;
+        mn = Vector3f::Constant(1e30f);
+        mx = Vector3f::Constant(-1e30f);
+        for (const auto &en: e) {
+            mn = mn.cwiseMin(en.center);
+            mx = mx.cwiseMax(en.center);
+        }
+        const Vector3f h = Vector3f::Constant(0.5f * voxel);
+        mn -= h;
+        mx += h;
+        return true;
     }
 
     ///////////////////////////////////////////////////////////////////////////////////////////
@@ -166,12 +197,18 @@ namespace {
             if (below && hideBelow) continue;
             voxdbg::Rgba c;
             switch (mode) {
-                case voxdbg::ColorMode::TsdfSign: c = voxdbg::tsdfColor(e.tsdf, trunc); break;
-                case voxdbg::ColorMode::Weight: c = voxdbg::weightColor(e.weight, wMax); break;
+                case voxdbg::ColorMode::TsdfSign:
+                    c = voxdbg::tsdfColor(e.tsdf, trunc);
+                    break;
+                case voxdbg::ColorMode::Weight:
+                    c = voxdbg::weightColor(e.weight, wMax);
+                    break;
                 case voxdbg::ColorMode::FillFrame:
                     c = voxdbg::fillFrameColor(tracker.firstFrame(voxdbg::keyOf(e, voxel)), nFrames);
                     break;
-                case voxdbg::ColorMode::Direction: c = voxdbg::directionColor(uint8_t(e.direction)); break;
+                case voxdbg::ColorMode::Direction:
+                    c = voxdbg::directionColor(uint8_t(e.direction));
+                    break;
             }
             if (below) c = {80, 80, 80, 255}; // extraction drop-out, dimmed
             occupied.push_back({{e.center.x(), e.center.y(), e.center.z()}, {c[0], c[1], c[2], c[3]}});
@@ -269,6 +306,14 @@ int main(int argc, char **argv) {
         tsdf.SetConfidenceWeight(conf);
         tsdf.SetHermitePosition(hermite);
 
+        // World-space bounds of the movable 512^3 window the TSDF hashes into (constant after
+        // Build). Voxels outside this box are dropped at integration, so this box = the reachable
+        // region; the "allocated" box (from downloaded entries) grows inside it per frame.
+        const int kWindow = 512;
+        const Eigen::Vector3i originVoxel = tsdf.OriginVoxel();
+        const Vector3f winMin = originVoxel.cast<float>() * voxel;
+        const Vector3f winMax = (originVoxel + Eigen::Vector3i::Constant(kWindow)).cast<float>() * voxel;
+
         const int nFrames = int(frames.size());
         voxdbg::FillTracker tracker(voxel);
 
@@ -278,17 +323,24 @@ int main(int argc, char **argv) {
 
         // Headless per-frame stats: no window, no render deps touched.
         if (flag(argc, argv, "--dump") || flag(argc, argv, "--no-view")) {
+            const Vector3f winSize = winMax - winMin;
+            std::printf("window box: min(%.2f,%.2f,%.2f) max(%.2f,%.2f,%.2f) size(%.2f,%.2f,%.2f)\n",
+                        winMin.x(), winMin.y(), winMin.z(), winMax.x(), winMax.y(), winMax.z(),
+                        winSize.x(), winSize.y(), winSize.z());
             for (int f = 0; f < nFrames; ++f) {
                 tsdf.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
                 const auto entries = tsdf.DownloadEntries();
                 const auto isNew = tracker.update(entries, f);
                 std::size_t below = 0;
-                for (const auto &e : entries)
+                for (const auto &e: entries)
                     if (voxdbg::belowThreshold(e.weight, wThreshArg)) ++below;
                 std::size_t nnew = 0;
-                for (char c : isNew) nnew += (c != 0);
-                std::printf("frame %3d: occupied %zu  new %zu  below-wthresh %zu\n", f,
-                            entries.size(), nnew, below);
+                for (char c: isNew) nnew += (c != 0);
+                Vector3f aMn, aMx, aSz = Vector3f::Zero();
+                if (entriesAabb(entries, voxel, aMn, aMx)) aSz = aMx - aMn;
+                std::printf("frame %3d: occupied %zu  new %zu  below-wthresh %zu  "
+                            "allocBox(%.2f,%.2f,%.2f)\n",
+                            f, entries.size(), nnew, below, aSz.x(), aSz.y(), aSz.z());
             }
             std::printf("[--dump] done.\n");
             return 0;
@@ -332,6 +384,7 @@ int main(int argc, char **argv) {
             float wThresh = 0.0f;
             bool hideBelow = false;
             bool showOccupied = true, showNew = true, showInput = true, showCamera = true;
+            bool showWindowBox = true, showAllocBox = true;
             int shown = -1;
             float wMax = 1.0f;
             bool dirty = false;
@@ -344,7 +397,11 @@ int main(int argc, char **argv) {
             target = std::clamp(target, 0, std::max(0, nFrames - 1));
             if (nFrames == 0) return;
             vkDeviceWaitIdle(appCtx.device);
-            if (target < state.shown) { tsdf.Reset(); tracker.reset(); state.shown = -1; }
+            if (target < state.shown) {
+                tsdf.Reset();
+                tracker.reset();
+                state.shown = -1;
+            }
             for (int f = state.shown + 1; f <= target; ++f) {
                 tsdf.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
                 curEntries = tsdf.DownloadEntries();
@@ -352,7 +409,7 @@ int main(int argc, char **argv) {
             }
             state.shown = target;
             state.wMax = 1.0f;
-            for (const auto &e : curEntries) state.wMax = std::max(state.wMax, e.weight);
+            for (const auto &e: curEntries) state.wMax = std::max(state.wMax, e.weight);
             state.wThresh = std::min(state.wThresh, state.wMax);
         };
         auto refreshSets = [&]() {
@@ -370,6 +427,13 @@ int main(int argc, char **argv) {
             pushCloud(in, frames[std::clamp(state.shown, 0, nFrames - 1)].pts, 100, 110, 120);
             pc->SetPointSet(2, in);
             pc->SetPointSet(3, cameraMarker(frames[std::clamp(state.shown, 0, nFrames - 1)].cam));
+            // 512^3 window box (cyan, constant) + currently-allocated voxel box (orange, grows).
+            pc->SetPointSet(4, boxEdges(winMin, winMax, voxel, 40, 220, 220));
+            Vector3f aMn, aMx;
+            if (entriesAabb(curEntries, voxel, aMn, aMx))
+                pc->SetPointSet(5, boxEdges(aMn, aMx, voxel, 255, 160, 40));
+            else
+                pc->SetPointSet(5, {});
         };
         rebuildTo(0);
         refreshSets();
@@ -381,16 +445,25 @@ int main(int argc, char **argv) {
                 state.playing = false;
             ImGui::Checkbox("play", &state.playing);
             ImGui::SameLine();
-            if (ImGui::Button("restart")) { state.frame = 0; state.playing = true; }
+            if (ImGui::Button("restart")) {
+                state.frame = 0;
+                state.playing = true;
+            }
             ImGui::SliderFloat("fps", &state.fps, 1.0f, 30.0f, "%.0f");
             ImGui::SeparatorText("Color mode");
             int m = int(state.mode);
             bool cm = false;
-            cm |= ImGui::RadioButton("tsdf", &m, 0); ImGui::SameLine();
-            cm |= ImGui::RadioButton("weight", &m, 1); ImGui::SameLine();
-            cm |= ImGui::RadioButton("fill-frame", &m, 2); ImGui::SameLine();
+            cm |= ImGui::RadioButton("tsdf", &m, 0);
+            ImGui::SameLine();
+            cm |= ImGui::RadioButton("weight", &m, 1);
+            ImGui::SameLine();
+            cm |= ImGui::RadioButton("fill-frame", &m, 2);
+            ImGui::SameLine();
             cm |= ImGui::RadioButton("direction", &m, 3);
-            if (cm) { state.mode = voxdbg::ColorMode(m); state.dirty = true; }
+            if (cm) {
+                state.mode = voxdbg::ColorMode(m);
+                state.dirty = true;
+            }
             if (ImGui::SliderFloat("weight thresh", &state.wThresh, 0.0f, state.wMax, "%.3f"))
                 state.dirty = true;
             if (ImGui::Checkbox("hide below thresh", &state.hideBelow)) state.dirty = true;
@@ -399,12 +472,22 @@ int main(int argc, char **argv) {
             if (ImGui::Checkbox("new this frame", &state.showNew)) pc->SetVisible(1, state.showNew);
             if (ImGui::Checkbox("input", &state.showInput)) pc->SetVisible(2, state.showInput);
             if (ImGui::Checkbox("camera", &state.showCamera)) pc->SetVisible(3, state.showCamera);
+            if (ImGui::Checkbox("window box (512^3)", &state.showWindowBox))
+                pc->SetVisible(4, state.showWindowBox);
+            if (ImGui::Checkbox("allocated box", &state.showAllocBox))
+                pc->SetVisible(5, state.showAllocBox);
             ImGui::SeparatorText("Stats");
             ImGui::Text("occupied voxels: %zu", curEntries.size());
             std::size_t below = 0;
-            for (const auto &e : curEntries)
+            for (const auto &e: curEntries)
                 if (voxdbg::belowThreshold(e.weight, state.wThresh)) ++below;
             ImGui::Text("below thresh: %zu", below);
+            ImGui::Text("window box: %.1f (=512 x %.3f)", float(kWindow) * voxel, voxel);
+            Vector3f aMn, aMx;
+            if (entriesAabb(curEntries, voxel, aMn, aMx)) {
+                const Vector3f sz = aMx - aMn;
+                ImGui::Text("allocated box: %.2f x %.2f x %.2f", sz.x(), sz.y(), sz.z());
+            }
             ImGui::End();
         });
 
