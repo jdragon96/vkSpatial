@@ -353,6 +353,7 @@ int main(int argc, char **argv) {
             state.shown = target;
             state.wMax = 1.0f;
             for (const auto &e : curEntries) state.wMax = std::max(state.wMax, e.weight);
+            state.wThresh = std::min(state.wThresh, state.wMax);
         };
         auto refreshSets = [&]() {
             // SetPointSet() below reallocates PointCloudPass's vertex buffers (destroying the
