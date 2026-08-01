@@ -13,6 +13,7 @@
 #include <memory>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Engine::Spatial {
@@ -160,6 +161,24 @@ namespace Engine::Spatial {
 
         uint32_t TileCount() const { return static_cast<uint32_t>(m_tiles.size()); }
 
+        // Drop all tiles (e.g. to replay integration from scratch). Keeps Build parameters.
+        void Reset() { m_tiles.clear(); }
+
+        // World-space core AABB [min,max] of each touched tile (the non-overlapping owned region;
+        // the ghost margin is excluded). One box per tile -- for visualizing the tiling.
+        std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> CoreBoxes() const {
+            std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> out;
+            out.reserve(m_tiles.size());
+            for (const auto &kv : m_tiles) {
+                const Eigen::Vector3i tile(kv.first.x, kv.first.y, kv.first.z);
+                const Eigen::Vector3i coreMin = m_origin + tile * kCore;
+                const Eigen::Vector3i coreMax = coreMin + Eigen::Vector3i::Constant(kCore);
+                out.emplace_back(coreMin.cast<float>() * m_voxelSize,
+                                 coreMax.cast<float>() * m_voxelSize);
+            }
+            return out;
+        }
+
         // Fixed core side C and the derived ghost margin G (0 before Build). Diagnostics.
         int CoreVoxels() const { return kCore; }
         int GhostVoxels() const { return m_ghost; }
@@ -176,6 +195,20 @@ namespace Engine::Spatial {
         // Extension point: applied to each tile right after the common config (quality + p2p), on
         // creation. Subclasses set this to forward Backend-specific settings (e.g. A1/A2).
         std::function<void(Backend &)> m_configureHook;
+
+        float voxelSize() const { return m_voxelSize; }
+
+        // Invoke fn(const Backend&, coreMinVoxel, coreMaxVoxel) for each touched tile. Lets a
+        // subclass aggregate per-tile readouts with the same core-only dedup ExtractPointCloud uses.
+        template <class Fn>
+        void forEachTileCore(Fn &&fn) const {
+            for (const auto &kv : m_tiles) {
+                const Eigen::Vector3i tile(kv.first.x, kv.first.y, kv.first.z);
+                const Eigen::Vector3i coreMin = m_origin + tile * kCore;
+                const Eigen::Vector3i coreMax = coreMin + Eigen::Vector3i::Constant(kCore);
+                fn(*kv.second, coreMin, coreMax);
+            }
+        }
 
     private:
         static constexpr int kCore = 448; // C: voxels per tile core axis

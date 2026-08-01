@@ -5,9 +5,13 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <set>
+#include <tuple>
 #include <vector>
 
+using Engine::Spatial::AdvancedEntry;
 using Engine::Spatial::AdvancedTSDF;
 using Engine::Spatial::OrientedPointCloud;
 using Engine::Spatial::TiledAdvancedTSDF;
@@ -157,4 +161,55 @@ TEST(TiledAdvanced, A1A2SettersReachTiles) {
     ASSERT_GT(hermOn.points.size(), 100u);
     EXPECT_GT(maxNearest(hermOff.points, hermOn.points), 1e-4f)
             << "SetHermitePosition had no effect -> A2 not reaching tiles";
+}
+
+// DownloadEntries aggregates all tiles, core-only: every returned (voxel,direction) is unique
+// (ghost overlap between tiles must not double-count).
+TEST(TiledAdvanced, DownloadEntriesAggregatesTilesCoreOnly) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, Vector3f(0.0f, 0.0f, 6.0f), 30.0f, 200); // x,y in [-15,15] -> >=2 tiles
+
+    TiledAdvancedTSDF tiled;
+    tiled.Build(ctx, 0.05f, 0.15f);
+    tiled.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, 7.0f));
+    const std::vector<AdvancedEntry> entries = tiled.DownloadEntries();
+
+    ASSERT_GT(entries.size(), 1000u);
+    EXPECT_GE(tiled.TileCount(), 2u);
+    std::set<std::tuple<int, int, int, uint32_t>> keys;
+    for (const AdvancedEntry &e: entries)
+        keys.emplace(int(std::lround(e.center.x() / 0.05f)), int(std::lround(e.center.y() / 0.05f)),
+                     int(std::lround(e.center.z() / 0.05f)), e.direction);
+    EXPECT_EQ(keys.size(), entries.size())
+            << "duplicate (voxel,dir) across tiles -> core-only dedup broken";
+}
+
+// Reset drops all tiles: TileCount 0 and DownloadEntries empty afterwards.
+TEST(TiledAdvanced, ResetClearsTiles) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, Vector3f(0.0f, 0.0f, 6.0f), 30.0f, 150);
+
+    TiledAdvancedTSDF tiled;
+    tiled.Build(ctx, 0.05f, 0.15f);
+    tiled.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, 7.0f));
+    ASSERT_GT(tiled.TileCount(), 0u);
+    ASSERT_GT(tiled.DownloadEntries().size(), 0u);
+
+    tiled.Reset();
+    EXPECT_EQ(tiled.TileCount(), 0u);
+    EXPECT_TRUE(tiled.DownloadEntries().empty());
+}
+
+// One core box per touched tile.
+TEST(TiledAdvanced, CoreBoxesMatchTileCount) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, Vector3f(0.0f, 0.0f, 6.0f), 30.0f, 150);
+
+    TiledAdvancedTSDF tiled;
+    tiled.Build(ctx, 0.05f, 0.15f);
+    tiled.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, 7.0f));
+    EXPECT_EQ(tiled.CoreBoxes().size(), std::size_t(tiled.TileCount()));
 }
