@@ -10,6 +10,7 @@
 
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/AdvancedTSDF.h"
+#include "Engine/Spatial/SubmapAdvancedTSDF.h"
 #include "Engine/Spatial/OrientedPointCloud.h"
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
 
@@ -271,6 +272,11 @@ int main(int argc, char **argv) {
         const uint32_t hashCap =
                 std::max(1u << 20, nextPow2(uint32_t(std::min(estEntries * 2.0, double(1u << 24)))));
         const uint32_t maxPts = nextPow2(uint32_t(std::max<size_t>(maxFramePts, 1u << 15)));
+        // Per-tile hash capacity for the TILED path (each tile is one AdvancedTSDF window). Default
+        // 1<<21 (~48MB/tile) is safe for a fully-surface-crossed tile but × many tiles can exceed
+        // VRAM; lower it via --tile-hash for fine-voxel/large scenes (risks per-tile overflow).
+        const uint32_t tileHash =
+                nextPow2(uint32_t(floatArg(argc, argv, "--tile-hash", float(1u << 21))));
 
         std::printf("dir       : %s  (%zu frames, %zu total pts, extent %.4f)\n", dir.c_str(),
                     frames.size(), totalPts, extent);
@@ -283,10 +289,31 @@ int main(int argc, char **argv) {
         // Integrate + extract (single window if it fits, else tiled).
         Engine::Core::Context ctx;
         Engine::Spatial::OrientedPointCloud recon;
-        if (useTiled) {
-            std::printf("path      : TILED (scene exceeds one 512^3 window)\n");
+        if (flag(argc, argv, "--submap")) {
+            const int blockVoxels = int(floatArg(argc, argv, "--block", 32.0f));
+            const float detailK = floatArg(argc, argv, "--detail-k", 4.0f);
+            Engine::Spatial::SubmapAdvancedTSDF s;
+            // Detail is at half voxel -> ~4-8x more entries/tile than base; use the (larger)
+            // --tile-hash size for both levels so the detail hash doesn't overflow (holes).
+            s.Build(ctx, voxel, trunc, blockVoxels, detailK, tileHash, maxPts);
+            s.SetIntegrationQuality({3, 4, true});
+            s.SetPointToPlane(p2p);
+            s.SetConfidenceWeight(conf);
+            s.SetHermitePosition(hermite);
+            for (const auto &fr: frames) s.AddDensity(fr.pts);   // pass 1: density
+            s.FinalizeDensity();
+            for (const auto &fr: frames) s.Integrate(fr.pts, fr.nrm, fr.cam); // pass 2
+            recon = s.ExtractPointCloud(/*merge=*/true);
+            std::printf("path      : SUBMAP (base %.4f + detail %.4f); dense blocks %u, base tiles "
+                        "%u, detail tiles %u\n",
+                        voxel, voxel * 0.5f, s.DenseBlockCount(), s.BaseTileCount(),
+                        s.DetailTileCount());
+        } else if (useTiled) {
+            std::printf("path      : TILED (scene exceeds one 512^3 window); per-tile hash %u "
+                        "(~%.0f MB/tile)\n",
+                        tileHash, double(tileHash) * 24.0 / 1e6);
             Engine::Spatial::TiledAdvancedTSDF tiled;
-            tiled.Build(ctx, voxel, trunc, /*hashCapPerTile=*/1u << 21, /*maxPtsPerFrame=*/maxPts);
+            tiled.Build(ctx, voxel, trunc, /*hashCapPerTile=*/tileHash, /*maxPtsPerFrame=*/maxPts);
             tiled.SetIntegrationQuality({3, 4, true});
             tiled.SetPointToPlane(p2p);
             tiled.SetConfidenceWeight(conf);
