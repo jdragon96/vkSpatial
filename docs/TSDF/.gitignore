@@ -1,0 +1,3 @@
+# Paper PDFs are large (~194MB total) — kept locally, not committed. Re-download from arXiv
+# using the IDs in README.md if needed.
+*.pdf
