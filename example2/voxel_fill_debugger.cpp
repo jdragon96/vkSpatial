@@ -355,6 +355,11 @@ int main(int argc, char **argv) {
             for (const auto &e : curEntries) state.wMax = std::max(state.wMax, e.weight);
         };
         auto refreshSets = [&]() {
+            // SetPointSet() below reallocates PointCloudPass's vertex buffers (destroying the
+            // old ones); the previous frame's command buffer may still be in flight, so wait
+            // here too (not just in rebuildTo) — this path also runs standalone from the
+            // dirty-only branch (color-mode/threshold change with no frame change).
+            vkDeviceWaitIdle(appCtx.device);
             std::vector<PointVertex> occ, nw;
             buildVoxelSets(curEntries, curNew, state.mode, trunc, state.wMax, state.wThresh,
                            state.hideBelow, tracker, voxel, nFrames, occ, nw);
