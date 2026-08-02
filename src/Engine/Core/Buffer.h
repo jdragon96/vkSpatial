@@ -30,6 +30,18 @@ namespace Engine::Core {
         // allocation.
         void Download(void *data, uint32_t bytes, QueueRole role = QueueRole::Compute);
 
+        // Allocates a HOST_VISIBLE (and, on UMA, DEVICE_LOCAL) buffer that stays persistently
+        // mapped: MappedPtr() returns a CPU pointer you can memcpy into, and the same buffer is a
+        // valid storage buffer for shaders (zero-copy upload — no staging, no submit). Any prior
+        // allocation is freed first. Throws std::runtime_error on failure.
+        void AllocateHostVisible(uint32_t bytes);
+
+        // Persistent mapped pointer for AllocateHostVisible buffers; nullptr after plain Allocate.
+        void *MappedPtr() const { return m_mapped; }
+
+        // Flush `bytes` of host writes to the device (no-op on HOST_COHERENT memory; always safe).
+        void FlushMapped(uint32_t bytes) const;
+
         VkBuffer Handle() const { return m_buffer; }
         uint32_t Size() const { return m_size; }
 
@@ -39,6 +51,7 @@ namespace Engine::Core {
         VkBuffer m_buffer = VK_NULL_HANDLE;
         VmaAllocation m_allocation = VK_NULL_HANDLE;
         uint32_t m_size = 0;
+        void *m_mapped = nullptr;
 
         void free();
     };

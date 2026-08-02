@@ -19,6 +19,7 @@ namespace Engine::Core {
             m_allocation = VK_NULL_HANDLE;
         }
         m_size = 0;
+        m_mapped = nullptr;
     }
 
     void Buffer::Allocate(uint32_t bytes) {
@@ -40,6 +41,34 @@ namespace Engine::Core {
             throw std::runtime_error("Buffer: failed to allocate");
 
         m_size = bytes;
+    }
+
+    void Buffer::AllocateHostVisible(uint32_t bytes) {
+        free();
+
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bytes;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_DST_BIT | m_extraUsage;
+
+        VmaAllocationCreateInfo allocInfo{};
+        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                          VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        VmaAllocationInfo info{};
+        if (vmaCreateBuffer(m_context.allocator, &bufferInfo, &allocInfo, &m_buffer, &m_allocation,
+                            &info) != VK_SUCCESS)
+            throw std::runtime_error("Buffer: failed to allocate host-visible");
+
+        m_mapped = info.pMappedData;
+        m_size = bytes;
+    }
+
+    void Buffer::FlushMapped(uint32_t bytes) const {
+        if (m_allocation != VK_NULL_HANDLE)
+            vmaFlushAllocation(m_context.allocator, m_allocation, 0, bytes);
     }
 
     void Buffer::Upload(const void *data, uint32_t bytes, QueueRole role) {
