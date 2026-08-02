@@ -1,3 +1,4 @@
+#include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/AdvancedTSDF.h"
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
@@ -212,4 +213,28 @@ TEST(TiledAdvanced, CoreBoxesMatchTileCount) {
     tiled.Build(ctx, 0.05f, 0.15f);
     tiled.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, 7.0f));
     EXPECT_EQ(tiled.CoreBoxes().size(), std::size_t(tiled.TileCount()));
+}
+
+// The batched Integrate overload (all touched tiles recorded into one CommandBatch, one submit)
+// yields the same occupied set as the self-submitting overload. Uses a multi-tile plane.
+TEST(TiledAdvanced, BatchedIntegrateMatchesSelfSubmit) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, Vector3f(0.0f, 0.0f, 0.0f), 30.0f, 200); // spans >= 2 tiles
+    const Vector3f cam(0.0f, 0.0f, 1.0f);
+
+    TiledAdvancedTSDF a, b;
+    a.Build(ctx, 0.05f, 0.15f);
+    b.Build(ctx, 0.05f, 0.15f);
+
+    a.Integrate(pts, nrm, cam); // self-submitting
+    {
+        Engine::Compute::CommandBatch batch(ctx);
+        b.Integrate(pts, nrm, cam, batch); // batched
+        batch.Submit();
+    }
+    ASSERT_GE(a.TileCount(), 2u);
+    EXPECT_EQ(a.TileCount(), b.TileCount());
+    EXPECT_EQ(a.DownloadEntries().size(), b.DownloadEntries().size());
+    EXPECT_GT(a.DownloadEntries().size(), 1000u);
 }

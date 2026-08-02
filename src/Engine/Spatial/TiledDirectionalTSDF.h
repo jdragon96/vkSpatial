@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/DirectionalIntegrationQuality.h"
 #include "Engine/Spatial/OrientedPointCloud.h"
@@ -72,55 +73,27 @@ namespace Engine::Spatial {
         // Integrate SDF form, forwarded to every tile (default true = point-to-plane).
         void SetPointToPlane(bool on) { m_pointToPlane = on; }
 
-        // Route each point to its owning tile plus any adjacent tile whose ghost band it falls in,
-        // then integrate the per-tile sublists (lazily creating+building touched tiles).
+        // Self-submitting: route + integrate each touched tile (each tile submits its own dispatch;
+        // works for ANY Backend). AdvancedTSDF's tile Integrate uses mapped uploads internally.
         void Integrate(const std::vector<Eigen::Vector3f> &points,
                        const std::vector<Eigen::Vector3f> &normals,
                        const Eigen::Vector3f &cameraPos = Eigen::Vector3f::Zero()) {
-            const size_t n = std::min(points.size(), normals.size());
-            if (n == 0) return;
-
-            struct SubList {
-                std::vector<Eigen::Vector3f> pts, nrm;
-            };
-            std::unordered_map<TileKey, SubList, TileKeyHash> routed;
-
-            for (size_t i = 0; i < n; ++i) {
-                const Eigen::Vector3f &p = points[i];
-                const Eigen::Vector3i v(static_cast<int>(std::floor(p.x() / m_voxelSize)),
-                                        static_cast<int>(std::floor(p.y() / m_voxelSize)),
-                                        static_cast<int>(std::floor(p.z() / m_voxelSize)));
-                const Eigen::Vector3i home = tileOf(v);
-                const Eigen::Vector3i local = (v - m_origin) - home * kCore; // 0..C-1 per axis
-
-                int offs[3][2];
-                int nOff[3];
-                for (int a = 0; a < 3; ++a) {
-                    offs[a][0] = 0;
-                    nOff[a] = 1;
-                    if (local[a] < m_ghost) {
-                        offs[a][1] = -1;
-                        nOff[a] = 2;
-                    } else if (local[a] >= kCore - m_ghost) {
-                        offs[a][1] = +1;
-                        nOff[a] = 2;
-                    }
-                }
-
-                for (int ix = 0; ix < nOff[0]; ++ix)
-                    for (int iy = 0; iy < nOff[1]; ++iy)
-                        for (int iz = 0; iz < nOff[2]; ++iz) {
-                            const TileKey key{home.x() + offs[0][ix], home.y() + offs[1][iy],
-                                              home.z() + offs[2][iz]};
-                            SubList &s = routed[key];
-                            s.pts.push_back(p);
-                            s.nrm.push_back(normals[i]);
-                        }
-            }
-
-            for (auto &kv : routed) {
+            for (auto &kv : route(points, normals)) {
                 Backend *tile = tileFor(kv.first);
                 tile->Integrate(kv.second.pts, kv.second.nrm, cameraPos);
+            }
+        }
+
+        // Batched: route + RECORD each touched tile into `batch` (caller submits ONCE). Requires
+        // Backend::RecordIntegrate; used by SubmapAdvancedTSDF to fuse base+detail into one submit.
+        // Distinct tiles = distinct pipelines, safe to batch together. Only instantiated when used,
+        // so backends without RecordIntegrate can still use the self-submitting overload above.
+        void Integrate(const std::vector<Eigen::Vector3f> &points,
+                       const std::vector<Eigen::Vector3f> &normals,
+                       const Eigen::Vector3f &cameraPos, Engine::Compute::CommandBatch &batch) {
+            for (auto &kv : route(points, normals)) {
+                Backend *tile = tileFor(kv.first);
+                tile->RecordIntegrate(kv.second.pts, kv.second.nrm, cameraPos, batch);
             }
         }
 
@@ -225,6 +198,52 @@ namespace Engine::Spatial {
                 return h;
             }
         };
+
+        struct SubList {
+            std::vector<Eigen::Vector3f> pts, nrm;
+        };
+
+        // Route each point to its owning tile plus any adjacent tile whose ghost band it falls in.
+        // Shared by both Integrate overloads (no tiles created here — that happens in tileFor).
+        std::unordered_map<TileKey, SubList, TileKeyHash>
+        route(const std::vector<Eigen::Vector3f> &points,
+              const std::vector<Eigen::Vector3f> &normals) const {
+            std::unordered_map<TileKey, SubList, TileKeyHash> routed;
+            const size_t n = std::min(points.size(), normals.size());
+            for (size_t i = 0; i < n; ++i) {
+                const Eigen::Vector3f &p = points[i];
+                const Eigen::Vector3i v(static_cast<int>(std::floor(p.x() / m_voxelSize)),
+                                        static_cast<int>(std::floor(p.y() / m_voxelSize)),
+                                        static_cast<int>(std::floor(p.z() / m_voxelSize)));
+                const Eigen::Vector3i home = tileOf(v);
+                const Eigen::Vector3i local = (v - m_origin) - home * kCore; // 0..C-1 per axis
+
+                int offs[3][2];
+                int nOff[3];
+                for (int a = 0; a < 3; ++a) {
+                    offs[a][0] = 0;
+                    nOff[a] = 1;
+                    if (local[a] < m_ghost) {
+                        offs[a][1] = -1;
+                        nOff[a] = 2;
+                    } else if (local[a] >= kCore - m_ghost) {
+                        offs[a][1] = +1;
+                        nOff[a] = 2;
+                    }
+                }
+
+                for (int ix = 0; ix < nOff[0]; ++ix)
+                    for (int iy = 0; iy < nOff[1]; ++iy)
+                        for (int iz = 0; iz < nOff[2]; ++iz) {
+                            const TileKey key{home.x() + offs[0][ix], home.y() + offs[1][iy],
+                                              home.z() + offs[2][iz]};
+                            SubList &s = routed[key];
+                            s.pts.push_back(p);
+                            s.nrm.push_back(normals[i]);
+                        }
+            }
+            return routed;
+        }
 
         Eigen::Vector3i tileOf(const Eigen::Vector3i &v) const {
             return Eigen::Vector3i(floorDiv(v.x() - m_origin.x(), kCore),
