@@ -137,3 +137,51 @@ TEST(ArgParserClass, MultipleMustAccumulateFailures) {
     EXPECT_NE(err.find("need mesh"), std::string::npos); // --mesh missing -> printed
     EXPECT_FALSE(arg.Ok());
 }
+
+// ---- Option(key, defaultValue): declared defaults returned by the no-fallback getters ----
+
+TEST(ArgParserClass, OptionDefaultsWhenAbsent) {
+    Argv a{"prog", "--dir", "x"}; // none of the options below are supplied
+    util::ArgParser arg = util::BuildArgParser(a.argc(), a.argv())
+                                  .Option("--out", "scan_out")
+                                  .Option("--frames", 90)
+                                  .Option("--voxel", 0.5);
+    EXPECT_EQ(arg.Value("--out"), "scan_out");
+    EXPECT_EQ(arg.ValueInt("--frames"), 90);
+    EXPECT_FLOAT_EQ(arg.ValueFloat("--voxel"), 0.5f);
+}
+
+TEST(ArgParserClass, SuppliedValueOverridesOptionDefault) {
+    Argv a{"prog", "--out", "mine", "--frames", "7", "--voxel", "0.1"};
+    util::ArgParser arg = util::BuildArgParser(a.argc(), a.argv())
+                                  .Option("--out", "scan_out")
+                                  .Option("--frames", 90)
+                                  .Option("--voxel", 0.5);
+    EXPECT_EQ(arg.Value("--out"), "mine");
+    EXPECT_EQ(arg.ValueInt("--frames"), 7);
+    EXPECT_FLOAT_EQ(arg.ValueFloat("--voxel"), 0.1f);
+}
+
+TEST(ArgParserClass, ExplicitFallbackIgnoresOptionDefault) {
+    Argv a{"prog"}; // --voxel absent
+    util::ArgParser arg = util::BuildArgParser(a.argc(), a.argv()).Option("--voxel", 0.5);
+    EXPECT_FLOAT_EQ(arg.ValueFloat("--voxel", 9.0f), 9.0f); // explicit fallback wins over stored 0.5
+    EXPECT_FLOAT_EQ(arg.ValueFloat("--voxel"), 0.5f);       // no fallback -> stored default
+}
+
+// The declared-default type and the read type need not match (stored as text, re-parsed on read).
+TEST(ArgParserClass, OptionDefaultCrossType) {
+    Argv a{"prog"};
+    util::ArgParser arg = util::BuildArgParser(a.argc(), a.argv()).Option("--tile-hash", 1 << 20);
+    EXPECT_FLOAT_EQ(arg.ValueFloat("--tile-hash"), float(1 << 20)); // int default read as float
+    EXPECT_EQ(arg.Value("--tile-hash"), "1048576");                 // ... or as its text form
+}
+
+// An option with no declared default falls back to the type's zero/empty value.
+TEST(ArgParserClass, NoDefaultFallsBackToZero) {
+    Argv a{"prog"};
+    util::ArgParser arg = util::BuildArgParser(a.argc(), a.argv()).Option("--gt");
+    EXPECT_EQ(arg.Value("--gt"), "");
+    EXPECT_EQ(arg.ValueInt("--n"), 0);
+    EXPECT_FLOAT_EQ(arg.ValueFloat("--f"), 0.0f);
+}

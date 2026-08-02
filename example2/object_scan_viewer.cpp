@@ -151,26 +151,26 @@ int main(int argc, char **argv) {
                 util::BuildArgParser(argc, argv)
                         .Must("--mesh", "usage: object_scan_viewer --mesh <file.ply|.obj> --out "
                                         "<dir> [--frames N] [--turns T] [--sample N] [--no-view]")
-                        .Option("--out")
-                        .Option("--frames")
-                        .Option("--turns")
-                        .Option("--elev-start")
-                        .Option("--elev-end")
-                        .Option("--sample")
-                        .Option("--width")
-                        .Option("--height")
-                        .Option("--fov");
+                        .Option("--out", "scan_out")
+                        .Option("--frames", 90)
+                        .Option("--turns", 3.0)
+                        .Option("--elev-start", 75.0)
+                        .Option("--elev-end", -30.0)
+                        .Option("--sample", 120000)
+                        .Option("--width", 320)
+                        .Option("--height", 240)
+                        .Option("--fov", 55.0);
         if (!arg) return 2;
         const std::string meshPath = arg.Value("--mesh");
-        const std::string outDir = arg.Value("--out", "scan_out");
-        const int frames = arg.ValueInt("--frames", 90);
-        const float turns = arg.ValueFloat("--turns", 3.0f);
-        const float elevStart = arg.ValueFloat("--elev-start", 75.0f);
-        const float elevEnd = arg.ValueFloat("--elev-end", -30.0f);
-        const int sample = arg.ValueInt("--sample", 120000);
-        const int capW = arg.ValueInt("--width", 320);
-        const int capH = arg.ValueInt("--height", 240);
-        const float fov = arg.ValueFloat("--fov", 55.0f);
+        const std::string outDir = arg.Value("--out");
+        const int frames = arg.ValueInt("--frames");
+        const float turns = arg.ValueFloat("--turns");
+        const float elevStart = arg.ValueFloat("--elev-start");
+        const float elevEnd = arg.ValueFloat("--elev-end");
+        const int sample = arg.ValueInt("--sample");
+        const int capW = arg.ValueInt("--width");
+        const int capH = arg.ValueInt("--height");
+        const float fov = arg.ValueFloat("--fov");
         const bool noView = arg.Has("--no-view");
 
         // 1. Load mesh (+ vertex normals) and centre it at the origin.

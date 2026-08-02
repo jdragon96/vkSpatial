@@ -172,12 +172,13 @@ int main(int argc, char **argv) {
                         .Must("--dir", "usage: voxel_fill_debugger --dir <folder> [--voxel v] "
                                        "[--trunc t] [--no-p2p] [--conf L] [--hermite] [--wthresh w] "
                                        "[--tile-hash N] [--block V] [--detail-k K] [--dump]")
-                        .Option("--voxel")
-                        .Option("--trunc")
-                        .Option("--wthresh")
-                        .Option("--tile-hash")
-                        .Option("--block")
-                        .Option("--detail-k");
+                        .Option("--voxel")          // default is runtime-computed (extent / 200)
+                        .Option("--trunc")          // default is runtime-computed (voxel * 3)
+                        .Option("--conf", 0.5)
+                        .Option("--wthresh", 0.0)
+                        .Option("--tile-hash", 1 << 20)
+                        .Option("--block", 32)
+                        .Option("--detail-k", 4.0);
         if (!arg) return 2;
         const std::string dir = arg.Value("--dir");
         if (!fs::is_directory(dir)) {
@@ -223,13 +224,13 @@ int main(int argc, char **argv) {
         if (frames.empty()) throw std::runtime_error("no usable frames (need per-point normals)");
 
         const bool p2p = !arg.Has("--no-p2p");
-        const float conf = arg.ValueFloat("--conf", 0.5f);
+        const float conf = arg.ValueFloat("--conf");
         const bool hermite = arg.Has("--hermite");
         const Vector3f span = bbMax - bbMin;
         const float extent = span.norm();
         const float voxel = arg.ValueFloat("--voxel", extent / 200.0f);
         const float trunc = arg.ValueFloat("--trunc", voxel * 3.0f);
-        const float wThreshArg = arg.ValueFloat("--wthresh", 0.0f);
+        const float wThreshArg = arg.ValueFloat("--wthresh");
 
         // SubmapAdvancedTSDF: base TiledAdvancedTSDF at `voxel` (all points) + a detail level at
         // voxel/2 in DENSE blocks only. Density is precomputed from ALL frames up front so the dense
@@ -237,10 +238,10 @@ int main(int argc, char **argv) {
         // --block/--detail-k tune density; --tile-hash sizes both levels (detail = half voxel needs
         // a bigger hash). Sparse scenes -> no dense blocks -> behaves like a plain tiled map.
         const uint32_t tileHash =
-                nextPow2(uint32_t(arg.ValueFloat("--tile-hash", float(1u << 20))));
+                nextPow2(uint32_t(arg.ValueFloat("--tile-hash")));
         const uint32_t maxPts = nextPow2(uint32_t(std::max<std::size_t>(maxFramePts, 1u << 15)));
-        const int blockVoxels = int(arg.ValueFloat("--block", 32.0f));
-        const float detailK = arg.ValueFloat("--detail-k", 4.0f);
+        const int blockVoxels = int(arg.ValueFloat("--block"));
+        const float detailK = arg.ValueFloat("--detail-k");
 
         Engine::Core::Context ctx;
         Engine::Spatial::SubmapAdvancedTSDF submap;

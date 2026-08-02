@@ -130,14 +130,14 @@ int main(int argc, char **argv) {
                         .Must("--dir", "usage: tsdf_folder_eval --dir <folder> [--voxel v] "
                                        "[--trunc t] [--gt path] [--out extracted.ply] [--no-p2p] "
                                        "[--conf L] [--hermite]")
-                        .Option("--voxel")
-                        .Option("--trunc")
+                        .Option("--voxel")          // default is runtime-computed (extent / 200)
+                        .Option("--trunc")          // default is runtime-computed (voxel * 3)
                         .Option("--gt")
                         .Option("--out")
-                        .Option("--conf")
-                        .Option("--tile-hash")
-                        .Option("--block")
-                        .Option("--detail-k");
+                        .Option("--conf", 0.5)
+                        .Option("--tile-hash", 1 << 21)
+                        .Option("--block", 32)
+                        .Option("--detail-k", 4.0);
         if (!arg) return 2;
         const std::string dir = arg.Value("--dir");
         if (!fs::is_directory(dir)) {
@@ -147,7 +147,7 @@ int main(int argc, char **argv) {
 
         // Collect frame_*.ply (sorted); ground_truth.ply is excluded and used as GT.
         std::vector<std::string> framePaths;
-        std::string gtPath = arg.Value("--gt", "");
+        std::string gtPath = arg.Value("--gt");
         for (const auto &e: fs::directory_iterator(dir)) {
             if (!e.is_regular_file()) continue;
             const std::string name = e.path().filename().string();
@@ -188,7 +188,7 @@ int main(int argc, char **argv) {
         const float extent = (bbMax - bbMin).norm();
 
         const bool p2p = !arg.Has("--no-p2p");
-        const float conf = arg.ValueFloat("--conf", 0.5f);
+        const float conf = arg.ValueFloat("--conf");
         const bool hermite = arg.Has("--hermite");
         const float voxel = arg.ValueFloat("--voxel", extent / 200.0f);
         const float trunc = arg.ValueFloat("--trunc", voxel * 3.0f);
@@ -226,7 +226,7 @@ int main(int argc, char **argv) {
         // 1<<21 (~48MB/tile) is safe for a fully-surface-crossed tile but × many tiles can exceed
         // VRAM; lower it via --tile-hash for fine-voxel/large scenes (risks per-tile overflow).
         const uint32_t tileHash =
-                nextPow2(uint32_t(arg.ValueFloat("--tile-hash", float(1u << 21))));
+                nextPow2(uint32_t(arg.ValueFloat("--tile-hash")));
 
         std::printf("dir       : %s  (%zu frames, %zu total pts, extent %.4f)\n", dir.c_str(),
                     frames.size(), totalPts, extent);
@@ -240,8 +240,8 @@ int main(int argc, char **argv) {
         Engine::Core::Context ctx;
         Engine::Spatial::OrientedPointCloud recon;
         if (arg.Has("--submap")) {
-            const int blockVoxels = int(arg.ValueFloat("--block", 32.0f));
-            const float detailK = arg.ValueFloat("--detail-k", 4.0f);
+            const int blockVoxels = int(arg.ValueFloat("--block"));
+            const float detailK = arg.ValueFloat("--detail-k");
             Engine::Spatial::SubmapAdvancedTSDF s;
             // Detail is at half voxel -> ~4-8x more entries/tile than base; use the (larger)
             // --tile-hash size for both levels so the detail hash doesn't overflow (holes).
@@ -306,7 +306,7 @@ int main(int argc, char **argv) {
         //                 dir.c_str());
         // }
 
-        const std::string outPly = arg.Value("--out", "");
+        const std::string outPly = arg.Value("--out");
         if (!outPly.empty()) {
             util::SavePly(outPly, recon.points, recon.normals);
             std::printf("wrote extracted cloud: %s\n", outPly.c_str());
