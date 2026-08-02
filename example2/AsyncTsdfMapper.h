@@ -43,6 +43,7 @@ namespace asyncmap {
     struct MapSnapshot {
         std::vector<AdvancedEntry> entries; // occupied voxels (precedence-deduped base+detail)
         std::vector<char> isNew;            // parallel to entries: first filled this frame
+        std::vector<int> firstFrame;        // parallel to entries: frame that first filled it
         int processedFrame = -1;
         uint32_t baseTiles = 0, detailTiles = 0, denseBlocks = 0;
         Eigen::Vector3f allocMin = Eigen::Vector3f::Zero(), allocMax = Eigen::Vector3f::Zero();
@@ -188,6 +189,11 @@ namespace asyncmap {
                     {
                         util::ScopedStageTimer t(prof, "tracker");
                         snap->isNew = tracker.update(snap->entries, step.frame);
+                        snap->firstFrame.resize(snap->entries.size());
+                        const float keyVoxel = m_cfg.baseVoxel * 0.5f;
+                        for (std::size_t i = 0; i < snap->entries.size(); ++i)
+                            snap->firstFrame[i] =
+                                    tracker.firstFrame(voxdbg::keyOf(snap->entries[i], keyVoxel));
                     }
                     snap->trackerMs = prof.LastMs("tracker");
 

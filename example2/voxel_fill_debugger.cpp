@@ -1,3 +1,4 @@
+#include "AsyncTsdfMapper.h"
 #include "ImGuiPass.h"
 #include "PointCloudPass.h"
 #include "VoxelFillDebug.h"
@@ -134,7 +135,7 @@ namespace {
 
     void buildVoxelSets(const std::vector<AdvancedEntry> &entries, const std::vector<char> &isNew,
                         voxdbg::ColorMode mode, float trunc, float wMax, float wThresh, bool hideBelow,
-                        const voxdbg::FillTracker &tracker, float voxel, int nFrames,
+                        const std::vector<int> &firstFrame, int nFrames,
                         std::vector<PointVertex> &occupied, std::vector<PointVertex> &newThis) {
         occupied.clear();
         newThis.clear();
@@ -151,7 +152,7 @@ namespace {
                     c = voxdbg::weightColor(e.weight, wMax);
                     break;
                 case voxdbg::ColorMode::FillFrame:
-                    c = voxdbg::fillFrameColor(tracker.firstFrame(voxdbg::keyOf(e, voxel)), nFrames);
+                    c = voxdbg::fillFrameColor(i < firstFrame.size() ? firstFrame[i] : -1, nFrames);
                     break;
                 case voxdbg::ColorMode::Direction:
                     c = voxdbg::directionColor(uint8_t(e.direction));
@@ -198,15 +199,13 @@ int main(int argc, char **argv) {
         std::sort(framePaths.begin(), framePaths.end());
         if (framePaths.empty()) throw std::runtime_error("no frame_*.ply found in " + dir);
 
-        struct Frame {
-            std::vector<Vector3f> pts, nrm;
-            Vector3f cam;
-        };
-        std::vector<Frame> frames;
+        // Frames use asyncmap::MapperFrame directly so they can be moved into the mapper (which is
+        // shared read-only with the render thread for the input-cloud/camera layers).
+        std::vector<asyncmap::MapperFrame> frames;
         Vector3f bbMin = Vector3f::Constant(1e30f), bbMax = Vector3f::Constant(-1e30f);
         size_t maxFramePts = 0;
         for (const auto &p: framePaths) {
-            Frame fr;
+            asyncmap::MapperFrame fr;
             if (!util::LoadPly(p, fr.pts, fr.nrm) || fr.nrm.size() != fr.pts.size()) {
                 std::fprintf(stderr, "skip (no normals): %s\n", p.c_str());
                 continue;
@@ -241,29 +240,39 @@ int main(int argc, char **argv) {
         const int blockVoxels = int(arg.ValueFloat("--block"));
         const float detailK = arg.ValueFloat("--detail-k");
 
-        Engine::Core::Context ctx;
-        Engine::Spatial::SubmapAdvancedTSDF submap;
-        submap.Build(ctx, voxel, trunc, blockVoxels, detailK, tileHash, maxPts);
-        submap.SetIntegrationQuality({3, 4, true});
-        submap.SetPointToPlane(p2p);
-        submap.SetConfidenceWeight(conf);
-        submap.SetHermitePosition(hermite);
-        for (const auto &fr: frames) submap.AddDensity(fr.pts); // density from all frames
-        submap.FinalizeDensity();
-
         const int nFrames = int(frames.size());
         const float detailVoxel = voxel * 0.5f; // finest level -> key voxel so base+detail keys are unique
-        voxdbg::FillTracker tracker(detailVoxel);
 
         std::printf("dir       : %s  (%d frames, extent %.4f)\n", dir.c_str(), nFrames, extent);
-        std::printf("submap    : base %.4f + detail %.4f, block %d vox, detail-k %.1f, dense blocks "
-                    "%u, per-tile hash %u\n",
-                    voxel, detailVoxel, blockVoxels, detailK, submap.DenseBlockCount(), tileHash);
+        std::printf("submap    : base %.4f + detail %.4f, block %d vox, detail-k %.1f, per-tile "
+                    "hash %u\n",
+                    voxel, detailVoxel, blockVoxels, detailK, tileHash);
 
-        // Headless per-frame stats: no window, no render deps touched. Times the TSDF-side pipeline
-        // stages (Integrate / DownloadEntries / tracker.update) so the dominant cost is visible even
-        // without the live window — these three are shared with the live scrub path (rebuildTo).
+        // Mapper config, shared by the headless --dump path and the live async worker.
+        asyncmap::Config cfg;
+        cfg.baseVoxel = voxel;
+        cfg.truncation = trunc;
+        cfg.blockVoxels = blockVoxels;
+        cfg.detailK = detailK;
+        cfg.tileHash = tileHash;
+        cfg.maxPoints = maxPts;
+        cfg.quality = {3, 4, true};
+        cfg.pointToPlane = p2p;
+        cfg.confidence = conf;
+        cfg.hermite = hermite;
+
+        // Headless per-frame stats: SYNCHRONOUS submap (baseline timing), no window/render deps.
         if (arg.Has("--dump") || arg.Has("--no-view")) {
+            Engine::Core::Context ctx;
+            Engine::Spatial::SubmapAdvancedTSDF submap;
+            submap.Build(ctx, voxel, trunc, blockVoxels, detailK, tileHash, maxPts);
+            submap.SetIntegrationQuality(cfg.quality);
+            submap.SetPointToPlane(p2p);
+            submap.SetConfidenceWeight(conf);
+            submap.SetHermitePosition(hermite);
+            for (const auto &fr: frames) submap.AddDensity(fr.pts); // density from all frames
+            submap.FinalizeDensity();
+            voxdbg::FillTracker tracker(detailVoxel);
             util::StageProfiler prof;
             for (int f = 0; f < nFrames; ++f) {
                 {
@@ -298,8 +307,16 @@ int main(int argc, char **argv) {
         }
 
         ///////////////////////////////////////////////////////////////////////////////////////
-        // Live viewer — scaffold reused from object_scan_viewer.cpp; scrubbing/state is new.
+        // Live viewer — the TSDF runs on a background AsyncTsdfMapper (its own device); this thread
+        // only renders the latest immutable snapshot, so the window stays smooth regardless of
+        // integrate/download cost. Frames are shared read-only with the worker.
         ///////////////////////////////////////////////////////////////////////////////////////
+
+        auto sharedFrames =
+                std::make_shared<std::vector<asyncmap::MapperFrame>>(std::move(frames));
+        asyncmap::AsyncTsdfMapper mapper;
+        mapper.Start(cfg, sharedFrames);
+        mapper.RequestFrame(0);
 
         Engine::Render::ApplicationDescriptor descriptor;
         descriptor.window = {1280, 800, "Voxel Fill Debugger"};
@@ -336,45 +353,19 @@ int main(int argc, char **argv) {
             bool hideBelow = false;
             bool showOccupied = true, showNew = true, showInput = true, showCamera = true;
             bool showWindowBox = true, showAllocBox = true, showSubmapBox = true;
-            int shown = -1;
+            int lastRequested = -1; // last frame handed to the mapper
             float wMax = 1.0f;
             bool dirty = false;
         } state;
         state.wThresh = wThreshArg;
 
-        util::StageProfiler prof; // per-stage wall-clock, shown live in ImGui + printed on exit
-        std::vector<AdvancedEntry> curEntries;
-        std::vector<char> curNew;
-        auto rebuildTo = [&](int target) {
-            target = std::clamp(target, 0, std::max(0, nFrames - 1));
-            if (nFrames == 0) return;
-            vkDeviceWaitIdle(appCtx.device);
-            if (target < state.shown) {
-                submap.Reset();
-                tracker.reset();
-                state.shown = -1;
-            }
-            for (int f = state.shown + 1; f <= target; ++f) {
-                {
-                    util::ScopedStageTimer t(prof, "integrate");
-                    submap.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
-                }
-                {
-                    util::ScopedStageTimer t(prof, "download");
-                    curEntries = submap.DownloadEntries();
-                }
-                {
-                    util::ScopedStageTimer t(prof, "tracker");
-                    curNew = tracker.update(curEntries, f);
-                }
-            }
-            state.shown = target;
-            state.wMax = 1.0f;
-            for (const auto &e: curEntries) state.wMax = std::max(state.wMax, e.weight);
-            state.wThresh = std::min(state.wThresh, state.wMax);
-        };
+        util::StageProfiler prof;                        // render-thread stages only
+        std::shared_ptr<const asyncmap::MapSnapshot> snap; // latest consumed snapshot
 
-        auto refreshSets = [&]() {
+        // Rebuild the render point-sets from an immutable snapshot (worker output). SetPointSet
+        // reallocates PointCloudPass buffers; the prior frame's command buffer may still be in
+        // flight, so wait once here before touching them.
+        auto refreshSets = [&](const asyncmap::MapSnapshot &s) {
             {
                 util::ScopedStageTimer t(prof, "waitIdle");
                 vkDeviceWaitIdle(appCtx.device);
@@ -382,38 +373,36 @@ int main(int argc, char **argv) {
             std::vector<PointVertex> occ, nw;
             {
                 util::ScopedStageTimer t(prof, "buildSets");
-                buildVoxelSets(curEntries, curNew, state.mode, trunc, state.wMax, state.wThresh,
-                               state.hideBelow, tracker, detailVoxel, nFrames, occ, nw);
+                buildVoxelSets(s.entries, s.isNew, state.mode, trunc, state.wMax, state.wThresh,
+                               state.hideBelow, s.firstFrame, nFrames, occ, nw);
             }
             util::ScopedStageTimer t(prof, "upload"); // CPU box gen + all 7 SetPointSet uploads
             pc->SetPointSet(0, occ);
             pc->SetPointSet(1, nw);
+            const int pf = std::clamp(s.processedFrame, 0, nFrames - 1);
             std::vector<PointVertex> in;
-            pushCloud(in, frames[std::clamp(state.shown, 0, nFrames - 1)].pts, 100, 110, 120);
+            pushCloud(in, (*sharedFrames)[pf].pts, 100, 110, 120);
             pc->SetPointSet(2, in);
-            pc->SetPointSet(3, cameraMarker(frames[std::clamp(state.shown, 0, nFrames - 1)].cam));
+            pc->SetPointSet(3, cameraMarker((*sharedFrames)[pf].cam));
 
             std::vector<PointVertex> tileBoxes;
-            for (const auto &b: submap.BaseCoreBoxes()) {
+            for (const auto &b: s.baseCoreBoxes) {
                 const std::vector<PointVertex> e = boxEdges(b.first, b.second, voxel, 40, 220, 220);
                 tileBoxes.insert(tileBoxes.end(), e.begin(), e.end());
             }
             pc->SetPointSet(4, tileBoxes);
-            Vector3f aMn, aMx;
-            if (entriesAabb(curEntries, voxel, aMn, aMx))
-                pc->SetPointSet(5, boxEdges(aMn, aMx, voxel, 255, 160, 40));
+            if (s.hasAlloc)
+                pc->SetPointSet(5, boxEdges(s.allocMin, s.allocMax, voxel, 255, 160, 40));
             else
                 pc->SetPointSet(5, {});
 
             std::vector<PointVertex> submapBoxes;
-            for (const auto &b: submap.DenseBlockBoxes()) {
+            for (const auto &b: s.denseBlockBoxes) {
                 const std::vector<PointVertex> e = boxEdges(b.first, b.second, voxel, 230, 60, 230);
                 submapBoxes.insert(submapBoxes.end(), e.begin(), e.end());
             }
             pc->SetPointSet(6, submapBoxes);
         };
-        rebuildTo(0);
-        refreshSets();
 
         imgui->SetUi([&]() {
             ImGui::Begin("Voxel Fill Debug");
@@ -456,21 +445,30 @@ int main(int argc, char **argv) {
             if (ImGui::Checkbox("submap regions (detail)", &state.showSubmapBox))
                 pc->SetVisible(6, state.showSubmapBox);
             ImGui::SeparatorText("Stats");
-            ImGui::Text("occupied voxels: %zu", curEntries.size());
-            std::size_t below = 0;
-            for (const auto &e: curEntries)
-                if (voxdbg::belowThreshold(e.weight, state.wThresh)) ++below;
-            ImGui::Text("below thresh: %zu", below);
-            ImGui::Text("base/detail tiles: %u / %u, dense blocks: %u", submap.BaseTileCount(),
-                        submap.DetailTileCount(), submap.DenseBlockCount());
-            Vector3f aMn, aMx;
-            if (entriesAabb(curEntries, voxel, aMn, aMx)) {
-                const Vector3f sz = aMx - aMn;
-                ImGui::Text("allocated box: %.2f x %.2f x %.2f", sz.x(), sz.y(), sz.z());
+            const int behind = mapper.RequestedFrame() - mapper.ProcessedFrame();
+            ImGui::Text("worker: processed %d / requested %d  (%d behind)", mapper.ProcessedFrame(),
+                        mapper.RequestedFrame(), behind > 0 ? behind : 0);
+            if (snap) {
+                ImGui::Text("occupied voxels: %zu", snap->entries.size());
+                std::size_t below = 0;
+                for (const auto &e: snap->entries)
+                    if (voxdbg::belowThreshold(e.weight, state.wThresh)) ++below;
+                ImGui::Text("below thresh: %zu", below);
+                ImGui::Text("base/detail tiles: %u / %u, dense blocks: %u", snap->baseTiles,
+                            snap->detailTiles, snap->denseBlocks);
+                if (snap->hasAlloc) {
+                    const Vector3f sz = snap->allocMax - snap->allocMin;
+                    ImGui::Text("allocated box: %.2f x %.2f x %.2f", sz.x(), sz.y(), sz.z());
+                }
+                ImGui::SeparatorText("Worker stage times (ms, latest frame)");
+                ImGui::Text("integrate %8.2f", snap->integrateMs);
+                ImGui::Text("download  %8.2f", snap->downloadMs);
+                ImGui::Text("tracker   %8.2f", snap->trackerMs);
+            } else {
+                ImGui::Text("(waiting for first snapshot...)");
             }
-            ImGui::SeparatorText("Timing (avg / last ms per frame-advance)");
-            for (const char *s: {"integrate", "download", "tracker", "waitIdle", "buildSets",
-                                 "upload", "render"})
+            ImGui::SeparatorText("Render stage times (avg / last ms)");
+            for (const char *s: {"waitIdle", "buildSets", "upload", "render"})
                 ImGui::Text("%-10s %8.2f / %8.2f", s, prof.AvgMs(s), prof.LastMs(s));
             ImGui::End();
         });
@@ -511,18 +509,31 @@ int main(int argc, char **argv) {
                 const VkExtent2D s = app.GetWindow().FramebufferSize();
                 if (s.width == 0 || s.height == 0) continue;
 
+                // Play advances only once the worker has caught up to the current target AND the fps
+                // interval elapsed, so every frame's fill is shown (paced by worker throughput).
                 const double now = ImGui::GetTime();
-                if (state.playing && nFrames > 0 &&
+                if (state.playing && nFrames > 0 && mapper.ProcessedFrame() >= state.frame &&
                     (now - lastAdvance) >= 1.0 / double(std::max(1.0f, state.fps))) {
                     state.frame = (state.frame + 1) % nFrames; // loop
                     lastAdvance = now;
                 }
-                if (state.frame != state.shown) {
-                    rebuildTo(state.frame);
-                    refreshSets();
-                    state.dirty = false;
-                } else if (state.dirty) {
-                    refreshSets();
+                if (state.frame != state.lastRequested) {
+                    mapper.RequestFrame(state.frame); // coalesced; non-blocking
+                    state.lastRequested = state.frame;
+                }
+
+                // Consume the latest worker snapshot (never blocks on integrate/download).
+                std::shared_ptr<const asyncmap::MapSnapshot> latest = mapper.Latest();
+                bool needRefresh = state.dirty;
+                if (latest && latest.get() != snap.get()) {
+                    snap = latest;
+                    state.wMax = 1.0f;
+                    for (const auto &e: snap->entries) state.wMax = std::max(state.wMax, e.weight);
+                    state.wThresh = std::min(state.wThresh, state.wMax);
+                    needRefresh = true;
+                }
+                if (snap && needRefresh) {
+                    refreshSets(*snap);
                     state.dirty = false;
                 }
 
@@ -533,10 +544,12 @@ int main(int argc, char **argv) {
             }
         } catch (...) {
             vkDeviceWaitIdle(appCtx.device);
+            mapper.Stop();
             throw;
         }
         vkDeviceWaitIdle(appCtx.device);
-        std::printf("\n%s", prof.Report("live pipeline (per frame-advance)").c_str());
+        mapper.Stop();
+        std::printf("\n%s", prof.Report("render-thread pipeline").c_str());
     } catch (const std::exception &e) {
         std::cerr << e.what() << "\n";
         return 1;
