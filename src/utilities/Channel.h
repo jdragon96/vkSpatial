@@ -65,6 +65,13 @@ namespace util {
             return true;
         }
 
+        // Drop all queued items (e.g. on a pipeline reset). Does not close the channel.
+        void Clear() {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_queue.clear();
+            m_notFull.notify_all();
+        }
+
         void Close() {
             {
                 std::lock_guard<std::mutex> lock(m_mutex);

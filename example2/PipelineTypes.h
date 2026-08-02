@@ -17,6 +17,7 @@ namespace pipeline {
         Frame frame;
         Eigen::Isometry3f pose = Eigen::Isometry3f::Identity(); // sensor -> world
         Eigen::Vector3f cameraWorld = Eigen::Vector3f::Zero();  // world camera position (view weight)
+        int gen = 0;                                            // reset generation (stale-frame guard)
     };
 
 } // namespace pipeline
