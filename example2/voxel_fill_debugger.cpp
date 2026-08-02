@@ -13,6 +13,7 @@
 
 #include "utilities/ArgParser.h"
 #include "utilities/PointCloudIO.h"
+#include "utilities/StageProfiler.h"
 
 #include "imgui.h"
 
@@ -172,8 +173,8 @@ int main(int argc, char **argv) {
                         .Must("--dir", "usage: voxel_fill_debugger --dir <folder> [--voxel v] "
                                        "[--trunc t] [--no-p2p] [--conf L] [--hermite] [--wthresh w] "
                                        "[--tile-hash N] [--block V] [--detail-k K] [--dump]")
-                        .Option("--voxel")          // default is runtime-computed (extent / 200)
-                        .Option("--trunc")          // default is runtime-computed (voxel * 3)
+                        .Option("--voxel") // default is runtime-computed (extent / 200)
+                        .Option("--trunc") // default is runtime-computed (voxel * 3)
                         .Option("--conf", 0.5)
                         .Option("--wthresh", 0.0)
                         .Option("--tile-hash", 1 << 20)
@@ -186,7 +187,6 @@ int main(int argc, char **argv) {
             return 2;
         }
 
-        // Collect frame_*.ply (sorted); ground_truth.ply (object_scan_viewer output) is excluded.
         std::vector<std::string> framePaths;
         for (const auto &e: fs::directory_iterator(dir)) {
             if (!e.is_regular_file()) continue;
@@ -198,8 +198,6 @@ int main(int argc, char **argv) {
         std::sort(framePaths.begin(), framePaths.end());
         if (framePaths.empty()) throw std::runtime_error("no frame_*.ply found in " + dir);
 
-        // Read frames + accumulate a world bbox for auto voxel sizing (verbatim pattern from
-        // tsdf_folder_eval.cpp).
         struct Frame {
             std::vector<Vector3f> pts, nrm;
             Vector3f cam;
@@ -262,12 +260,26 @@ int main(int argc, char **argv) {
                     "%u, per-tile hash %u\n",
                     voxel, detailVoxel, blockVoxels, detailK, submap.DenseBlockCount(), tileHash);
 
-        // Headless per-frame stats: no window, no render deps touched.
+        // Headless per-frame stats: no window, no render deps touched. Times the TSDF-side pipeline
+        // stages (Integrate / DownloadEntries / tracker.update) so the dominant cost is visible even
+        // without the live window — these three are shared with the live scrub path (rebuildTo).
         if (arg.Has("--dump") || arg.Has("--no-view")) {
+            util::StageProfiler prof;
             for (int f = 0; f < nFrames; ++f) {
-                submap.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
-                const auto entries = submap.DownloadEntries();
-                const auto isNew = tracker.update(entries, f);
+                {
+                    util::ScopedStageTimer t(prof, "integrate");
+                    submap.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
+                }
+                std::vector<AdvancedEntry> entries;
+                {
+                    util::ScopedStageTimer t(prof, "download");
+                    entries = submap.DownloadEntries();
+                }
+                std::vector<char> isNew;
+                {
+                    util::ScopedStageTimer t(prof, "tracker");
+                    isNew = tracker.update(entries, f);
+                }
                 std::size_t below = 0;
                 for (const auto &e: entries)
                     if (voxdbg::belowThreshold(e.weight, wThreshArg)) ++below;
@@ -280,6 +292,7 @@ int main(int argc, char **argv) {
                             f, entries.size(), nnew, below, submap.BaseTileCount(),
                             submap.DetailTileCount(), aSz.x(), aSz.y(), aSz.z());
             }
+            std::printf("\n%s", prof.Report("--dump per-frame TSDF pipeline").c_str());
             std::printf("[--dump] done.\n");
             return 0;
         }
@@ -329,6 +342,7 @@ int main(int argc, char **argv) {
         } state;
         state.wThresh = wThreshArg;
 
+        util::StageProfiler prof; // per-stage wall-clock, shown live in ImGui + printed on exit
         std::vector<AdvancedEntry> curEntries;
         std::vector<char> curNew;
         auto rebuildTo = [&](int target) {
@@ -341,9 +355,18 @@ int main(int argc, char **argv) {
                 state.shown = -1;
             }
             for (int f = state.shown + 1; f <= target; ++f) {
-                submap.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
-                curEntries = submap.DownloadEntries();
-                curNew = tracker.update(curEntries, f);
+                {
+                    util::ScopedStageTimer t(prof, "integrate");
+                    submap.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
+                }
+                {
+                    util::ScopedStageTimer t(prof, "download");
+                    curEntries = submap.DownloadEntries();
+                }
+                {
+                    util::ScopedStageTimer t(prof, "tracker");
+                    curNew = tracker.update(curEntries, f);
+                }
             }
             state.shown = target;
             state.wMax = 1.0f;
@@ -352,10 +375,17 @@ int main(int argc, char **argv) {
         };
 
         auto refreshSets = [&]() {
-            vkDeviceWaitIdle(appCtx.device);
+            {
+                util::ScopedStageTimer t(prof, "waitIdle");
+                vkDeviceWaitIdle(appCtx.device);
+            }
             std::vector<PointVertex> occ, nw;
-            buildVoxelSets(curEntries, curNew, state.mode, trunc, state.wMax, state.wThresh,
-                           state.hideBelow, tracker, detailVoxel, nFrames, occ, nw);
+            {
+                util::ScopedStageTimer t(prof, "buildSets");
+                buildVoxelSets(curEntries, curNew, state.mode, trunc, state.wMax, state.wThresh,
+                               state.hideBelow, tracker, detailVoxel, nFrames, occ, nw);
+            }
+            util::ScopedStageTimer t(prof, "upload"); // CPU box gen + all 7 SetPointSet uploads
             pc->SetPointSet(0, occ);
             pc->SetPointSet(1, nw);
             std::vector<PointVertex> in;
@@ -438,6 +468,10 @@ int main(int argc, char **argv) {
                 const Vector3f sz = aMx - aMn;
                 ImGui::Text("allocated box: %.2f x %.2f x %.2f", sz.x(), sz.y(), sz.z());
             }
+            ImGui::SeparatorText("Timing (avg / last ms per frame-advance)");
+            for (const char *s: {"integrate", "download", "tracker", "waitIdle", "buildSets",
+                                 "upload", "render"})
+                ImGui::Text("%-10s %8.2f / %8.2f", s, prof.AvgMs(s), prof.LastMs(s));
             ImGui::End();
         });
 
@@ -492,6 +526,7 @@ int main(int argc, char **argv) {
                     state.dirty = false;
                 }
 
+                util::ScopedStageTimer t(prof, "render");
                 if (!app.GetRenderer().BeginFrame(s.width, s.height)) continue;
                 app.GetRenderer().Render(app.GetView());
                 app.GetRenderer().EndFrame();
@@ -501,6 +536,7 @@ int main(int argc, char **argv) {
             throw;
         }
         vkDeviceWaitIdle(appCtx.device);
+        std::printf("\n%s", prof.Report("live pipeline (per frame-advance)").c_str());
     } catch (const std::exception &e) {
         std::cerr << e.what() << "\n";
         return 1;
