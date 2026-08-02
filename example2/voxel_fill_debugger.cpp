@@ -8,6 +8,7 @@
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
 #include "Engine/Spatial/AdvancedTSDF.h"
+#include "Engine/Spatial/SubmapAdvancedTSDF.h"
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
 
 #include "imgui.h"
@@ -225,7 +226,8 @@ int main(int argc, char **argv) {
         const std::string dir = strArg(argc, argv, "--dir", "");
         if (dir.empty() || !fs::is_directory(dir)) {
             std::cerr << "usage: voxel_fill_debugger --dir <folder> [--voxel v] [--trunc t] "
-                         "[--no-p2p] [--conf L] [--hermite] [--wthresh w] [--tile-hash N] [--dump]\n";
+                         "[--no-p2p] [--conf L] [--hermite] [--wthresh w] [--tile-hash N] "
+                         "[--block V] [--detail-k K] [--dump]\n";
             return 2;
         }
 
@@ -275,34 +277,41 @@ int main(int argc, char **argv) {
         const float trunc = floatArg(argc, argv, "--trunc", voxel * 3.0f);
         const float wThreshArg = floatArg(argc, argv, "--wthresh", 0.0f);
 
-        // TiledAdvancedTSDF hashes into as many 512^3 windows (tiles) as the scene needs — only
-        // touched tiles are allocated — so ANY voxel size works (no single-window limit). Each
-        // tile's core is drawn as a "window box"; --tile-hash sizes each tile's hash.
+        // SubmapAdvancedTSDF: base TiledAdvancedTSDF at `voxel` (all points) + a detail level at
+        // voxel/2 in DENSE blocks only. Density is precomputed from ALL frames up front so the dense
+        // set is fixed while scrubbing; the dense blocks are the "submap regions" (drawn magenta).
+        // --block/--detail-k tune density; --tile-hash sizes both levels (detail = half voxel needs
+        // a bigger hash). Sparse scenes -> no dense blocks -> behaves like a plain tiled map.
         const uint32_t tileHash =
                 nextPow2(uint32_t(floatArg(argc, argv, "--tile-hash", float(1u << 20))));
         const uint32_t maxPts = nextPow2(uint32_t(std::max<std::size_t>(maxFramePts, 1u << 15)));
+        const int blockVoxels = int(floatArg(argc, argv, "--block", 32.0f));
+        const float detailK = floatArg(argc, argv, "--detail-k", 4.0f);
 
         Engine::Core::Context ctx;
-        Engine::Spatial::TiledAdvancedTSDF tiled;
-        tiled.Build(ctx, voxel, trunc, tileHash, maxPts);
-        tiled.SetIntegrationQuality({3, 4, true});
-        tiled.SetPointToPlane(p2p);
-        tiled.SetConfidenceWeight(conf);
-        tiled.SetHermitePosition(hermite);
+        Engine::Spatial::SubmapAdvancedTSDF submap;
+        submap.Build(ctx, voxel, trunc, blockVoxels, detailK, tileHash, maxPts);
+        submap.SetIntegrationQuality({3, 4, true});
+        submap.SetPointToPlane(p2p);
+        submap.SetConfidenceWeight(conf);
+        submap.SetHermitePosition(hermite);
+        for (const auto &fr: frames) submap.AddDensity(fr.pts); // density from all frames
+        submap.FinalizeDensity();
 
         const int nFrames = int(frames.size());
-        voxdbg::FillTracker tracker(voxel);
+        const float detailVoxel = voxel * 0.5f; // finest level -> key voxel so base+detail keys are unique
+        voxdbg::FillTracker tracker(detailVoxel);
 
         std::printf("dir       : %s  (%d frames, extent %.4f)\n", dir.c_str(), nFrames, extent);
-        std::printf("tiled adv : voxel %.4f, trunc %.4f, core %d vox/tile, per-tile hash %u "
-                    "(~%.0f MB/tile)\n",
-                    voxel, trunc, tiled.CoreVoxels(), tileHash, double(tileHash) * 24.0 / 1e6);
+        std::printf("submap    : base %.4f + detail %.4f, block %d vox, detail-k %.1f, dense blocks "
+                    "%u, per-tile hash %u\n",
+                    voxel, detailVoxel, blockVoxels, detailK, submap.DenseBlockCount(), tileHash);
 
         // Headless per-frame stats: no window, no render deps touched.
         if (flag(argc, argv, "--dump") || flag(argc, argv, "--no-view")) {
             for (int f = 0; f < nFrames; ++f) {
-                tiled.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
-                const auto entries = tiled.DownloadEntries();
+                submap.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
+                const auto entries = submap.DownloadEntries();
                 const auto isNew = tracker.update(entries, f);
                 std::size_t below = 0;
                 for (const auto &e: entries)
@@ -311,10 +320,10 @@ int main(int argc, char **argv) {
                 for (char c: isNew) nnew += (c != 0);
                 Vector3f aMn, aMx, aSz = Vector3f::Zero();
                 if (entriesAabb(entries, voxel, aMn, aMx)) aSz = aMx - aMn;
-                std::printf("frame %3d: occupied %zu  new %zu  below-wthresh %zu  tiles %u  "
-                            "allocBox(%.2f,%.2f,%.2f)\n",
-                            f, entries.size(), nnew, below, tiled.TileCount(), aSz.x(), aSz.y(),
-                            aSz.z());
+                std::printf("frame %3d: occupied %zu  new %zu  below-wthresh %zu  base/detail tiles "
+                            "%u/%u  allocBox(%.2f,%.2f,%.2f)\n",
+                            f, entries.size(), nnew, below, submap.BaseTileCount(),
+                            submap.DetailTileCount(), aSz.x(), aSz.y(), aSz.z());
             }
             std::printf("[--dump] done.\n");
             return 0;
@@ -358,7 +367,7 @@ int main(int argc, char **argv) {
             float wThresh = 0.0f;
             bool hideBelow = false;
             bool showOccupied = true, showNew = true, showInput = true, showCamera = true;
-            bool showWindowBox = true, showAllocBox = true;
+            bool showWindowBox = true, showAllocBox = true, showSubmapBox = true;
             int shown = -1;
             float wMax = 1.0f;
             bool dirty = false;
@@ -372,13 +381,13 @@ int main(int argc, char **argv) {
             if (nFrames == 0) return;
             vkDeviceWaitIdle(appCtx.device);
             if (target < state.shown) {
-                tiled.Reset();
+                submap.Reset();
                 tracker.reset();
                 state.shown = -1;
             }
             for (int f = state.shown + 1; f <= target; ++f) {
-                tiled.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
-                curEntries = tiled.DownloadEntries();
+                submap.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
+                curEntries = submap.DownloadEntries();
                 curNew = tracker.update(curEntries, f);
             }
             state.shown = target;
@@ -394,17 +403,17 @@ int main(int argc, char **argv) {
             vkDeviceWaitIdle(appCtx.device);
             std::vector<PointVertex> occ, nw;
             buildVoxelSets(curEntries, curNew, state.mode, trunc, state.wMax, state.wThresh,
-                           state.hideBelow, tracker, voxel, nFrames, occ, nw);
+                           state.hideBelow, tracker, detailVoxel, nFrames, occ, nw);
             pc->SetPointSet(0, occ);
             pc->SetPointSet(1, nw);
             std::vector<PointVertex> in;
             pushCloud(in, frames[std::clamp(state.shown, 0, nFrames - 1)].pts, 100, 110, 120);
             pc->SetPointSet(2, in);
             pc->SetPointSet(3, cameraMarker(frames[std::clamp(state.shown, 0, nFrames - 1)].cam));
-            // One window box per touched tile (cyan) — the tiling grows as frames fill space —
-            // plus the currently-allocated voxel box (orange).
+            // Base tile windows (cyan) + allocated voxel box (orange) + one box per dense block =
+            // the submap (detail) regions (magenta), where voxels are integrated at half voxel.
             std::vector<PointVertex> tileBoxes;
-            for (const auto &b: tiled.CoreBoxes()) {
+            for (const auto &b: submap.BaseCoreBoxes()) {
                 const std::vector<PointVertex> e = boxEdges(b.first, b.second, voxel, 40, 220, 220);
                 tileBoxes.insert(tileBoxes.end(), e.begin(), e.end());
             }
@@ -414,6 +423,12 @@ int main(int argc, char **argv) {
                 pc->SetPointSet(5, boxEdges(aMn, aMx, voxel, 255, 160, 40));
             else
                 pc->SetPointSet(5, {});
+            std::vector<PointVertex> submapBoxes;
+            for (const auto &b: submap.DenseBlockBoxes()) {
+                const std::vector<PointVertex> e = boxEdges(b.first, b.second, voxel, 230, 60, 230);
+                submapBoxes.insert(submapBoxes.end(), e.begin(), e.end());
+            }
+            pc->SetPointSet(6, submapBoxes);
         };
         rebuildTo(0);
         refreshSets();
@@ -452,18 +467,20 @@ int main(int argc, char **argv) {
             if (ImGui::Checkbox("new this frame", &state.showNew)) pc->SetVisible(1, state.showNew);
             if (ImGui::Checkbox("input", &state.showInput)) pc->SetVisible(2, state.showInput);
             if (ImGui::Checkbox("camera", &state.showCamera)) pc->SetVisible(3, state.showCamera);
-            if (ImGui::Checkbox("tile windows", &state.showWindowBox))
+            if (ImGui::Checkbox("base tile windows", &state.showWindowBox))
                 pc->SetVisible(4, state.showWindowBox);
             if (ImGui::Checkbox("allocated box", &state.showAllocBox))
                 pc->SetVisible(5, state.showAllocBox);
+            if (ImGui::Checkbox("submap regions (detail)", &state.showSubmapBox))
+                pc->SetVisible(6, state.showSubmapBox);
             ImGui::SeparatorText("Stats");
             ImGui::Text("occupied voxels: %zu", curEntries.size());
             std::size_t below = 0;
             for (const auto &e: curEntries)
                 if (voxdbg::belowThreshold(e.weight, state.wThresh)) ++below;
             ImGui::Text("below thresh: %zu", below);
-            ImGui::Text("tiles: %u (core %d vox = %.1f units)", tiled.TileCount(),
-                        tiled.CoreVoxels(), float(tiled.CoreVoxels()) * voxel);
+            ImGui::Text("base/detail tiles: %u / %u, dense blocks: %u", submap.BaseTileCount(),
+                        submap.DetailTileCount(), submap.DenseBlockCount());
             Vector3f aMn, aMx;
             if (entriesAabb(curEntries, voxel, aMn, aMx)) {
                 const Vector3f sz = aMx - aMn;

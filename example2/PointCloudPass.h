@@ -22,7 +22,7 @@ struct PointVertex {
 // pass/pipeline structure; see CubePass.{h,cpp}.
 class PointCloudPass : public Engine::Render::RenderPass {
 public:
-    static constexpr int kMaxSets = 6;
+    static constexpr int kMaxSets = 8;
 
     PointCloudPass(Engine::Core::Context &context, VkFormat colorFormat, const std::string &shaderDir);
 
