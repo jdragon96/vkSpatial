@@ -70,3 +70,70 @@ TEST(ArgParser, EmptyArgs) {
     EXPECT_FALSE(util::HasFlag(a.argc(), a.argv(), "--dir"));
     EXPECT_EQ(util::ArgInt(a.argc(), a.argv(), "--n", 42), 42);
 }
+
+// ---- ArgParser (fluent class) ----
+
+TEST(ArgParserClass, MustSatisfiedIsOk) {
+    Argv a{"prog", "--dir", "scans/x", "--voxel", "0.5"};
+    util::ArgParser arg =
+            util::BuildArgParser(a.argc(), a.argv()).Must("--dir", "need --dir").Option("--voxel");
+    EXPECT_TRUE(arg.Ok());
+    EXPECT_TRUE(bool(arg));
+    EXPECT_EQ(arg.Value("--dir"), "scans/x");
+    EXPECT_FLOAT_EQ(arg.ValueFloat("--voxel", 1.0f), 0.5f);
+}
+
+TEST(ArgParserClass, MustMissingPrintsMessageAndFails) {
+    Argv a{"prog", "--voxel", "0.5"};
+    testing::internal::CaptureStderr();
+    util::ArgParser arg = util::BuildArgParser(a.argc(), a.argv()).Must("--dir", "need --dir");
+    const std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_NE(err.find("need --dir"), std::string::npos);
+    EXPECT_FALSE(arg.Ok());
+    EXPECT_FALSE(bool(arg));
+}
+
+// A Must key present with no following value is treated as unsatisfied (and prints).
+TEST(ArgParserClass, TrailingMustKeyHasNoValueSoFails) {
+    Argv a{"prog", "--dir"};
+    testing::internal::CaptureStderr();
+    util::ArgParser arg = util::BuildArgParser(a.argc(), a.argv()).Must("--dir", "need --dir value");
+    const std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_NE(err.find("need --dir value"), std::string::npos);
+    EXPECT_FALSE(arg.Ok());
+}
+
+TEST(ArgParserClass, TypedReadsAndFlag) {
+    Argv a{"prog", "--frames", "12", "--fov", "55", "--no-view"};
+    util::ArgParser arg = util::BuildArgParser(a.argc(), a.argv());
+    EXPECT_EQ(arg.ValueInt("--frames", 1), 12);
+    EXPECT_FLOAT_EQ(arg.ValueFloat("--fov", 1.0f), 55.0f);
+    EXPECT_TRUE(arg.Has("--no-view"));
+    EXPECT_FALSE(arg.Has("--headless"));
+    EXPECT_EQ(arg.Value("--missing", "def"), "def");
+}
+
+TEST(ArgParserClass, DeclaredListsMustAndOptionInOrder) {
+    Argv a{"prog", "--dir", "x"};
+    util::ArgParser arg = util::BuildArgParser(a.argc(), a.argv())
+                                  .Must("--dir", "e")
+                                  .Option("--voxel")
+                                  .Option("--trunc");
+    ASSERT_EQ(arg.Declared().size(), 3u);
+    EXPECT_EQ(arg.Declared()[0], "--dir");
+    EXPECT_EQ(arg.Declared()[1], "--voxel");
+    EXPECT_EQ(arg.Declared()[2], "--trunc");
+}
+
+// Each unsatisfied Must prints its own message; satisfied ones stay silent.
+TEST(ArgParserClass, MultipleMustAccumulateFailures) {
+    Argv a{"prog", "--dir", "x"};
+    testing::internal::CaptureStderr();
+    util::ArgParser arg = util::BuildArgParser(a.argc(), a.argv())
+                                  .Must("--dir", "need dir")
+                                  .Must("--mesh", "need mesh");
+    const std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(err.find("need dir"), std::string::npos); // --dir satisfied -> not printed
+    EXPECT_NE(err.find("need mesh"), std::string::npos); // --mesh missing -> printed
+    EXPECT_FALSE(arg.Ok());
+}

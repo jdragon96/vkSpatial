@@ -35,9 +35,9 @@ namespace fs = std::filesystem;
 namespace {
 
     ///////////////////////////////////////////////////////////////////////////////////////////
-    // Reused verbatim from tsdf_folder_eval.cpp: nextPow2, estimateCamera. Arg parsing now comes
-    // from utilities/ArgParser.h (util::ArgString/ArgFloat/HasFlag); PLY point I/O from
-    // utilities/PointCloudIO.h (util::LoadPly).
+    // Reused verbatim from tsdf_folder_eval.cpp: nextPow2, estimateCamera. Arg parsing via the
+    // fluent util::ArgParser (utilities/ArgParser.h); PLY point I/O from utilities/PointCloudIO.h
+    // (util::LoadPly).
     ///////////////////////////////////////////////////////////////////////////////////////////
 
     uint32_t nextPow2(uint32_t v) {
@@ -167,11 +167,21 @@ namespace {
 
 int main(int argc, char **argv) {
     try {
-        const std::string dir = util::ArgString(argc, argv, "--dir", "");
-        if (dir.empty() || !fs::is_directory(dir)) {
-            std::cerr << "usage: voxel_fill_debugger --dir <folder> [--voxel v] [--trunc t] "
-                         "[--no-p2p] [--conf L] [--hermite] [--wthresh w] [--tile-hash N] "
-                         "[--block V] [--detail-k K] [--dump]\n";
+        util::ArgParser arg =
+                util::BuildArgParser(argc, argv)
+                        .Must("--dir", "usage: voxel_fill_debugger --dir <folder> [--voxel v] "
+                                       "[--trunc t] [--no-p2p] [--conf L] [--hermite] [--wthresh w] "
+                                       "[--tile-hash N] [--block V] [--detail-k K] [--dump]")
+                        .Option("--voxel")
+                        .Option("--trunc")
+                        .Option("--wthresh")
+                        .Option("--tile-hash")
+                        .Option("--block")
+                        .Option("--detail-k");
+        if (!arg) return 2;
+        const std::string dir = arg.Value("--dir");
+        if (!fs::is_directory(dir)) {
+            std::cerr << "not a directory: " << dir << "\n";
             return 2;
         }
 
@@ -212,14 +222,14 @@ int main(int argc, char **argv) {
         }
         if (frames.empty()) throw std::runtime_error("no usable frames (need per-point normals)");
 
-        const bool p2p = !util::HasFlag(argc, argv, "--no-p2p");
-        const float conf = util::ArgFloat(argc, argv, "--conf", 0.5f);
-        const bool hermite = util::HasFlag(argc, argv, "--hermite");
+        const bool p2p = !arg.Has("--no-p2p");
+        const float conf = arg.ValueFloat("--conf", 0.5f);
+        const bool hermite = arg.Has("--hermite");
         const Vector3f span = bbMax - bbMin;
         const float extent = span.norm();
-        const float voxel = util::ArgFloat(argc, argv, "--voxel", extent / 200.0f);
-        const float trunc = util::ArgFloat(argc, argv, "--trunc", voxel * 3.0f);
-        const float wThreshArg = util::ArgFloat(argc, argv, "--wthresh", 0.0f);
+        const float voxel = arg.ValueFloat("--voxel", extent / 200.0f);
+        const float trunc = arg.ValueFloat("--trunc", voxel * 3.0f);
+        const float wThreshArg = arg.ValueFloat("--wthresh", 0.0f);
 
         // SubmapAdvancedTSDF: base TiledAdvancedTSDF at `voxel` (all points) + a detail level at
         // voxel/2 in DENSE blocks only. Density is precomputed from ALL frames up front so the dense
@@ -227,10 +237,10 @@ int main(int argc, char **argv) {
         // --block/--detail-k tune density; --tile-hash sizes both levels (detail = half voxel needs
         // a bigger hash). Sparse scenes -> no dense blocks -> behaves like a plain tiled map.
         const uint32_t tileHash =
-                nextPow2(uint32_t(util::ArgFloat(argc, argv, "--tile-hash", float(1u << 20))));
+                nextPow2(uint32_t(arg.ValueFloat("--tile-hash", float(1u << 20))));
         const uint32_t maxPts = nextPow2(uint32_t(std::max<std::size_t>(maxFramePts, 1u << 15)));
-        const int blockVoxels = int(util::ArgFloat(argc, argv, "--block", 32.0f));
-        const float detailK = util::ArgFloat(argc, argv, "--detail-k", 4.0f);
+        const int blockVoxels = int(arg.ValueFloat("--block", 32.0f));
+        const float detailK = arg.ValueFloat("--detail-k", 4.0f);
 
         Engine::Core::Context ctx;
         Engine::Spatial::SubmapAdvancedTSDF submap;
@@ -252,7 +262,7 @@ int main(int argc, char **argv) {
                     voxel, detailVoxel, blockVoxels, detailK, submap.DenseBlockCount(), tileHash);
 
         // Headless per-frame stats: no window, no render deps touched.
-        if (util::HasFlag(argc, argv, "--dump") || util::HasFlag(argc, argv, "--no-view")) {
+        if (arg.Has("--dump") || arg.Has("--no-view")) {
             for (int f = 0; f < nFrames; ++f) {
                 submap.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
                 const auto entries = submap.DownloadEntries();

@@ -34,7 +34,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-    // Arg parsing: utilities/ArgParser.h (util::ArgString/ArgFloat/HasFlag).
+    // Arg parsing via the fluent util::ArgParser (utilities/ArgParser.h).
 
     uint32_t nextPow2(uint32_t v) {
         if (v <= 1) return 1;
@@ -125,16 +125,29 @@ namespace {
 
 int main(int argc, char **argv) {
     try {
-        const std::string dir = util::ArgString(argc, argv, "--dir", "");
-        if (dir.empty() || !fs::is_directory(dir)) {
-            std::cerr << "usage: tsdf_folder_eval --dir <folder> [--voxel v] [--trunc t] "
-                         "[--gt path] [--out extracted.ply] [--no-p2p] [--conf L] [--hermite]\n";
+        util::ArgParser arg =
+                util::BuildArgParser(argc, argv)
+                        .Must("--dir", "usage: tsdf_folder_eval --dir <folder> [--voxel v] "
+                                       "[--trunc t] [--gt path] [--out extracted.ply] [--no-p2p] "
+                                       "[--conf L] [--hermite]")
+                        .Option("--voxel")
+                        .Option("--trunc")
+                        .Option("--gt")
+                        .Option("--out")
+                        .Option("--conf")
+                        .Option("--tile-hash")
+                        .Option("--block")
+                        .Option("--detail-k");
+        if (!arg) return 2;
+        const std::string dir = arg.Value("--dir");
+        if (!fs::is_directory(dir)) {
+            std::cerr << "not a directory: " << dir << "\n";
             return 2;
         }
 
         // Collect frame_*.ply (sorted); ground_truth.ply is excluded and used as GT.
         std::vector<std::string> framePaths;
-        std::string gtPath = util::ArgString(argc, argv, "--gt", "");
+        std::string gtPath = arg.Value("--gt", "");
         for (const auto &e: fs::directory_iterator(dir)) {
             if (!e.is_regular_file()) continue;
             const std::string name = e.path().filename().string();
@@ -174,11 +187,11 @@ int main(int argc, char **argv) {
         if (frames.empty()) throw std::runtime_error("no usable frames (need per-point normals)");
         const float extent = (bbMax - bbMin).norm();
 
-        const bool p2p = !util::HasFlag(argc, argv, "--no-p2p");
-        const float conf = util::ArgFloat(argc, argv, "--conf", 0.5f);
-        const bool hermite = util::HasFlag(argc, argv, "--hermite");
-        const float voxel = util::ArgFloat(argc, argv, "--voxel", extent / 200.0f);
-        const float trunc = util::ArgFloat(argc, argv, "--trunc", voxel * 3.0f);
+        const bool p2p = !arg.Has("--no-p2p");
+        const float conf = arg.ValueFloat("--conf", 0.5f);
+        const bool hermite = arg.Has("--hermite");
+        const float voxel = arg.ValueFloat("--voxel", extent / 200.0f);
+        const float trunc = arg.ValueFloat("--trunc", voxel * 3.0f);
 
         // AdvancedTSDF is a SINGLE movable 512^3-voxel window. Its defaults (origin-centred window,
         // hashCapacity 1<<20, maxPoints 1<<15) silently break for fine voxels or off-origin/large
@@ -188,7 +201,7 @@ int main(int argc, char **argv) {
         const float maxSpan = span.maxCoeff();
         const int margin = int(std::ceil(trunc / voxel)) + 2;            // truncation ghost band
         const long axisVox = long(std::ceil(maxSpan / voxel)) + 2L * margin;
-        const bool forceSingle = util::HasFlag(argc, argv, "--single");
+        const bool forceSingle = arg.Has("--single");
         if (axisVox > 512 && forceSingle) {
             const float minVoxel = maxSpan / float(512 - 2 * margin);
             std::fprintf(stderr,
@@ -213,7 +226,7 @@ int main(int argc, char **argv) {
         // 1<<21 (~48MB/tile) is safe for a fully-surface-crossed tile but × many tiles can exceed
         // VRAM; lower it via --tile-hash for fine-voxel/large scenes (risks per-tile overflow).
         const uint32_t tileHash =
-                nextPow2(uint32_t(util::ArgFloat(argc, argv, "--tile-hash", float(1u << 21))));
+                nextPow2(uint32_t(arg.ValueFloat("--tile-hash", float(1u << 21))));
 
         std::printf("dir       : %s  (%zu frames, %zu total pts, extent %.4f)\n", dir.c_str(),
                     frames.size(), totalPts, extent);
@@ -226,9 +239,9 @@ int main(int argc, char **argv) {
         // Integrate + extract (single window if it fits, else tiled).
         Engine::Core::Context ctx;
         Engine::Spatial::OrientedPointCloud recon;
-        if (util::HasFlag(argc, argv, "--submap")) {
-            const int blockVoxels = int(util::ArgFloat(argc, argv, "--block", 32.0f));
-            const float detailK = util::ArgFloat(argc, argv, "--detail-k", 4.0f);
+        if (arg.Has("--submap")) {
+            const int blockVoxels = int(arg.ValueFloat("--block", 32.0f));
+            const float detailK = arg.ValueFloat("--detail-k", 4.0f);
             Engine::Spatial::SubmapAdvancedTSDF s;
             // Detail is at half voxel -> ~4-8x more entries/tile than base; use the (larger)
             // --tile-hash size for both levels so the detail hash doesn't overflow (holes).
@@ -293,7 +306,7 @@ int main(int argc, char **argv) {
         //                 dir.c_str());
         // }
 
-        const std::string outPly = util::ArgString(argc, argv, "--out", "");
+        const std::string outPly = arg.Value("--out", "");
         if (!outPly.empty()) {
             util::SavePly(outPly, recon.points, recon.normals);
             std::printf("wrote extracted cloud: %s\n", outPly.c_str());

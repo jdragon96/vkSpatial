@@ -47,7 +47,7 @@ using util::TriMesh;
 
 namespace {
 
-    // Arg parsing: utilities/ArgParser.h (util::ArgString/ArgInt/ArgFloat/HasFlag).
+    // Arg parsing via the fluent util::ArgParser (utilities/ArgParser.h).
 
     bool endsWith(const std::string &s, const std::string &suf) {
         if (s.size() < suf.size()) return false;
@@ -147,23 +147,31 @@ namespace {
 
 int main(int argc, char **argv) {
     try {
-        const std::string meshPath = util::ArgString(argc, argv, "--mesh", "");
-        const std::string outDir = util::ArgString(argc, argv, "--out", "scan_out");
-        const int frames = util::ArgInt(argc, argv, "--frames", 90);
-        const float turns = util::ArgFloat(argc, argv, "--turns", 3.0f);
-        const float elevStart = util::ArgFloat(argc, argv, "--elev-start", 75.0f);
-        const float elevEnd = util::ArgFloat(argc, argv, "--elev-end", -30.0f);
-        const int sample = util::ArgInt(argc, argv, "--sample", 120000);
-        const int capW = util::ArgInt(argc, argv, "--width", 320);
-        const int capH = util::ArgInt(argc, argv, "--height", 240);
-        const float fov = util::ArgFloat(argc, argv, "--fov", 55.0f);
-        const bool noView = util::HasFlag(argc, argv, "--no-view");
-
-        if (meshPath.empty()) {
-            std::cerr << "usage: object_scan_viewer --mesh <file.ply|.obj> --out <dir> "
-                         "[--frames N] [--turns T] [--sample N] [--no-view]\n";
-            return 2;
-        }
+        util::ArgParser arg =
+                util::BuildArgParser(argc, argv)
+                        .Must("--mesh", "usage: object_scan_viewer --mesh <file.ply|.obj> --out "
+                                        "<dir> [--frames N] [--turns T] [--sample N] [--no-view]")
+                        .Option("--out")
+                        .Option("--frames")
+                        .Option("--turns")
+                        .Option("--elev-start")
+                        .Option("--elev-end")
+                        .Option("--sample")
+                        .Option("--width")
+                        .Option("--height")
+                        .Option("--fov");
+        if (!arg) return 2;
+        const std::string meshPath = arg.Value("--mesh");
+        const std::string outDir = arg.Value("--out", "scan_out");
+        const int frames = arg.ValueInt("--frames", 90);
+        const float turns = arg.ValueFloat("--turns", 3.0f);
+        const float elevStart = arg.ValueFloat("--elev-start", 75.0f);
+        const float elevEnd = arg.ValueFloat("--elev-end", -30.0f);
+        const int sample = arg.ValueInt("--sample", 120000);
+        const int capW = arg.ValueInt("--width", 320);
+        const int capH = arg.ValueInt("--height", 240);
+        const float fov = arg.ValueFloat("--fov", 55.0f);
+        const bool noView = arg.Has("--no-view");
 
         // 1. Load mesh (+ vertex normals) and centre it at the origin.
         TriMesh mesh;
