@@ -86,23 +86,36 @@ struct TrackedFrame {                       // Frame + the pose Track resolved
 // worker-stage-ms), promoted into Engine::Pipeline. Immutable once published.
 ```
 
-### 3. Tracker strategy + Track stage
+### 3. Alignment commands (Command Pattern) + Track stage
 
-`Track` is a thin loop around a pluggable `ITracker` so the debugger (pre-registered world clouds) and a live app (sensor-local clouds needing ICP) share the stage:
+The Track stage resolves each frame's pose via a **swappable alignment command**, so multiple
+registration algorithms can be A/B-tested and selected at runtime. This is the Command Pattern: each
+algorithm is an object with a uniform `Execute`, registered by name.
 
 ```cpp
-class ITracker {
+struct AlignmentResult {
+    Eigen::Isometry3f pose = Eigen::Isometry3f::Identity(); // sensor→world
+    float fitness = 0.0f;
+    std::size_t inliers = 0;
+    bool valid = false;
+};
+
+class AlignmentCommand { // Command Pattern: one registration algorithm, encapsulated
 public:
-    virtual ~ITracker() = default;
-    // Resolve `frame`'s pose given the latest model (may be null before the first map). Pure CPU.
-    virtual TrackedFrame Track(const Frame &frame, const ModelSnapshot *latestModel) = 0;
+    virtual ~AlignmentCommand() = default;
+    virtual const char *Name() const = 0;
+    // Align `frame` to `model` (null before the first map), seeded by `priorPose`. Pure CPU.
+    virtual AlignmentResult Execute(const Frame &frame, const ModelSnapshot *model,
+                                    const Eigen::Isometry3f &priorPose) = 0;
 };
 ```
 
-- **`PassthroughTracker` (v1 default, debugger):** frames are already world coords; pose = identity, `cameraWorld` = `frame.sensorHint` (the debugger's `estimateCamera`). Keeps the current demo behavior.
-- **`IcpTracker` (real app):** point-to-plane ICP (via `Engine::Registration`) of `frame` against `latestModel->entries` (CPU), seeded from the previous pose; frame-to-frame/identity bootstrap when `latestModel` is null. Documented staleness: aligns to a 1–2-frame-old model (acceptable; the accuracy/latency trade of asynchronous mapping).
+**Commands (all real, v1), registered in `AlignmentRegistry` (name → factory) for runtime selection:**
+- **`IdentityAlignment`** — `pose = priorPose` (identity when none), `cameraWorld = frame.sensorHint`. For pre-registered world clouds (the debugger's `estimateCamera` output) and as the bootstrap when no model exists yet.
+- **`PointToPlaneIcpAlignment`** — real local **point-to-plane ICP** seeded by `priorPose`, target = `model->entries` (centers + stored-gradient normals). Backed by a NEW engine primitive `Engine::Registration::AlignPointToPlaneIcp(src, tgt, priorT, params) -> RegistrationResult`: uniform-grid nearest-neighbour correspondences + small-angle-linearised 6-DoF normal-equation solve, iterated to convergence. The per-frame tracker for a live sensor.
+- **`GlobalRegistrationAlignment`** — wraps the existing `Engine::Registration::GlobalRegistration::Estimate` (FPFH + RANSAC + Ceres) for prior-free (re)localisation and as an A/B baseline.
 
-Track loop: `Pop` a `Frame` (capture channel) → `ITracker::Track(frame, pipeline.LatestModel().get())` → `Push` `TrackedFrame` (map channel, drop-oldest).
+`AlignmentRegistry`: `Register(name, factory)` + `Create(name)`; the debugger/app selects via e.g. `--align icp|identity|global`. The Track stage holds one `AlignmentCommand` + the previous pose (the `priorPose` for the next frame): `Pop` a `Frame` (capture channel) → `Execute(frame, LatestModel().get(), prevPose)` → build `TrackedFrame` (pose + `cameraWorld`) → `Push` (map channel, drop-oldest); update `prevPose` on `valid`.
 
 ### 4. Map stage
 
@@ -122,16 +135,18 @@ public:
         int downloadEveryN = 1;        // Map download cadence
     };
 
-    void Start(const Config &cfg, std::unique_ptr<ITracker> tracker); // launches Track + Map threads
+    void Start(const Config &cfg, std::unique_ptr<AlignmentCommand> align); // launches Track + Map
     void Stop();                       // Close() channels, join both threads, surface errors
+    void Reset();                      // drain channels + map submap.Reset()/prevPose (keeps dense
+                                       //   set); for the debugger's backward scrub
     bool PushFrame(Frame frame);       // external producer (sensor/PLY); false if stopped/closed
-    std::shared_ptr<const ModelSnapshot> LatestModel();     // render + tracker consume; rethrows worker errors
+    std::shared_ptr<const ModelSnapshot> LatestModel();  // render + Track consume; rethrows worker errors
     // stats for UI: queue depths, dropped counts, processed index, per-stage times (from snapshot)
     Stats GetStats() const;
 
 private:
     // owns: Channel<Frame> m_capture; Channel<TrackedFrame> m_tracked; Mailbox<ModelSnapshot> m_model;
-    //       std::thread m_trackThread, m_mapThread; std::unique_ptr<ITracker> m_tracker;
+    //       std::thread m_trackThread, m_mapThread; std::unique_ptr<AlignmentCommand> m_align;
     //       Map-stage device/TSDF live inside the map thread; exception_ptr per stage.
 };
 ```
@@ -142,23 +157,34 @@ private:
 
 ## voxel_fill_debugger wiring (demo)
 
-Replace the direct `AsyncTsdfMapper` use with `ReconstructionPipeline` + `PassthroughTracker`:
-- Load PLYs → for play/scrub, `PushFrame` the target frame's `Frame` (sensorHint = `estimateCamera`). (Scrub-back still means "reset+replay"; v1 keeps the coalesced target semantics by pushing frames in order and, on backward scrub, restarting the pipeline's map — detailed in the plan.)
-- Render loop: `LatestModel()` → build point-sets (unchanged `buildVoxelSets` from the snapshot) → draw at 60 fps. ImGui shows pipeline stats (queue depths, dropped, per-stage ms, "map N behind").
+Replace the direct `AsyncTsdfMapper` use with `ReconstructionPipeline`, alignment selected by
+`--align identity|icp|global` (default `identity`, since the debugger's PLYs are already
+world-registered; `icp`/`global` exercise the real registration on the same data for A/B):
+- Load PLYs → for play/scrub, `PushFrame` the target frame's `Frame` (sensorHint = `estimateCamera`).
+- **Scrub-back = reset+replay:** the pipeline is a forward stream, so a backward target restarts the
+  map — `ReconstructionPipeline::Reset()` (drain channels, `submap.Reset()` + tracker/prevPose reset
+  on the map thread, keep dense set) then re-`PushFrame` 0..target. The debugger detects
+  `target < lastPushed` and calls `Reset()` before re-pushing.
+- Render loop: `LatestModel()` → build point-sets (unchanged `buildVoxelSets` from the snapshot) →
+  draw at 60 fps. ImGui shows pipeline stats (queue depths, dropped, per-stage ms, "map N behind")
+  + the active alignment command name.
 - `--dump` keeps the synchronous submap path (baseline timing), untouched.
 
 ## Testing
 
 - **`util::Channel` host tests:** push/pop FIFO; drop-oldest when full (+ `Dropped()` count); `Close()` unblocks `Pop` and drains; concurrent producer/consumer stress (no loss beyond drops, monotonic).
-- **Tracker host test:** `PassthroughTracker` returns identity pose + sensorHint; (if `IcpTracker` lands) align a known-translated plane → recovers the translation within tolerance (CPU, no Vulkan).
-- **Headless pipeline smoke (Vulkan):** `Start` with `PassthroughTracker`, `PushFrame` N pre-registered frames, poll `LatestModel()` until it reaches frame N-1; assert snapshot non-empty and counts match a synchronous `SubmapAdvancedTSDF` reference.
+- **Local ICP host test:** `Engine::Registration::AlignPointToPlaneIcp` on a plane/cloud transformed by a known small SE(3) → recovers the inverse transform within tolerance (CPU, no Vulkan).
+- **Alignment command/registry host tests:** `IdentityAlignment` returns `priorPose` + sensorHint; `AlignmentRegistry::Create("icp")` yields a `PointToPlaneIcpAlignment` that recovers a known transform against a synthetic model; unknown name → null/false.
+- **Headless pipeline smoke (Vulkan):** `Start` with `IdentityAlignment`, `PushFrame` N pre-registered frames, poll `LatestModel()` until it reaches frame N-1; assert snapshot non-empty and counts match a synchronous `SubmapAdvancedTSDF` reference. A second smoke drives `PointToPlaneIcpAlignment` on sensor-local frames to confirm the tracked path produces a consistent model.
 
 ## Decomposition (plans)
 
 1. **`util::Channel<T>`** + host tests (standalone).
-2. **Pipeline types + Map stage** (generalize `AsyncTsdfMapper` to a posed `MapStage`; keep `AsyncTsdfMapper` working or refactor it into `MapStage`) + headless smoke.
-3. **Track stage + `ITracker`/`PassthroughTracker`** + tracker host test.
-4. **`ReconstructionPipeline`** (owns channels + threads + lifecycle) + headless pipeline smoke.
-5. **Wire `voxel_fill_debugger`** to the pipeline + stats UI.
+2. **`Engine::Registration::AlignPointToPlaneIcp`** (local point-to-plane ICP) + host test (recovers a known transform).
+3. **Alignment commands + `AlignmentRegistry`** (`AlignmentCommand`, `IdentityAlignment`, `PointToPlaneIcpAlignment`, `GlobalRegistrationAlignment`) + host tests. Depends on Task 2 + pipeline types.
+4. **Pipeline types + Map stage** (generalize `AsyncTsdfMapper` to a posed `MapStage` taking `TrackedFrame`; keep `AsyncTsdfMapper` or refactor into `MapStage`) + headless smoke.
+5. **Track stage** (loop around an `AlignmentCommand`, prev-pose prior) — folded into the pipeline task or its own; host-testable step logic.
+6. **`ReconstructionPipeline`** (owns channels + mailbox + both threads + `Reset()`/lifecycle) + headless pipeline smoke (Identity + ICP).
+7. **Wire `voxel_fill_debugger`** to the pipeline + `--align` selection + stats UI + scrub-back `Reset()`.
 
-Each plan is independently testable. `IcpTracker` (real ICP via `Engine::Registration`) is a follow-up once the pipeline is proven with `PassthroughTracker`.
+Each plan is independently testable. Real ICP (`PointToPlaneIcpAlignment`) is in v1 (Tasks 2–3), not deferred.
