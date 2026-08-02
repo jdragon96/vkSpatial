@@ -11,6 +11,8 @@
 #include "Engine/Spatial/SubmapAdvancedTSDF.h"
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
 
+#include "utilities/PointCloudIO.h"
+
 #include "imgui.h"
 
 #include <Eigen/Core>
@@ -32,7 +34,8 @@ namespace fs = std::filesystem;
 namespace {
 
     ///////////////////////////////////////////////////////////////////////////////////////////
-    // Reused verbatim from tsdf_folder_eval.cpp: arg helpers, nextPow2, readPly, estimateCamera.
+    // Reused verbatim from tsdf_folder_eval.cpp: arg helpers, nextPow2, estimateCamera. PLY point
+    // I/O now comes from utilities/PointCloudIO.h (util::LoadPly).
     ///////////////////////////////////////////////////////////////////////////////////////////
 
     std::string strArg(int argc, char **argv, const char *k, const std::string &d) {
@@ -60,47 +63,6 @@ namespace {
         v |= v >> 8;
         v |= v >> 16;
         return v + 1;
-    }
-
-    // Tolerant ASCII-PLY reader: x y z always; nx ny nz if the header declares them.
-    bool readPly(const std::string &path, std::vector<Vector3f> &pts, std::vector<Vector3f> &nrm) {
-        std::ifstream f(path);
-        if (!f) return false;
-        std::string line;
-        size_t count = 0;
-        bool ascii = false, hasN = false;
-        std::vector<std::string> props;
-        while (std::getline(f, line)) {
-            std::istringstream ss(line);
-            std::string tok;
-            ss >> tok;
-            if (tok == "format") {
-                std::string fmt;
-                ss >> fmt;
-                ascii = (fmt == "ascii");
-            } else if (tok == "element") {
-                std::string e;
-                ss >> e;
-                if (e == "vertex") ss >> count;
-            } else if (tok == "property") {
-                std::string t, name;
-                ss >> t >> name;
-                props.push_back(name);
-            } else if (tok == "end_header")
-                break;
-        }
-        if (!ascii) return false;
-        hasN = std::find(props.begin(), props.end(), "nx") != props.end();
-        const size_t stride = props.size();
-        pts.reserve(pts.size() + count);
-        for (size_t i = 0; i < count && std::getline(f, line); ++i) {
-            std::istringstream ss(line);
-            std::vector<float> vals(stride, 0.0f);
-            for (size_t j = 0; j < stride; ++j) ss >> vals[j];
-            pts.emplace_back(vals[0], vals[1], vals[2]);
-            if (hasN && stride >= 6) nrm.emplace_back(vals[3], vals[4], vals[5]);
-        }
-        return !pts.empty();
     }
 
     // Estimate the camera position for a captured cloud: the visible points face the sensor, so
@@ -254,7 +216,7 @@ int main(int argc, char **argv) {
         size_t maxFramePts = 0;
         for (const auto &p: framePaths) {
             Frame fr;
-            if (!readPly(p, fr.pts, fr.nrm) || fr.nrm.size() != fr.pts.size()) {
+            if (!util::LoadPly(p, fr.pts, fr.nrm) || fr.nrm.size() != fr.pts.size()) {
                 std::fprintf(stderr, "skip (no normals): %s\n", p.c_str());
                 continue;
             }

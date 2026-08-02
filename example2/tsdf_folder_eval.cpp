@@ -14,6 +14,8 @@
 #include "Engine/Spatial/OrientedPointCloud.h"
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
 
+#include "utilities/PointCloudIO.h"
+
 #include <Eigen/Core>
 #include <algorithm>
 #include <cmath>
@@ -52,47 +54,6 @@ namespace {
         --v;
         v |= v >> 1; v |= v >> 2; v |= v >> 4; v |= v >> 8; v |= v >> 16;
         return v + 1;
-    }
-
-    // Tolerant ASCII-PLY reader: x y z always; nx ny nz if the header declares them.
-    bool readPly(const std::string &path, std::vector<Vector3f> &pts, std::vector<Vector3f> &nrm) {
-        std::ifstream f(path);
-        if (!f) return false;
-        std::string line;
-        size_t count = 0;
-        bool ascii = false, hasN = false;
-        std::vector<std::string> props;
-        while (std::getline(f, line)) {
-            std::istringstream ss(line);
-            std::string tok;
-            ss >> tok;
-            if (tok == "format") {
-                std::string fmt;
-                ss >> fmt;
-                ascii = (fmt == "ascii");
-            } else if (tok == "element") {
-                std::string e;
-                ss >> e;
-                if (e == "vertex") ss >> count;
-            } else if (tok == "property") {
-                std::string t, name;
-                ss >> t >> name;
-                props.push_back(name);
-            } else if (tok == "end_header")
-                break;
-        }
-        if (!ascii) return false;
-        hasN = std::find(props.begin(), props.end(), "nx") != props.end();
-        const size_t stride = props.size();
-        pts.reserve(pts.size() + count);
-        for (size_t i = 0; i < count && std::getline(f, line); ++i) {
-            std::istringstream ss(line);
-            std::vector<float> vals(stride, 0.0f);
-            for (size_t j = 0; j < stride; ++j) ss >> vals[j];
-            pts.emplace_back(vals[0], vals[1], vals[2]);
-            if (hasN && stride >= 6) nrm.emplace_back(vals[3], vals[4], vals[5]);
-        }
-        return !pts.empty();
     }
 
     // Estimate the camera position for a captured cloud: the visible points face the sensor, so
@@ -173,17 +134,6 @@ namespace {
         double rmse() const { return n ? std::sqrt(sumSq / double(n)) : 0; }
     };
 
-    void writePly(const std::string &path, const std::vector<Vector3f> &p,
-                  const std::vector<Vector3f> &n) {
-        std::ofstream f(path);
-        f << "ply\nformat ascii 1.0\nelement vertex " << p.size()
-          << "\nproperty float x\nproperty float y\nproperty float z\n"
-             "property float nx\nproperty float ny\nproperty float nz\nend_header\n";
-        for (size_t i = 0; i < p.size(); ++i)
-            f << p[i].x() << ' ' << p[i].y() << ' ' << p[i].z() << ' ' << n[i].x() << ' ' << n[i].y()
-              << ' ' << n[i].z() << '\n';
-    }
-
 } // namespace
 
 int main(int argc, char **argv) {
@@ -221,7 +171,7 @@ int main(int argc, char **argv) {
         size_t totalPts = 0, maxFramePts = 0;
         for (const auto &p: framePaths) {
             Frame fr;
-            if (!readPly(p, fr.pts, fr.nrm) || fr.nrm.size() != fr.pts.size()) {
+            if (!util::LoadPly(p, fr.pts, fr.nrm) || fr.nrm.size() != fr.pts.size()) {
                 std::fprintf(stderr, "skip (no normals): %s\n", p.c_str());
                 continue;
             }
@@ -339,7 +289,7 @@ int main(int argc, char **argv) {
 
         // RMSE vs ground truth (accuracy: recon→GT, completeness: GT→recon).
         // std::vector<Vector3f> gtP, gtN;
-        // if (!gtPath.empty() && readPly(gtPath, gtP, gtN) && !gtP.empty()) {
+        // if (!gtPath.empty() && util::LoadPly(gtPath, gtP, gtN) && !gtP.empty()) {
         //     const float cell = std::max(voxel, extent / 100.0f);
         //     GridNN gGT, gRec;
         //     gGT.build(gtP, cell);
@@ -358,7 +308,7 @@ int main(int argc, char **argv) {
 
         const std::string outPly = strArg(argc, argv, "--out", "");
         if (!outPly.empty()) {
-            writePly(outPly, recon.points, recon.normals);
+            util::SavePly(outPly, recon.points, recon.normals);
             std::printf("wrote extracted cloud: %s\n", outPly.c_str());
         }
     } catch (const std::exception &e) {
