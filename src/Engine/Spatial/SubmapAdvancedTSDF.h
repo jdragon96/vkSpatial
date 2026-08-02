@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/DirectionalIntegrationQuality.h"
 #include "Engine/Spatial/OrientedPointCloud.h"
@@ -29,6 +30,7 @@ namespace Engine::Spatial {
         void Build(Engine::Core::Context &ctx, float baseVoxel, float truncation,
                    int blockVoxels = 32, float detailPtsPerVoxel = 4.0f,
                    uint32_t tileHashPerTile = 1u << 20, uint32_t maxPointsPerFrame = 1u << 17) {
+            m_ctx = &ctx;
             m_baseVoxel = baseVoxel;
             m_blockWorld = baseVoxel * float(blockVoxels);
             m_detailK = detailPtsPerVoxel;
@@ -83,18 +85,27 @@ namespace Engine::Spatial {
         void Integrate(const std::vector<Eigen::Vector3f> &pts,
                        const std::vector<Eigen::Vector3f> &nrm,
                        const Eigen::Vector3f &cam = Eigen::Vector3f::Zero()) {
-            m_base.Integrate(pts, nrm, cam);
-            if (!m_finalized || m_dense.empty()) return;
-            std::vector<Eigen::Vector3f> dp, dn;
             const std::size_t n = std::min(pts.size(), nrm.size());
-            dp.reserve(n);
-            dn.reserve(n);
-            for (std::size_t i = 0; i < n; ++i)
-                if (m_dense.count(blockOf(pts[i]))) {
-                    dp.push_back(pts[i]);
-                    dn.push_back(nrm[i]);
-                }
-            if (!dp.empty()) m_detail.Integrate(dp, dn, cam);
+            if (n == 0) return;
+
+            // One CommandBatch fuses base + detail tile dispatches into a SINGLE GPU submit. Base
+            // tiles and detail tiles are distinct AdvancedTSDF pipelines writing independent hashes,
+            // so batching them together is safe and needs no intra-batch barrier.
+            Engine::Compute::CommandBatch batch(*m_ctx);
+            m_base.Integrate(pts, nrm, cam, batch); // all points -> base tiles
+
+            if (m_finalized && !m_dense.empty()) {
+                std::vector<Eigen::Vector3f> dp, dn;
+                dp.reserve(n);
+                dn.reserve(n);
+                for (std::size_t i = 0; i < n; ++i)
+                    if (m_dense.count(blockOf(pts[i]))) {
+                        dp.push_back(pts[i]);
+                        dn.push_back(nrm[i]);
+                    }
+                if (!dp.empty()) m_detail.Integrate(dp, dn, cam, batch); // detail tiles
+            }
+            batch.Submit(); // one submit for base + detail
         }
 
         // Detail (whole) + base (points inside dense blocks dropped) -> precedence dedup.
@@ -174,6 +185,7 @@ namespace Engine::Spatial {
             return vx | (vy << 21) | (vz << 42);
         }
 
+        Engine::Core::Context *m_ctx = nullptr;
         float m_baseVoxel = 0.01f;
         float m_blockWorld = 0.32f;
         float m_detailK = 4.0f;
