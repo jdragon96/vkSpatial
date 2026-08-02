@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace Engine::Spatial {
@@ -112,6 +113,40 @@ namespace Engine::Spatial {
         uint32_t DenseBlockCount() const { return static_cast<uint32_t>(m_dense.size()); }
         uint32_t BaseTileCount() const { return m_base.TileCount(); }
         uint32_t DetailTileCount() const { return m_detail.TileCount(); }
+
+        // Aggregate base+detail occupied entries with precedence dedup (detail inside dense blocks,
+        // base elsewhere) -- the same rule as ExtractPointCloud, on raw voxel entries. For the
+        // voxel_fill_debugger's per-frame readout.
+        std::vector<AdvancedEntry> DownloadEntries() const {
+            std::vector<AdvancedEntry> out = m_detail.DownloadEntries();
+            for (const AdvancedEntry &e : m_base.DownloadEntries())
+                if (!m_dense.count(blockOf(e.center))) out.push_back(e);
+            return out;
+        }
+
+        // Drop all tiles in both levels (e.g. to replay integration on scrub-back). The finalized
+        // dense-block set is preserved, so re-integration refills base+detail consistently.
+        void Reset() {
+            m_base.Reset();
+            m_detail.Reset();
+        }
+
+        // World-space AABB of each dense block -- the region where the detail submap is active.
+        std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> DenseBlockBoxes() const {
+            std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> out;
+            out.reserve(m_dense.size());
+            for (const BlockKey &b : m_dense) {
+                const Eigen::Vector3f mn(float(b.x) * m_blockWorld, float(b.y) * m_blockWorld,
+                                         float(b.z) * m_blockWorld);
+                out.emplace_back(mn, mn + Eigen::Vector3f::Constant(m_blockWorld));
+            }
+            return out;
+        }
+
+        // Base-level tile core boxes (the coarse 512^3 windows).
+        std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> BaseCoreBoxes() const {
+            return m_base.CoreBoxes();
+        }
 
     private:
         struct BlockKey {

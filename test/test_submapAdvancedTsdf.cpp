@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -111,4 +113,46 @@ TEST(SubmapAdvanced, FinalizeGate) {
     s.Integrate(denseP, denseN, Vector3f(6, 6, 7)); // no FinalizeDensity yet
     EXPECT_EQ(s.DetailTileCount(), 0u);
     EXPECT_EQ(s.DenseBlockCount(), 0u);
+}
+
+// DownloadEntries aggregates base+detail; DenseBlockBoxes/BaseCoreBoxes match the counts.
+TEST(SubmapAdvanced, DownloadEntriesAndBoxes) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> coarseP, coarseN, denseP, denseN;
+    makePlane(coarseP, coarseN, Vector3f(6, 6, 6), 8.0f, 0.05f);
+    makePlane(denseP, denseN, Vector3f(6, 6, 6), 1.2f, 0.012f);
+
+    SubmapAdvancedTSDF s;
+    s.Build(ctx, 0.05f, 0.15f, 32, 4.0f);
+    s.AddDensity(coarseP);
+    s.AddDensity(denseP);
+    s.FinalizeDensity();
+    s.Integrate(coarseP, coarseN, Vector3f(6, 6, 7));
+    s.Integrate(denseP, denseN, Vector3f(6, 6, 7));
+
+    EXPECT_GT(s.DownloadEntries().size(), 100u);
+    EXPECT_EQ(s.DenseBlockBoxes().size(), std::size_t(s.DenseBlockCount()));
+    EXPECT_EQ(s.BaseCoreBoxes().size(), std::size_t(s.BaseTileCount()));
+}
+
+// Reset drops both levels but keeps the finalized dense-block set (scrub-replay stays consistent).
+TEST(SubmapAdvanced, ResetKeepsDensity) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> denseP, denseN;
+    makePlane(denseP, denseN, Vector3f(6, 6, 6), 1.2f, 0.012f);
+
+    SubmapAdvancedTSDF s;
+    s.Build(ctx, 0.05f, 0.15f, 32, 4.0f);
+    s.AddDensity(denseP);
+    s.FinalizeDensity();
+    const uint32_t dense = s.DenseBlockCount();
+    ASSERT_GT(dense, 0u);
+    s.Integrate(denseP, denseN, Vector3f(6, 6, 7));
+    ASSERT_GT(s.DetailTileCount(), 0u);
+
+    s.Reset();
+    EXPECT_EQ(s.BaseTileCount(), 0u);
+    EXPECT_EQ(s.DetailTileCount(), 0u);
+    EXPECT_TRUE(s.DownloadEntries().empty());
+    EXPECT_EQ(s.DenseBlockCount(), dense); // density preserved
 }
