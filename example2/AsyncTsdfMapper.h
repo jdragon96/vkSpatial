@@ -81,7 +81,7 @@ namespace asyncmap {
 
     class AsyncTsdfMapper {
     public:
-        ~AsyncTsdfMapper() { Stop(); }
+        ~AsyncTsdfMapper() { joinWorker(); } // never rethrows (no throwing during destruction)
 
         // Launches the worker (builds its device + submap + density precompute, then idles until the
         // first RequestFrame). `frames` is shared read-only with the worker.
@@ -96,15 +96,8 @@ namespace asyncmap {
         }
 
         void Stop() {
-            if (m_thread.joinable()) {
-                {
-                    std::lock_guard<std::mutex> lock(m_mutex);
-                    m_stop = true;
-                }
-                m_cv.notify_one();
-                m_thread.join();
-            }
-            rethrowIfFailed();
+            joinWorker();
+            rethrowIfFailed(); // surface a worker failure to an explicit Stop() caller
         }
 
         // Ask the worker to integrate up to `target` (coalesced: only the newest request matters).
@@ -129,6 +122,17 @@ namespace asyncmap {
         int ProcessedFrame() const { return m_processed.load(); }
 
     private:
+        void joinWorker() {
+            if (m_thread.joinable()) {
+                {
+                    std::lock_guard<std::mutex> lock(m_mutex);
+                    m_stop = true;
+                }
+                m_cv.notify_one();
+                m_thread.join();
+            }
+        }
+
         void rethrowIfFailed() {
             std::exception_ptr e;
             {
