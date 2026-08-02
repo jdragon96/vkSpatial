@@ -1,6 +1,8 @@
-#include "AsyncTsdfMapper.h"
+#include "Alignment.h"
+#include "AsyncTsdfMapper.h" // asyncmap::Config / MapperFrame / MapSnapshot (reused by the pipeline)
 #include "ImGuiPass.h"
 #include "PointCloudPass.h"
+#include "ReconstructionPipeline.h"
 #include "VoxelFillDebug.h"
 
 #include "Engine/Core/Context.h"
@@ -307,16 +309,29 @@ int main(int argc, char **argv) {
         }
 
         ///////////////////////////////////////////////////////////////////////////////////////
-        // Live viewer — the TSDF runs on a background AsyncTsdfMapper (its own device); this thread
-        // only renders the latest immutable snapshot, so the window stays smooth regardless of
-        // integrate/download cost. Frames are shared read-only with the worker.
+        // Live viewer — the TSDF runs on a background ReconstructionPipeline (Track + Map threads,
+        // own device); this thread only renders the latest immutable snapshot, so the window stays
+        // smooth regardless of integrate/download cost. Frames are shared read-only with the workers.
+        // --align picks the Track alignment command (identity for these world-registered PLYs; icp /
+        // global exercise the real registration on the same data for A/B).
         ///////////////////////////////////////////////////////////////////////////////////////
 
-        auto sharedFrames =
-                std::make_shared<std::vector<asyncmap::MapperFrame>>(std::move(frames));
-        asyncmap::AsyncTsdfMapper mapper;
-        mapper.Start(cfg, sharedFrames);
-        mapper.RequestFrame(0);
+        const std::string alignName = arg.Value("--align", "identity");
+        pipeline::AlignmentRegistry registry = pipeline::AlignmentRegistry::Default();
+        std::unique_ptr<pipeline::AlignmentCommand> align = registry.Create(alignName);
+        if (!align) {
+            std::fprintf(stderr, "unknown --align '%s'; using identity\n", alignName.c_str());
+            align = registry.Create("identity");
+        }
+        const std::string activeAlign = align->Name();
+
+        auto sharedFrames = std::make_shared<std::vector<asyncmap::MapperFrame>>(std::move(frames));
+        pipeline::ReconstructionPipeline::Config pcfg;
+        pcfg.map = cfg;                    // reuse the TSDF/submap config built above
+        pcfg.densityFrames = sharedFrames; // world-registered frames -> density precompute
+        pipeline::ReconstructionPipeline pipe;
+        pipe.Start(pcfg, std::move(align));
+        int pushedTo = -1; // last frame index pushed to the pipeline
 
         Engine::Render::ApplicationDescriptor descriptor;
         descriptor.window = {1280, 800, "Voxel Fill Debugger"};
@@ -353,13 +368,12 @@ int main(int argc, char **argv) {
             bool hideBelow = false;
             bool showOccupied = true, showNew = true, showInput = true, showCamera = true;
             bool showWindowBox = true, showAllocBox = true, showSubmapBox = true;
-            int lastRequested = -1; // last frame handed to the mapper
             float wMax = 1.0f;
             bool dirty = false;
         } state;
         state.wThresh = wThreshArg;
 
-        util::StageProfiler prof;                        // render-thread stages only
+        util::StageProfiler prof;                          // render-thread stages only
         std::shared_ptr<const asyncmap::MapSnapshot> snap; // latest consumed snapshot
 
         // Rebuild the render point-sets from an immutable snapshot (worker output). SetPointSet
@@ -445,9 +459,13 @@ int main(int argc, char **argv) {
             if (ImGui::Checkbox("submap regions (detail)", &state.showSubmapBox))
                 pc->SetVisible(6, state.showSubmapBox);
             ImGui::SeparatorText("Stats");
-            const int behind = mapper.RequestedFrame() - mapper.ProcessedFrame();
-            ImGui::Text("worker: processed %d / requested %d  (%d behind)", mapper.ProcessedFrame(),
-                        mapper.RequestedFrame(), behind > 0 ? behind : 0);
+            const pipeline::PipelineStats ps = pipe.GetStats();
+            const int behind = ps.requestedFrame - ps.processedFrame;
+            ImGui::Text("align: %s   worker: processed %d / requested %d  (%d behind)",
+                        activeAlign.c_str(), ps.processedFrame, ps.requestedFrame,
+                        behind > 0 ? behind : 0);
+            ImGui::Text("queues: capture %zu, track %zu (dropped %zu)", ps.captureDepth,
+                        ps.trackDepth, ps.trackDropped);
             if (snap) {
                 ImGui::Text("occupied voxels: %zu", snap->entries.size());
                 std::size_t below = 0;
@@ -509,21 +527,27 @@ int main(int argc, char **argv) {
                 const VkExtent2D s = app.GetWindow().FramebufferSize();
                 if (s.width == 0 || s.height == 0) continue;
 
-                // Play advances only once the worker has caught up to the current target AND the fps
-                // interval elapsed, so every frame's fill is shown (paced by worker throughput).
+                // Feed frames to the pipeline gated by the map catching up (so every frame's fill is
+                // shown, paced by worker throughput) + the fps interval. Backward scrub -> Reset then
+                // re-push from 0.  state.frame is the slider/play target.
                 const double now = ImGui::GetTime();
-                if (state.playing && nFrames > 0 && mapper.ProcessedFrame() >= state.frame &&
-                    (now - lastAdvance) >= 1.0 / double(std::max(1.0f, state.fps))) {
-                    state.frame = (state.frame + 1) % nFrames; // loop
+                const bool caughtUp = pipe.ProcessedFrame() >= pushedTo;
+                const bool fpsOk =
+                        !state.playing || (now - lastAdvance) >= 1.0 / double(std::max(1.0f, state.fps));
+                if (state.frame < pushedTo) { // scrubbed backward -> rebuild
+                    pipe.Reset();
+                    pushedTo = -1;
+                } else if (pushedTo < state.frame && caughtUp && fpsOk) {
+                    ++pushedTo;
+                    pipe.PushFrame((*sharedFrames)[pushedTo]); // copy; worker owns it
+                    lastAdvance = now;
+                } else if (state.playing && pushedTo >= state.frame && caughtUp && fpsOk) {
+                    state.frame = (state.frame + 1) % nFrames; // advance the play target (loop)
                     lastAdvance = now;
                 }
-                if (state.frame != state.lastRequested) {
-                    mapper.RequestFrame(state.frame); // coalesced; non-blocking
-                    state.lastRequested = state.frame;
-                }
 
-                // Consume the latest worker snapshot (never blocks on integrate/download).
-                std::shared_ptr<const asyncmap::MapSnapshot> latest = mapper.Latest();
+                // Consume the latest model snapshot (never blocks on integrate/download).
+                std::shared_ptr<const asyncmap::MapSnapshot> latest = pipe.LatestModel();
                 bool needRefresh = state.dirty;
                 if (latest && latest.get() != snap.get()) {
                     snap = latest;
@@ -544,11 +568,11 @@ int main(int argc, char **argv) {
             }
         } catch (...) {
             vkDeviceWaitIdle(appCtx.device);
-            mapper.Stop();
+            pipe.Stop();
             throw;
         }
         vkDeviceWaitIdle(appCtx.device);
-        mapper.Stop();
+        pipe.Stop();
         std::printf("\n%s", prof.Report("render-thread pipeline").c_str());
     } catch (const std::exception &e) {
         std::cerr << e.what() << "\n";

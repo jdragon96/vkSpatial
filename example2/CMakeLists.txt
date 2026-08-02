@@ -144,7 +144,7 @@ if (GLSLC_EXECUTABLE)
     # render the filling voxels (colored by tsdf/weight/fill-frame/direction, weight-thresholded)
     # to debug coverage/holes. --dump = headless per-frame stats.
     add_spatial_example(voxel_fill_debugger voxel_fill_debugger.cpp PointCloudPass.cpp ImGuiPass.cpp)
-    target_link_libraries(voxel_fill_debugger PRIVATE Engine::Render imgui Engine::Core)
+    target_link_libraries(voxel_fill_debugger PRIVATE Engine::Render imgui Engine::Core Engine::Registration)
     add_compiled_shaders(voxel_fill_debugger VOXDBG_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
 else ()
     message(WARNING "cube_render2/shadow_map/blinn_phong examples skipped because glslc was not found")
