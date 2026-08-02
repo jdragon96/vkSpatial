@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
@@ -85,6 +86,14 @@ namespace Engine::Spatial {
         void Integrate(const std::vector<Eigen::Vector3f> &points,
                        const std::vector<Eigen::Vector3f> &normals,
                        const Eigen::Vector3f &cameraPos = Eigen::Vector3f::Zero());
+
+        // Records upload (memcpy into mapped buffers) + the integrate dispatch into `batch` WITHOUT
+        // submitting, so many tiles batch into ONE submit. Same result as Integrate; the caller owns
+        // and submits the batch.
+        void RecordIntegrate(const std::vector<Eigen::Vector3f> &points,
+                             const std::vector<Eigen::Vector3f> &normals,
+                             const Eigen::Vector3f &cameraPos,
+                             Engine::Compute::CommandBatch &batch);
 
         // Mode-3 hybrid extraction → oriented point cloud. merge=true clusters/dedups the raw
         // candidates on the CPU (corner-preserving), via MergeCandidates.

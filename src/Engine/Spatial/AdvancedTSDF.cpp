@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <unordered_map>
 
 namespace Engine::Spatial {
@@ -85,12 +86,12 @@ namespace Engine::Spatial {
         m_statBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
 
         m_hashBuffer->Allocate(hashCapacity * sizeof(AdvDirEntry));
-        m_pointBuffer->Allocate(maxPoints * 3u * sizeof(float));
-        m_normalBuffer->Allocate(maxPoints * 3u * sizeof(float));
+        m_pointBuffer->AllocateHostVisible(maxPoints * 3u * sizeof(float));
+        m_normalBuffer->AllocateHostVisible(maxPoints * 3u * sizeof(float));
         m_statBuffer->Allocate(sizeof(uint32_t));
 
         m_kernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_kernel->Build("advanced_tsdf_integrate.vert.glsl")
+        m_kernel->Build("advanced_tsdf_integrate.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, *m_pointBuffer)
                 .Bind(2, *m_normalBuffer)
@@ -110,13 +111,27 @@ namespace Engine::Spatial {
                                  const std::vector<Eigen::Vector3f> &normals,
                                  const Eigen::Vector3f &cameraPos) {
         if (points.empty()) return;
+        Engine::Compute::CommandBatch batch(*m_ctx);
+        RecordIntegrate(points, normals, cameraPos, batch);
+        batch.Submit();
+    }
+
+    void AdvancedTSDF::RecordIntegrate(const std::vector<Eigen::Vector3f> &points,
+                                       const std::vector<Eigen::Vector3f> &normals,
+                                       const Eigen::Vector3f &cameraPos,
+                                       Engine::Compute::CommandBatch &batch) {
+        if (points.empty()) return;
 
         const uint32_t N = std::min({static_cast<uint32_t>(points.size()),
                                      static_cast<uint32_t>(normals.size()), m_maxPoints});
         if (N == 0) return;
 
-        m_pointBuffer->Upload(points.data(), N * 3u * sizeof(float));
-        m_normalBuffer->Upload(normals.data(), N * 3u * sizeof(float));
+        // Zero-copy upload: memcpy straight into the persistently mapped storage buffers (no staging,
+        // no submit) — the dispatch is recorded into the caller's batch, not self-submitted.
+        std::memcpy(m_pointBuffer->MappedPtr(), points.data(), N * 3u * sizeof(float));
+        std::memcpy(m_normalBuffer->MappedPtr(), normals.data(), N * 3u * sizeof(float));
+        m_pointBuffer->FlushMapped(N * 3u * sizeof(float));
+        m_normalBuffer->FlushMapped(N * 3u * sizeof(float));
 
         IntegratePC pc{
                 N, m_hashCapacity, m_voxelSize, m_truncation,
@@ -125,7 +140,8 @@ namespace Engine::Spatial {
                 m_quality.viewAngleWeight ? 1u : 0u,
                 m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z(),
                 uint32_t(m_pointToPlane ? 1u : 0u), m_confWeight};
-        m_kernel->Args(pc).DispatchElements(N);
+        m_kernel->Args(pc);
+        batch.DispatchElements(*m_kernel, N);
     }
 
     uint32_t AdvancedTSDF::FilledCount() const {
@@ -188,7 +204,7 @@ namespace Engine::Spatial {
                      m_truncation, uint32_t(m_hermite ? 1u : 0u)};
 
         Engine::Core::ComputePipeline kernel(*m_ctx);
-        kernel.Build("advanced_tsdf_extract.vert.glsl")
+        kernel.Build("advanced_tsdf_extract.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, candBuf)
                 .Bind(2, countBuf)

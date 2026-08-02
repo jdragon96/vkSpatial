@@ -1,3 +1,4 @@
+#include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/AdvancedTSDF.h"
 
@@ -155,4 +156,29 @@ TEST(AdvancedTSDF, PointToPlaneToggle) {
         EXPECT_GT(meanNz, 0.99) << "p2p=" << p2p;      // stored-gradient normal
         EXPECT_NEAR(meanZ, 0.0, 0.02) << "p2p=" << p2p; // surface at z=0
     }
+}
+
+// RecordIntegrate into a caller-owned CommandBatch produces the same occupied set as the
+// self-submitting Integrate (the mapped-upload + batched-dispatch path is result-equivalent).
+TEST(AdvancedTsdf, RecordIntegrateMatchesIntegrate) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, 0.4f, 10);
+    const Vector3f cam(0, 0, 1);
+
+    AdvancedTSDF a, b;
+    a.Build(ctx, 0.02f, 0.06f);
+    b.Build(ctx, 0.02f, 0.06f);
+
+    a.Integrate(pts, nrm, cam); // self-submitting
+    {
+        Engine::Compute::CommandBatch batch(ctx);
+        b.RecordIntegrate(pts, nrm, cam, batch); // recorded, then submitted once
+        batch.Submit();
+    }
+
+    const auto ea = a.DownloadEntries();
+    const auto eb = b.DownloadEntries();
+    ASSERT_GT(ea.size(), 100u);
+    EXPECT_EQ(ea.size(), eb.size());
 }
