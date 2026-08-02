@@ -11,6 +11,7 @@
 #include "Engine/Spatial/SubmapAdvancedTSDF.h"
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
 
+#include "utilities/ArgParser.h"
 #include "utilities/PointCloudIO.h"
 
 #include "imgui.h"
@@ -34,25 +35,10 @@ namespace fs = std::filesystem;
 namespace {
 
     ///////////////////////////////////////////////////////////////////////////////////////////
-    // Reused verbatim from tsdf_folder_eval.cpp: arg helpers, nextPow2, estimateCamera. PLY point
-    // I/O now comes from utilities/PointCloudIO.h (util::LoadPly).
+    // Reused verbatim from tsdf_folder_eval.cpp: nextPow2, estimateCamera. Arg parsing now comes
+    // from utilities/ArgParser.h (util::ArgString/ArgFloat/HasFlag); PLY point I/O from
+    // utilities/PointCloudIO.h (util::LoadPly).
     ///////////////////////////////////////////////////////////////////////////////////////////
-
-    std::string strArg(int argc, char **argv, const char *k, const std::string &d) {
-        for (int i = 1; i + 1 < argc; ++i)
-            if (std::string(argv[i]) == k) return argv[i + 1];
-        return d;
-    }
-    float floatArg(int argc, char **argv, const char *k, float d) {
-        for (int i = 1; i + 1 < argc; ++i)
-            if (std::string(argv[i]) == k) return float(std::atof(argv[i + 1]));
-        return d;
-    }
-    bool flag(int argc, char **argv, const char *k) {
-        for (int i = 1; i < argc; ++i)
-            if (std::string(argv[i]) == k) return true;
-        return false;
-    }
 
     uint32_t nextPow2(uint32_t v) {
         if (v <= 1) return 1;
@@ -113,12 +99,8 @@ namespace {
     std::vector<PointVertex> boxEdges(const Vector3f &mn, const Vector3f &mx, float voxel,
                                       uint8_t r, uint8_t g, uint8_t b) {
         std::vector<PointVertex> v;
-        const Vector3f c[8] = {{mn.x(), mn.y(), mn.z()}, {mx.x(), mn.y(), mn.z()},
-                               {mx.x(), mx.y(), mn.z()}, {mn.x(), mx.y(), mn.z()},
-                               {mn.x(), mn.y(), mx.z()}, {mx.x(), mn.y(), mx.z()},
-                               {mx.x(), mx.y(), mx.z()}, {mn.x(), mx.y(), mx.z()}};
-        static const int E[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
-                                     {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        const Vector3f c[8] = {{mn.x(), mn.y(), mn.z()}, {mx.x(), mn.y(), mn.z()}, {mx.x(), mx.y(), mn.z()}, {mn.x(), mx.y(), mn.z()}, {mn.x(), mn.y(), mx.z()}, {mx.x(), mn.y(), mx.z()}, {mx.x(), mx.y(), mx.z()}, {mn.x(), mx.y(), mx.z()}};
+        static const int E[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
         const int per = std::clamp(int((mx - mn).maxCoeff() / std::max(1e-6f, voxel)), 24, 512);
         for (const auto &e: E)
             for (int i = 0; i <= per; ++i) {
@@ -185,7 +167,7 @@ namespace {
 
 int main(int argc, char **argv) {
     try {
-        const std::string dir = strArg(argc, argv, "--dir", "");
+        const std::string dir = util::ArgString(argc, argv, "--dir", "");
         if (dir.empty() || !fs::is_directory(dir)) {
             std::cerr << "usage: voxel_fill_debugger --dir <folder> [--voxel v] [--trunc t] "
                          "[--no-p2p] [--conf L] [--hermite] [--wthresh w] [--tile-hash N] "
@@ -230,14 +212,14 @@ int main(int argc, char **argv) {
         }
         if (frames.empty()) throw std::runtime_error("no usable frames (need per-point normals)");
 
-        const bool p2p = !flag(argc, argv, "--no-p2p");
-        const float conf = floatArg(argc, argv, "--conf", 0.5f);
-        const bool hermite = flag(argc, argv, "--hermite");
+        const bool p2p = !util::HasFlag(argc, argv, "--no-p2p");
+        const float conf = util::ArgFloat(argc, argv, "--conf", 0.5f);
+        const bool hermite = util::HasFlag(argc, argv, "--hermite");
         const Vector3f span = bbMax - bbMin;
         const float extent = span.norm();
-        const float voxel = floatArg(argc, argv, "--voxel", extent / 200.0f);
-        const float trunc = floatArg(argc, argv, "--trunc", voxel * 3.0f);
-        const float wThreshArg = floatArg(argc, argv, "--wthresh", 0.0f);
+        const float voxel = util::ArgFloat(argc, argv, "--voxel", extent / 200.0f);
+        const float trunc = util::ArgFloat(argc, argv, "--trunc", voxel * 3.0f);
+        const float wThreshArg = util::ArgFloat(argc, argv, "--wthresh", 0.0f);
 
         // SubmapAdvancedTSDF: base TiledAdvancedTSDF at `voxel` (all points) + a detail level at
         // voxel/2 in DENSE blocks only. Density is precomputed from ALL frames up front so the dense
@@ -245,10 +227,10 @@ int main(int argc, char **argv) {
         // --block/--detail-k tune density; --tile-hash sizes both levels (detail = half voxel needs
         // a bigger hash). Sparse scenes -> no dense blocks -> behaves like a plain tiled map.
         const uint32_t tileHash =
-                nextPow2(uint32_t(floatArg(argc, argv, "--tile-hash", float(1u << 20))));
+                nextPow2(uint32_t(util::ArgFloat(argc, argv, "--tile-hash", float(1u << 20))));
         const uint32_t maxPts = nextPow2(uint32_t(std::max<std::size_t>(maxFramePts, 1u << 15)));
-        const int blockVoxels = int(floatArg(argc, argv, "--block", 32.0f));
-        const float detailK = floatArg(argc, argv, "--detail-k", 4.0f);
+        const int blockVoxels = int(util::ArgFloat(argc, argv, "--block", 32.0f));
+        const float detailK = util::ArgFloat(argc, argv, "--detail-k", 4.0f);
 
         Engine::Core::Context ctx;
         Engine::Spatial::SubmapAdvancedTSDF submap;
@@ -270,7 +252,7 @@ int main(int argc, char **argv) {
                     voxel, detailVoxel, blockVoxels, detailK, submap.DenseBlockCount(), tileHash);
 
         // Headless per-frame stats: no window, no render deps touched.
-        if (flag(argc, argv, "--dump") || flag(argc, argv, "--no-view")) {
+        if (util::HasFlag(argc, argv, "--dump") || util::HasFlag(argc, argv, "--no-view")) {
             for (int f = 0; f < nFrames; ++f) {
                 submap.Integrate(frames[f].pts, frames[f].nrm, frames[f].cam);
                 const auto entries = submap.DownloadEntries();
@@ -357,11 +339,8 @@ int main(int argc, char **argv) {
             for (const auto &e: curEntries) state.wMax = std::max(state.wMax, e.weight);
             state.wThresh = std::min(state.wThresh, state.wMax);
         };
+
         auto refreshSets = [&]() {
-            // SetPointSet() below reallocates PointCloudPass's vertex buffers (destroying the
-            // old ones); the previous frame's command buffer may still be in flight, so wait
-            // here too (not just in rebuildTo) — this path also runs standalone from the
-            // dirty-only branch (color-mode/threshold change with no frame change).
             vkDeviceWaitIdle(appCtx.device);
             std::vector<PointVertex> occ, nw;
             buildVoxelSets(curEntries, curNew, state.mode, trunc, state.wMax, state.wThresh,
@@ -372,8 +351,7 @@ int main(int argc, char **argv) {
             pushCloud(in, frames[std::clamp(state.shown, 0, nFrames - 1)].pts, 100, 110, 120);
             pc->SetPointSet(2, in);
             pc->SetPointSet(3, cameraMarker(frames[std::clamp(state.shown, 0, nFrames - 1)].cam));
-            // Base tile windows (cyan) + allocated voxel box (orange) + one box per dense block =
-            // the submap (detail) regions (magenta), where voxels are integrated at half voxel.
+
             std::vector<PointVertex> tileBoxes;
             for (const auto &b: submap.BaseCoreBoxes()) {
                 const std::vector<PointVertex> e = boxEdges(b.first, b.second, voxel, 40, 220, 220);
@@ -385,6 +363,7 @@ int main(int argc, char **argv) {
                 pc->SetPointSet(5, boxEdges(aMn, aMx, voxel, 255, 160, 40));
             else
                 pc->SetPointSet(5, {});
+
             std::vector<PointVertex> submapBoxes;
             for (const auto &b: submap.DenseBlockBoxes()) {
                 const std::vector<PointVertex> e = boxEdges(b.first, b.second, voxel, 230, 60, 230);

@@ -21,6 +21,7 @@
 #include "Engine/Render/Camera.h"
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
+#include "utilities/ArgParser.h"
 #include "utilities/ObjectScanner.h"
 #include "utilities/PlyMesh.h"
 
@@ -46,26 +47,7 @@ using util::TriMesh;
 
 namespace {
 
-    std::string strArg(int argc, char **argv, const char *k, const std::string &d) {
-        for (int i = 1; i + 1 < argc; ++i)
-            if (std::string(argv[i]) == k) return argv[i + 1];
-        return d;
-    }
-    int intArg(int argc, char **argv, const char *k, int d) {
-        for (int i = 1; i + 1 < argc; ++i)
-            if (std::string(argv[i]) == k) return std::atoi(argv[i + 1]);
-        return d;
-    }
-    float floatArg(int argc, char **argv, const char *k, float d) {
-        for (int i = 1; i + 1 < argc; ++i)
-            if (std::string(argv[i]) == k) return float(std::atof(argv[i + 1]));
-        return d;
-    }
-    bool flag(int argc, char **argv, const char *k) {
-        for (int i = 1; i < argc; ++i)
-            if (std::string(argv[i]) == k) return true;
-        return false;
-    }
+    // Arg parsing: utilities/ArgParser.h (util::ArgString/ArgInt/ArgFloat/HasFlag).
 
     bool endsWith(const std::string &s, const std::string &suf) {
         if (s.size() < suf.size()) return false;
@@ -165,17 +147,17 @@ namespace {
 
 int main(int argc, char **argv) {
     try {
-        const std::string meshPath = strArg(argc, argv, "--mesh", "");
-        const std::string outDir = strArg(argc, argv, "--out", "scan_out");
-        const int frames = intArg(argc, argv, "--frames", 90);
-        const float turns = floatArg(argc, argv, "--turns", 3.0f);
-        const float elevStart = floatArg(argc, argv, "--elev-start", 75.0f);
-        const float elevEnd = floatArg(argc, argv, "--elev-end", -30.0f);
-        const int sample = intArg(argc, argv, "--sample", 120000);
-        const int capW = intArg(argc, argv, "--width", 320);
-        const int capH = intArg(argc, argv, "--height", 240);
-        const float fov = floatArg(argc, argv, "--fov", 55.0f);
-        const bool noView = flag(argc, argv, "--no-view");
+        const std::string meshPath = util::ArgString(argc, argv, "--mesh", "");
+        const std::string outDir = util::ArgString(argc, argv, "--out", "scan_out");
+        const int frames = util::ArgInt(argc, argv, "--frames", 90);
+        const float turns = util::ArgFloat(argc, argv, "--turns", 3.0f);
+        const float elevStart = util::ArgFloat(argc, argv, "--elev-start", 75.0f);
+        const float elevEnd = util::ArgFloat(argc, argv, "--elev-end", -30.0f);
+        const int sample = util::ArgInt(argc, argv, "--sample", 120000);
+        const int capW = util::ArgInt(argc, argv, "--width", 320);
+        const int capH = util::ArgInt(argc, argv, "--height", 240);
+        const float fov = util::ArgFloat(argc, argv, "--fov", 55.0f);
+        const bool noView = util::HasFlag(argc, argv, "--no-view");
 
         if (meshPath.empty()) {
             std::cerr << "usage: object_scan_viewer --mesh <file.ply|.obj> --out <dir> "
