@@ -185,3 +185,31 @@ TEST(ArgParserClass, NoDefaultFallsBackToZero) {
     EXPECT_EQ(arg.ValueInt("--n"), 0);
     EXPECT_FLOAT_EQ(arg.ValueFloat("--f"), 0.0f);
 }
+
+// ---- keys match ignoring leading dashes (spell a key with or without them) ----
+
+// The argv token has "--", but the lookup key may drop it (or use one dash) and still match.
+TEST(ArgParser, KeyMatchIgnoresLeadingDashes) {
+    Argv a{"prog", "--interval", "33", "--no-view"};
+    EXPECT_EQ(util::ArgValue(a.argc(), a.argv(), "interval").value(), "33");   // no dashes
+    EXPECT_EQ(util::ArgValue(a.argc(), a.argv(), "-interval").value(), "33");  // one dash
+    EXPECT_EQ(util::ArgValue(a.argc(), a.argv(), "--interval").value(), "33"); // both
+    EXPECT_EQ(util::ArgFloat(a.argc(), a.argv(), "interval", 1.0f), 33.0f);
+    EXPECT_TRUE(util::HasFlag(a.argc(), a.argv(), "no-view"));
+}
+
+// The reverse: a dashless argv token is still found by a dashed key.
+TEST(ArgParser, DashlessTokenFoundByDashedKey) {
+    Argv a{"prog", "interval", "33"};
+    EXPECT_EQ(util::ArgValue(a.argc(), a.argv(), "--interval").value(), "33");
+}
+
+// The fluent getters + declared defaults are dash-insensitive too: Option("--voxel", d) is read by
+// Value("voxel"), and a supplied "--interval" is read by ValueFloat("interval").
+TEST(ArgParserClass, ValueAndDefaultIgnoreLeadingDashes) {
+    Argv a{"prog", "--interval", "16"};
+    util::ArgParser arg = util::BuildArgParser(a.argc(), a.argv()).Option("--voxel", 0.5);
+    EXPECT_FLOAT_EQ(arg.ValueFloat("interval"), 16.0f); // supplied value, key without dashes
+    EXPECT_FLOAT_EQ(arg.ValueFloat("voxel"), 0.5f);     // declared default, key without dashes
+    EXPECT_TRUE(arg.Has("interval"));
+}

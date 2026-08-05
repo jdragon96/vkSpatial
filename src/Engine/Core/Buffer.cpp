@@ -49,8 +49,10 @@ namespace Engine::Core {
         VkBufferCreateInfo bufferInfo{};
         bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         bufferInfo.size = bytes;
-        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                           VK_BUFFER_USAGE_TRANSFER_DST_BIT | m_extraUsage;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                           m_extraUsage;
 
         VmaAllocationCreateInfo allocInfo{};
         allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
@@ -66,9 +68,36 @@ namespace Engine::Core {
         m_size = bytes;
     }
 
+    void Buffer::AllocateHostVisibleReadback(uint32_t bytes) {
+        free();
+
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bytes;
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                           VK_BUFFER_USAGE_TRANSFER_DST_BIT | m_extraUsage;
+
+        VmaAllocationCreateInfo allocInfo{};
+        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        // RANDOM (not SEQUENTIAL_WRITE) so the mapping is readable — the CPU reads GPU writes back.
+        allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+                          VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        VmaAllocationInfo info{};
+        if (vmaCreateBuffer(m_context.allocator, &bufferInfo, &allocInfo, &m_buffer, &m_allocation,
+                            &info) != VK_SUCCESS)
+            throw std::runtime_error("Buffer: failed to allocate host-visible readback");
+
+        m_mapped = info.pMappedData;
+        m_size = bytes;
+    }
     void Buffer::FlushMapped(uint32_t bytes) const {
         if (m_allocation != VK_NULL_HANDLE)
             vmaFlushAllocation(m_context.allocator, m_allocation, 0, bytes);
+    }
+    void Buffer::InvalidateMapped(uint32_t bytes) const {
+        if (m_allocation != VK_NULL_HANDLE)
+            vmaInvalidateAllocation(m_context.allocator, m_allocation, 0, bytes);
     }
 
     void Buffer::Upload(const void *data, uint32_t bytes, QueueRole role) {

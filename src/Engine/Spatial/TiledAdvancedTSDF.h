@@ -3,13 +3,11 @@
 #include "Engine/Spatial/AdvancedTSDF.h"
 #include "Engine/Spatial/TiledDirectionalTSDF.h"
 
+#include <algorithm>
+#include <cstring>
+
 namespace Engine::Spatial {
 
-    // AdvancedTSDF-backed tiled TSDF: same geometry/routing/extraction as TiledDirectionalTSDF, but
-    // each tile is an AdvancedTSDF (compact hash + point-to-plane + stored-gradient). Adds the A1
-    // (confidence weight) and A2 (Hermite position) setters, forwarded to every tile via the
-    // configure hook. Configure these BEFORE Integrate -- the hook is applied when a tile is first
-    // created (during Integrate).
     class TiledAdvancedTSDF : public TiledDirectionalTSDF<AdvancedTSDF> {
     public:
         TiledAdvancedTSDF() {
@@ -19,36 +17,71 @@ namespace Engine::Spatial {
             };
         }
 
-        // A1: surface-proximity confidence weight lambda in [0,1]; 0 = off. Matches AdvancedTSDF.
         void SetConfidenceWeight(float lambda) { m_confWeight = lambda; }
 
-        // A2: cubic-Hermite zero-crossing position instead of linear. false = linear (default).
         void SetHermitePosition(bool on) { m_hermite = on; }
 
-        // Aggregate every tile's occupied entries (world centre / tsdf / weight / normal), keeping
-        // only entries whose voxel lies in that tile's own core -- so ghost overlap never yields
-        // cross-tile duplicates (mirrors ExtractPointCloud's core-only rule). For per-frame voxel
-        // inspection (voxel_fill_debugger).
+        void DownloadEntries(std::vector<AdvancedEntry> &out) const {
+            if (this->TileCount() == 0) {
+                out.resize(0); // keep capacity for a later non-empty frame
+                return;
+            }
+            ensureShared(m_sharedCapacity == 0 ? kInitialShared : m_sharedCapacity);
+            uint32_t total = compactAllTiles();
+            if (total > m_sharedCapacity) {
+                ensureShared(total + total / 2u);
+                total = compactAllTiles();
+            }
+            const uint32_t n = std::min(total, m_sharedCapacity);
+            out.reserve(m_sharedCapacity);
+            out.resize(n); // NOT cleared first -> only the growth delta is value-initialised
+            if (n > 0) {
+                m_sharedOut->InvalidateMapped(n * uint32_t(sizeof(AdvancedEntry)));
+                std::memcpy(out.data(), m_sharedOut->MappedPtr(), n * sizeof(AdvancedEntry));
+            }
+        }
+
+        // Convenience wrapper (tests / one-off callers). The per-frame hot path uses the reusing form.
         std::vector<AdvancedEntry> DownloadEntries() const {
             std::vector<AdvancedEntry> out;
-            const float voxel = this->voxelSize();
-            this->forEachTileCore([&](const AdvancedTSDF &tile, const Eigen::Vector3i &coreMin,
-                                      const Eigen::Vector3i &coreMax) {
-                for (const AdvancedEntry &e : tile.DownloadEntries()) {
-                    const Eigen::Vector3i v(static_cast<int>(std::floor(e.center.x() / voxel)),
-                                            static_cast<int>(std::floor(e.center.y() / voxel)),
-                                            static_cast<int>(std::floor(e.center.z() / voxel)));
-                    if (v.x() >= coreMin.x() && v.x() < coreMax.x() && v.y() >= coreMin.y() &&
-                        v.y() < coreMax.y() && v.z() >= coreMin.z() && v.z() < coreMax.z())
-                        out.push_back(e);
-                }
-            });
+            DownloadEntries(out);
             return out;
         }
 
     private:
-        float m_confWeight = 0.5f; // A1 default matches AdvancedTSDF
-        bool m_hermite = false;    // A2 default matches AdvancedTSDF
+        float m_confWeight = 0.5f;
+        bool m_hermite = false;
+
+        uint32_t compactAllTiles() const {
+            auto *countPtr = static_cast<uint32_t *>(m_sharedCount->MappedPtr());
+            *countPtr = 0;
+            m_sharedCount->FlushMapped(sizeof(uint32_t));
+
+            Engine::Compute::CommandBatch batch(*this->contextPtr());
+            this->forEachTileCore([&](const AdvancedTSDF &tile,
+                                      const Eigen::Vector3i &coreMin,
+                                      const Eigen::Vector3i &coreMax) {
+                tile.RecordCompact(*m_sharedOut, *m_sharedCount, batch, coreMin, coreMax);
+            });
+            batch.Submit(); // ONE submit for every tile (distinct kernels -> safe to batch)
+
+            m_sharedCount->InvalidateMapped(sizeof(uint32_t));
+            return *countPtr;
+        }
+
+        static constexpr uint32_t kInitialShared = 1u << 23; // ~8 M entries up front -> no mid-scan growth
+        mutable std::unique_ptr<Engine::Core::Buffer> m_sharedOut;
+        mutable std::unique_ptr<Engine::Core::Buffer> m_sharedCount;
+        mutable uint32_t m_sharedCapacity = 0;
+
+        void ensureShared(uint32_t entries) const {
+            if (m_sharedOut && m_sharedCapacity >= entries) return;
+            m_sharedCapacity = entries;
+            m_sharedOut = std::make_unique<Engine::Core::Buffer>(*this->contextPtr());
+            m_sharedCount = std::make_unique<Engine::Core::Buffer>(*this->contextPtr());
+            m_sharedOut->AllocateHostVisibleReadback(m_sharedCapacity * uint32_t(sizeof(AdvancedEntry)));
+            m_sharedCount->AllocateHostVisibleReadback(sizeof(uint32_t));
+        }
     };
 
 } // namespace Engine::Spatial

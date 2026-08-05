@@ -2,6 +2,7 @@
 
 #include "SPIRV-Reflect/spirv_reflect.h"
 #include <fstream>
+#include <mutex>
 #include <shaderc/shaderc.hpp>
 #include <sstream>
 #include <stdexcept>
@@ -136,31 +137,50 @@ namespace Engine::Core {
         m_dirty = true;
     }
 
+    namespace {
+        // Process-wide SPIR-V cache keyed by shader path: compile each shader file ONCE, then reuse
+        // across every ComputePipeline that Builds it. Without this, a fine-voxel TiledAdvancedTSDF
+        // pays hundreds of redundant shaderc compilations on its first frame (each of its ~100 tiles
+        // builds the same integrate + compact kernels). SPIR-V is device-independent, so the cache is
+        // shared across Contexts; only the (cheap) VkShaderModule is per-pipeline.
+        std::vector<uint32_t> compileFileCached(const std::string &fullPath) {
+            static std::unordered_map<std::string, std::vector<uint32_t>> cache;
+            static std::mutex mutex;
+            std::lock_guard<std::mutex> lock(mutex);
+
+            const auto hit = cache.find(fullPath);
+            if (hit != cache.end()) return hit->second;
+
+            std::ifstream f(fullPath, std::ios::binary);
+            if (!f.is_open())
+                throw std::runtime_error("ComputePipeline::Build: cannot open " + fullPath);
+            std::ostringstream ss;
+            ss << f.rdbuf();
+            const std::string src = ss.str();
+
+            const auto lastSlash = fullPath.rfind('/');
+            const std::string dir = (lastSlash != std::string::npos) ? fullPath.substr(0, lastSlash) : ".";
+
+            shaderc::Compiler compiler;
+            shaderc::CompileOptions opts;
+            opts.SetOptimizationLevel(shaderc_optimization_level_performance);
+            opts.SetIncluder(std::make_unique<FilesystemIncluder>(dir));
+
+            auto result = compiler.CompileGlslToSpv(src, shaderc_compute_shader, fullPath.c_str(), opts);
+            if (result.GetCompilationStatus() != shaderc_compilation_status_success)
+                throw std::runtime_error("ComputePipeline::Build: " + result.GetErrorMessage());
+
+            std::vector<uint32_t> spv(result.cbegin(), result.cend());
+            cache.emplace(fullPath, spv);
+            return spv;
+        }
+    } // namespace
+
     ComputePipeline &ComputePipeline::Build(const std::string &filename) {
         destroyShaderResources();
 
         const std::string fullPath = std::string(VKBVH_SHADER_DIR) + "/" + filename;
-
-        std::ifstream f(fullPath, std::ios::binary);
-        if (!f.is_open())
-            throw std::runtime_error("ComputePipeline::Build: cannot open " + fullPath);
-        std::ostringstream ss;
-        ss << f.rdbuf();
-        std::string src = ss.str();
-
-        auto lastSlash = fullPath.rfind('/');
-        std::string dir = (lastSlash != std::string::npos) ? fullPath.substr(0, lastSlash) : ".";
-
-        shaderc::Compiler compiler;
-        shaderc::CompileOptions opts;
-        opts.SetOptimizationLevel(shaderc_optimization_level_performance);
-        opts.SetIncluder(std::make_unique<FilesystemIncluder>(dir));
-
-        auto result = compiler.CompileGlslToSpv(src, shaderc_compute_shader, fullPath.c_str(), opts);
-        if (result.GetCompilationStatus() != shaderc_compilation_status_success)
-            throw std::runtime_error("ComputePipeline::Build: " + result.GetErrorMessage());
-
-        std::vector<uint32_t> spv(result.cbegin(), result.cend());
+        const std::vector<uint32_t> spv = compileFileCached(fullPath);
 
         VkShaderModuleCreateInfo smci{};
         smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;

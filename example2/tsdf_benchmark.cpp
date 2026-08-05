@@ -129,6 +129,8 @@ namespace {
     // (CompactDirectionalTSDF::SetPointToPlane), gated behind --p2p so the default run still
     // reports the legacy projective-distance behaviour.
     bool g_p2p = false;
+    float g_advConf = 0.0f;    // A1: --conf <lambda> for the Advanced row
+    bool g_advHermite = false; // A2: --hermite for the Advanced row
 
     const char *ShapeName(Shape s) { return s == Shape::Cube ? "cube" : "cylinder"; }
 
@@ -728,6 +730,8 @@ namespace {
         Engine::Spatial::AdvancedTSDF adv;
         adv.Build(ctx, voxel, kTruncation); // centred default window (voxelSize-independent)
         adv.SetPointToPlane(g_p2p);
+        adv.SetConfidenceWeight(g_advConf); // A1
+        adv.SetHermitePosition(g_advHermite); // A2
         adv.SetIntegrationQuality({maxDir, 4, true});
 
         const auto t0 = std::chrono::steady_clock::now();
@@ -1139,6 +1143,10 @@ int main(int argc, char **argv) {
             maxDir = static_cast<uint32_t>(std::stoul(argv[++i]));
         } else if (a == "--p2p") {
             g_p2p = true;
+        } else if (a == "--conf" && i + 1 < argc) {
+            g_advConf = std::stof(argv[++i]);
+        } else if (a == "--hermite") {
+            g_advHermite = true;
         }
     }
 

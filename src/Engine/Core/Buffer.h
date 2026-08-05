@@ -36,11 +36,20 @@ namespace Engine::Core {
         // allocation is freed first. Throws std::runtime_error on failure.
         void AllocateHostVisible(uint32_t bytes);
 
-        // Persistent mapped pointer for AllocateHostVisible buffers; nullptr after plain Allocate.
+        // Like AllocateHostVisible, but the mapping also allows READING back GPU writes (host-random
+        // access). Use for a buffer a shader WRITES and the CPU then reads via MappedPtr — pair with
+        // InvalidateMapped() before the read. Zero-copy readback (no staging, no download copy).
+        void AllocateHostVisibleReadback(uint32_t bytes);
+
+        // Persistent mapped pointer for AllocateHostVisible* buffers; nullptr after plain Allocate.
         void *MappedPtr() const { return m_mapped; }
 
         // Flush `bytes` of host writes to the device (no-op on HOST_COHERENT memory; always safe).
         void FlushMapped(uint32_t bytes) const;
+
+        // Invalidate `bytes` of the mapping so a subsequent CPU read sees the device's writes (no-op
+        // on HOST_COHERENT memory; always safe). Call after the writing dispatch completes.
+        void InvalidateMapped(uint32_t bytes) const;
 
         VkBuffer Handle() const { return m_buffer; }
         uint32_t Size() const { return m_size; }

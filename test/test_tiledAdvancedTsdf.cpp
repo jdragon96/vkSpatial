@@ -238,3 +238,57 @@ TEST(TiledAdvanced, BatchedIntegrateMatchesSelfSubmit) {
     EXPECT_EQ(a.DownloadEntries().size(), b.DownloadEntries().size());
     EXPECT_GT(a.DownloadEntries().size(), 1000u);
 }
+
+// The GPU-route IntegrateGPU (whole cloud uploaded ONCE; each tile's shader window-filters it) yields
+// the same tiles + occupied set as the CPU-route Integrate -- so GPU-side routing is seam-free and
+// loses no contribution. Plane kept under the per-tile maxPoints so neither path clamps.
+TEST(TiledAdvanced, GpuRouteMatchesCpuRoute) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, Vector3f(0.0f, 0.0f, 0.0f), 30.0f, 100); // 201^2 pts, spans >= 2 tiles
+    const Vector3f cam(0.0f, 0.0f, 1.0f);
+
+    TiledAdvancedTSDF cpu, gpu;
+    cpu.Build(ctx, 0.05f, 0.15f);
+    gpu.Build(ctx, 0.05f, 0.15f);
+
+    cpu.Integrate(pts, nrm, cam);    // CPU route: per-tile point copies
+    gpu.IntegrateGPU(pts, nrm, cam); // GPU route: shared cloud + shader window filter
+
+    ASSERT_GE(cpu.TileCount(), 2u);
+    EXPECT_EQ(cpu.TileCount(), gpu.TileCount());
+    EXPECT_EQ(cpu.DownloadEntries().size(), gpu.DownloadEntries().size());
+    EXPECT_GT(gpu.DownloadEntries().size(), 1000u);
+}
+
+// Each voxel's AdvancedEntry::firstFrame is GPU-stamped with SetCurrentFrame's value the FIRST time
+// the voxel is filled -- so the CPU recovers "first-seen frame" (and "new this frame") without a
+// tracker. Two non-overlapping patches integrated at different frames must carry their own stamps.
+TEST(TiledAdvanced, GpuFirstFrameStamp) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> pA, nA, pB, nB;
+    makePlane(pA, nA, Vector3f(0.0f, 0.0f, 0.0f), 4.0f, 20);   // patch near x in [-2, 2]
+    makePlane(pB, nB, Vector3f(10.0f, 0.0f, 0.0f), 4.0f, 20);  // patch near x in [8, 12]
+    const Vector3f cam(0.0f, 0.0f, 1.0f);
+
+    TiledAdvancedTSDF t;
+    t.Build(ctx, 0.05f, 0.15f);
+    t.SetCurrentFrame(0);
+    t.IntegrateGPU(pA, nA, cam);
+    t.SetCurrentFrame(5);
+    t.IntegrateGPU(pB, nB, cam); // pB voxels are new at frame 5; pA voxels keep firstFrame 0
+
+    const std::vector<AdvancedEntry> entries = t.DownloadEntries();
+    ASSERT_GT(entries.size(), 200u);
+    int a = 0, b = 0, bad = 0;
+    for (const AdvancedEntry &e: entries) {
+        if (e.center.x() < 5.0f) { // patch A -> filled at frame 0
+            (e.firstFrame == 0) ? ++a : ++bad;
+        } else { // patch B -> filled at frame 5
+            (e.firstFrame == 5) ? ++b : ++bad;
+        }
+    }
+    EXPECT_EQ(bad, 0);
+    EXPECT_GT(a, 50);
+    EXPECT_GT(b, 50);
+}

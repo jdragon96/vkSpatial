@@ -26,6 +26,7 @@ layout(push_constant) uniform PC {
     uint  g_maxDirections;
     uint  g_dirExponent;
     uint  g_viewAngleWeight;
+    uint  g_pointToPlane;   // A1: 0 = projective SDF, 1 = point-to-plane SDF
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer Points { PointSample g_points[]; };
@@ -89,7 +90,11 @@ void main() {
         ivec3 v = ivec3(floor(samplePos / g_voxelSize));
         vec3 vCenter = (vec3(v) + vec3(0.5)) * g_voxelSize;
 
-        float sdf = depth - dot(vCenter - cam, rayDir);
+        // A1 experiment: projective ray distance vs point-to-plane (normal-based).
+        // point-to-plane removes the grazing-angle bias of the projective form.
+        float sdf = (g_pointToPlane != 0u)
+                        ? dot(vCenter - p, normalize(nrm))
+                        : depth - dot(vCenter - cam, rayDir);
         if (abs(sdf) > g_truncation) continue;
 
         ivec3 g = v >> 3; // floor division by 8, negatives included

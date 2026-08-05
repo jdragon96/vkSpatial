@@ -22,15 +22,11 @@
 #include <utility>
 #include <vector>
 
-// Track / Map / Render reconstruction pipeline. ReconstructionPipeline owns the two worker threads
-// (Track = pose via a swappable AlignmentCommand; Map = integrate posed frames into its OWN Vulkan
-// device + throttled download → model snapshot) and every inter-thread resource (Channel links +
-// Mailbox model). The Render stage is the caller's main thread, consuming LatestModel().
 namespace pipeline {
 
     struct PipelineStats {
-        int requestedFrame = -1; // last PushFrame index (this generation)
-        int processedFrame = -1; // last frame the Map integrated (this generation)
+        int requestedFrame = -1;
+        int processedFrame = -1;
         std::size_t captureDepth = 0;
         std::size_t trackDepth = 0;
         std::size_t trackDropped = 0;
@@ -39,7 +35,7 @@ namespace pipeline {
     class ReconstructionPipeline {
     public:
         struct Config {
-            asyncmap::Config map;         // TSDF/submap config (reused)
+            asyncmap::Config map;
             std::size_t captureQueue = 8; // Frame channel capacity
             std::size_t trackQueue = 4;   // TrackedFrame channel capacity (drop-oldest)
             int downloadEveryN = 1;       // Map download cadence (raise to decouple slow download)
@@ -140,14 +136,20 @@ namespace pipeline {
             try {
                 Engine::Core::Context ctx;
                 Engine::Spatial::SubmapAdvancedTSDF submap;
-                submap.Build(ctx, m_cfg.map.baseVoxel, m_cfg.map.truncation, m_cfg.map.blockVoxels,
-                             m_cfg.map.detailK, m_cfg.map.tileHash, m_cfg.map.maxPoints);
+                submap.Build(
+                        ctx,
+                        m_cfg.map.baseVoxel,
+                        m_cfg.map.truncation,
+                        m_cfg.map.blockVoxels,
+                        m_cfg.map.detailK,
+                        m_cfg.map.tileHash,
+                        m_cfg.map.maxPoints);
                 submap.SetIntegrationQuality(m_cfg.map.quality);
                 submap.SetPointToPlane(m_cfg.map.pointToPlane);
                 submap.SetConfidenceWeight(m_cfg.map.confidence);
                 submap.SetHermitePosition(m_cfg.map.hermite);
                 if (m_cfg.densityFrames) {
-                    for (const Frame &fr : *m_cfg.densityFrames) submap.AddDensity(fr.pts);
+                    for (const Frame &frame: *m_cfg.densityFrames) submap.AddDensity(frame.pts);
                     submap.FinalizeDensity();
                 }
 
@@ -171,8 +173,6 @@ namespace pipeline {
                     integrateWorld(submap, tf, prof);
                     ++processed;
 
-                    // Publish (and only then advance m_processed) so ProcessedFrame() always refers
-                    // to a frame already reflected in a published snapshot.
                     if ((processed % std::max(1, m_cfg.downloadEveryN)) == 0)
                         publishSnapshot(submap, tracker, prof, processed);
                 }
@@ -233,7 +233,7 @@ namespace pipeline {
             if (snap.entries.empty()) return;
             Eigen::Vector3f mn = Eigen::Vector3f::Constant(1e30f);
             Eigen::Vector3f mx = Eigen::Vector3f::Constant(-1e30f);
-            for (const Engine::Spatial::AdvancedEntry &e : snap.entries) {
+            for (const Engine::Spatial::AdvancedEntry &e: snap.entries) {
                 mn = mn.cwiseMin(e.center);
                 mx = mx.cwiseMax(e.center);
             }

@@ -71,6 +71,11 @@ namespace Engine::Spatial {
         // 2 = stored-gradient (normalize(sumN) normal + isosurface projection). Default 0.
         void SetExtractMode(uint32_t mode) { m_extractMode = mode; }
 
+        // A1 experiment: integrate SDF form. false = projective ray distance (default),
+        // true = point-to-plane (normal-based, removes grazing bias). Flows into the
+        // integrate push-constant g_pointToPlane.
+        void SetPointToPlane(bool on) { m_pointToPlane = on; }
+
         // Starts a frame: recomputes the local base (window centred on the hint, snapped to
         // the group grid) and resets the indexGrid to kInvalidPoolIndex.
         void BeginFrame(const Eigen::Vector3f &aabbCenterHint);
@@ -137,6 +142,7 @@ namespace Engine::Spatial {
         float m_truncation = 0.3f;
         IntegrationQuality m_quality;
         uint32_t m_extractMode = 0;
+        bool m_pointToPlane = false; // A1 experiment (SetPointToPlane)
 
         std::unique_ptr<IResidencyBackend> m_backend;
 

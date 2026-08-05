@@ -37,6 +37,27 @@ CmakeSettings.json
 /data/
 **/data/
 
+/samples/
+**/samples/
+
+/build-rel/
+**/build-rel/
+
+/.worktrees/
+**/.worktrees/
+
+/.superpowers/
+**/.superpowers/
+
+/lib/
+**/lib/
+
+/scan_out/
+**/scan_out/
+
+/scans/
+**/scans/
+
 # Shaders
 *.spv
 

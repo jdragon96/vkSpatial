@@ -9,7 +9,7 @@
 // AsyncTsdfMapper types: MapperFrame is the raw captured cloud, MapSnapshot is the model handoff.
 namespace pipeline {
 
-    using Frame = asyncmap::MapperFrame;      // points, normals, cam (sensor/world camera hint)
+    using Frame = asyncmap::MapperFrame; // points, normals, cam (sensor/world camera hint)
     using ModelSnapshot = asyncmap::MapSnapshot;
 
     // A frame plus the pose Track resolved for it.

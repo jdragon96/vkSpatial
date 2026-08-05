@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
@@ -14,22 +15,35 @@
 //   * ArgParser (fluent)     BuildArgParser(argc, argv).Must(...).Option(...) then .Value(...)  --
 //                            the ergonomic front-end; declares required/optional keys (with an
 //                            optional default value) and validates.
+// Keys are matched IGNORING leading dashes, so the caller may spell a key with or without them:
+// Value("interval") == Value("-interval") == Value("--interval"). The stored key style is free.
 namespace util {
+
+    // Drop any leading '-' from a key/token so "--interval", "-interval", and "interval" compare
+    // equal. The result aliases `s` (no allocation).
+    inline std::string_view stripLeadingDashes(std::string_view s) {
+        std::size_t i = 0;
+        while (i < s.size() && s[i] == '-') ++i;
+        return s.substr(i);
+    }
 
     // ---- stateless primitives ----
 
-    // The token that follows `key`, if the args contain "... key value ...". The returned view
-    // aliases a null-terminated argv token, so numeric getters can hand .data() to atoi/atof.
+    // The token that follows `key`, if the args contain "... key value ...". Matching ignores leading
+    // dashes on both sides. The returned view aliases a null-terminated argv token, so numeric getters
+    // can hand .data() to atoi/atof.
     inline std::optional<std::string_view> ArgValue(int argc, char **argv, std::string_view key) {
+        const std::string_view k = stripLeadingDashes(key);
         for (int i = 1; i + 1 < argc; ++i)
-            if (key == argv[i]) return std::string_view(argv[i + 1]);
+            if (k == stripLeadingDashes(argv[i])) return std::string_view(argv[i + 1]);
         return std::nullopt;
     }
 
-    // Whether `key` appears anywhere as a bare flag ("--key").
+    // Whether `key` appears anywhere as a bare flag ("--key"), matched ignoring leading dashes.
     inline bool HasFlag(int argc, char **argv, std::string_view key) {
+        const std::string_view k = stripLeadingDashes(key);
         for (int i = 1; i < argc; ++i)
-            if (key == argv[i]) return true;
+            if (k == stripLeadingDashes(argv[i])) return true;
         return false;
     }
 
@@ -133,11 +147,12 @@ namespace util {
     private:
         ArgParser &declare(std::string_view key, std::string defaultValue) {
             m_declared.emplace_back(key);
-            m_defaults[std::string(key)] = std::move(defaultValue);
+            // Store by the dash-stripped key so Option("--voxel", d) is found by Value("voxel").
+            m_defaults[std::string(stripLeadingDashes(key))] = std::move(defaultValue);
             return *this;
         }
         const std::string *defaultFor(std::string_view key) const {
-            const auto it = m_defaults.find(std::string(key));
+            const auto it = m_defaults.find(std::string(stripLeadingDashes(key)));
             return it == m_defaults.end() ? nullptr : &it->second;
         }
 

@@ -77,6 +77,9 @@ TEST(AsyncMapper, IntegratesToRequestedFrameOffThread) {
     EXPECT_EQ(snap->processedFrame, 2);
     EXPECT_GT(snap->entries.size(), 100u);
     EXPECT_EQ(snap->entries.size(), snap->isNew.size());
-    EXPECT_GE(snap->baseTiles, 1u);
+    // Some level must hold the model. This plane is one uniformly-dense block, so detail carries it
+    // and base is (correctly) empty -- base only covers non-dense + dense/sparse seam blocks -- so the
+    // coverage check is base + detail, not base alone.
+    EXPECT_GE(snap->baseTiles + snap->detailTiles, 1u);
     mapper.Stop();
 }

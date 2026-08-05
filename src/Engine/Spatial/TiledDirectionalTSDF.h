@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine/Compute/CommandBatch.h"
+#include "Engine/Core/Buffer.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Spatial/DirectionalIntegrationQuality.h"
 #include "Engine/Spatial/OrientedPointCloud.h"
@@ -10,42 +11,31 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <stdexcept>
+#include <thread>
+#include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace Engine::Spatial {
 
-    // CPU coordinator that lifts a single-window directional-TSDF Backend's 512^3 limit by TILING
-    // space: it partitions the world voxel grid into fixed cubic tiles, each backed by one Backend
-    // instance (a 512^3 window). Only touched tiles are ever allocated (lazy, on first
-    // integration), so memory is proportional to the scanned surface, and the scene can grow
-    // indefinitely within VRAM.
-    //
-    // GEOMETRY (fixed): core side C = kCore = 448 voxels; per-tile 512^3 window = core + ghost
-    // margin G on every side (G = ceil(trunc/voxel)+1, covers the full truncation band); requires
-    // C + 2G <= 512. Global voxel origin O = 0; tile of voxel v is floorDiv(v - O, C) per axis.
-    //
-    // GHOST ROUTING: a point near a tile boundary is integrated into BOTH the owning tile and the
-    // adjacent tile(s), so every tile's core carries the full truncation band (no seam).
-    // CORE-ONLY EXTRACTION: each tile emits only points whose voxel lies in its own core, so the
-    // ghost overlap never produces duplicates across tiles.
-    //
-    // Backend contract: Build(ctx, voxel, trunc, hashCap, maxPoints, windowMinCorner),
-    // SetIntegrationQuality, SetPointToPlane, Integrate(points, normals, cameraPos),
-    // ExtractPointCloud(maxCandidates, merge) -> OrientedPointCloud, FilledCount. Backend-specific
-    // configuration (e.g. AdvancedTSDF's A1/A2 setters) is forwarded via m_configureHook.
-    template <class Backend>
+    template<class T, class = void>
+    struct HasSetCurrentFrame : std::false_type {};
+    template<class T>
+    struct HasSetCurrentFrame<T, std::void_t<decltype(std::declval<T &>().SetCurrentFrame(0))>>
+        : std::true_type {};
+
+    template<class Backend>
     class TiledDirectionalTSDF {
     public:
         TiledDirectionalTSDF() = default;
         virtual ~TiledDirectionalTSDF() = default;
 
-        // Store params + ctx. Tiles are created lazily on first integration. hashCapacityPerTile is
-        // the per-tile Backend hash size; maxPointsPerFrame the per-tile per-Integrate point cap.
         void Build(Engine::Core::Context &ctx,
                    float voxelSize,
                    float truncation,
@@ -57,7 +47,6 @@ namespace Engine::Spatial {
             m_hashCapacityPerTile = hashCapacityPerTile;
             m_maxPointsPerFrame = maxPointsPerFrame;
             m_origin = Eigen::Vector3i::Zero();
-            // G must cover the full truncation band (band radius = ceil(trunc/voxel) voxels), +1.
             m_ghost = static_cast<int>(std::ceil(truncation / voxelSize)) + 1;
             if (kCore + 2 * m_ghost > 512) {
                 throw std::runtime_error(
@@ -65,43 +54,64 @@ namespace Engine::Spatial {
                         "(truncation too large for voxelSize)");
             }
             m_tiles.clear();
+            AllocateReusePointCloudeBuffer(m_maxPointsPerFrame);
         }
 
-        // Applied to each tile's Backend on creation.
         void SetIntegrationQuality(const IntegrationQuality &q) { m_quality = q; }
 
-        // Integrate SDF form, forwarded to every tile (default true = point-to-plane).
         void SetPointToPlane(bool on) { m_pointToPlane = on; }
 
-        // Self-submitting: route + integrate each touched tile (each tile submits its own dispatch;
-        // works for ANY Backend). AdvancedTSDF's tile Integrate uses mapped uploads internally.
+        void SetCurrentFrame(int frame) {
+            m_currentFrame = frame;
+            if constexpr (HasSetCurrentFrame<Backend>::value)
+                for (auto &kv: m_tiles) kv.second->SetCurrentFrame(frame);
+        }
+
         void Integrate(const std::vector<Eigen::Vector3f> &points,
                        const std::vector<Eigen::Vector3f> &normals,
                        const Eigen::Vector3f &cameraPos = Eigen::Vector3f::Zero()) {
-            for (auto &kv : route(points, normals)) {
+            for (auto &kv: route(points, normals)) {
                 Backend *tile = tileFor(kv.first);
                 tile->Integrate(kv.second.pts, kv.second.nrm, cameraPos);
             }
         }
 
-        // Batched: route + RECORD each touched tile into `batch` (caller submits ONCE). Requires
-        // Backend::RecordIntegrate; used by SubmapAdvancedTSDF to fuse base+detail into one submit.
-        // Distinct tiles = distinct pipelines, safe to batch together. Only instantiated when used,
-        // so backends without RecordIntegrate can still use the self-submitting overload above.
         void Integrate(const std::vector<Eigen::Vector3f> &points,
                        const std::vector<Eigen::Vector3f> &normals,
-                       const Eigen::Vector3f &cameraPos, Engine::Compute::CommandBatch &batch) {
-            for (auto &kv : route(points, normals)) {
+                       const Eigen::Vector3f &cameraPos,
+                       Engine::Compute::CommandBatch &batch) {
+            for (auto &kv: route(points, normals)) {
                 Backend *tile = tileFor(kv.first);
                 tile->RecordIntegrate(kv.second.pts, kv.second.nrm, cameraPos, batch);
             }
         }
 
-        // Extract each tile, KEEP ONLY points whose voxel lies in that tile's core (drop ghost
-        // duplicates), and concatenate. merge is forwarded to Backend::ExtractPointCloud.
+        void IntegrateGPU(const std::vector<Eigen::Vector3f> &points,
+                          const std::vector<Eigen::Vector3f> &normals,
+                          const Eigen::Vector3f &cameraPos = Eigen::Vector3f::Zero()) {
+            if (points.empty()) return;
+            Engine::Compute::CommandBatch batch(*m_ctx);
+            IntegrateGPU(points, normals, cameraPos, batch);
+            batch.Submit();
+        }
+
+        void IntegrateGPU(const std::vector<Eigen::Vector3f> &points,
+                          const std::vector<Eigen::Vector3f> &normals,
+                          const Eigen::Vector3f &cameraPos,
+                          Engine::Compute::CommandBatch &batch) {
+            const std::size_t n = std::min(points.size(), normals.size());
+            if (n == 0) return;
+            UploadReuseBuffer(points, normals, static_cast<uint32_t>(n));
+            for (const TileKey &key: touchedTiles(points, normals)) {
+                Backend *tile = tileFor(key);
+                tile->RecordIntegrateShared(*m_reusePointBuffer, *m_reuseNormalBuffer, static_cast<uint32_t>(n),
+                                            cameraPos, batch);
+            }
+        }
+
         OrientedPointCloud ExtractPointCloud(bool merge = true) const {
             OrientedPointCloud out;
-            for (const auto &kv : m_tiles) {
+            for (const auto &kv: m_tiles) {
                 const TileKey &key = kv.first;
                 const Eigen::Vector3i tile(key.x, key.y, key.z);
                 const Eigen::Vector3i coreMin = m_origin + tile * kCore;
@@ -124,25 +134,20 @@ namespace Engine::Spatial {
             return out;
         }
 
-        // Sum of tiles' FilledCount. NOTE: ghost overlap makes this slightly MORE than the true
-        // occupied-voxel set -- that surplus is the honest tiling overhead.
         uint32_t FilledCount() const {
             uint32_t total = 0;
-            for (const auto &kv : m_tiles) total += kv.second->FilledCount();
+            for (const auto &kv: m_tiles) total += kv.second->FilledCount();
             return total;
         }
 
         uint32_t TileCount() const { return static_cast<uint32_t>(m_tiles.size()); }
 
-        // Drop all tiles (e.g. to replay integration from scratch). Keeps Build parameters.
         void Reset() { m_tiles.clear(); }
 
-        // World-space core AABB [min,max] of each touched tile (the non-overlapping owned region;
-        // the ghost margin is excluded). One box per tile -- for visualizing the tiling.
         std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> CoreBoxes() const {
             std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> out;
             out.reserve(m_tiles.size());
-            for (const auto &kv : m_tiles) {
+            for (const auto &kv: m_tiles) {
                 const Eigen::Vector3i tile(kv.first.x, kv.first.y, kv.first.z);
                 const Eigen::Vector3i coreMin = m_origin + tile * kCore;
                 const Eigen::Vector3i coreMax = coreMin + Eigen::Vector3i::Constant(kCore);
@@ -152,11 +157,9 @@ namespace Engine::Spatial {
             return out;
         }
 
-        // Fixed core side C and the derived ghost margin G (0 before Build). Diagnostics.
         int CoreVoxels() const { return kCore; }
         int GhostVoxels() const { return m_ghost; }
 
-        // floor(a / b) with rounding toward -inf for negatives (callers pass b = C > 0).
         static int floorDiv(int a, int b) {
             int q = a / b;
             int r = a % b;
@@ -165,17 +168,15 @@ namespace Engine::Spatial {
         }
 
     protected:
-        // Extension point: applied to each tile right after the common config (quality + p2p), on
-        // creation. Subclasses set this to forward Backend-specific settings (e.g. A1/A2).
         std::function<void(Backend &)> m_configureHook;
 
         float voxelSize() const { return m_voxelSize; }
+        Engine::Core::Context *contextPtr() const { return m_ctx; }            // for subclass batched readback
+        uint32_t hashCapacityPerTile() const { return m_hashCapacityPerTile; } // sizes shared scratch
 
-        // Invoke fn(const Backend&, coreMinVoxel, coreMaxVoxel) for each touched tile. Lets a
-        // subclass aggregate per-tile readouts with the same core-only dedup ExtractPointCloud uses.
-        template <class Fn>
+        template<class Fn>
         void forEachTileCore(Fn &&fn) const {
-            for (const auto &kv : m_tiles) {
+            for (const auto &kv: m_tiles) {
                 const Eigen::Vector3i tile(kv.first.x, kv.first.y, kv.first.z);
                 const Eigen::Vector3i coreMin = m_origin + tile * kCore;
                 const Eigen::Vector3i coreMax = coreMin + Eigen::Vector3i::Constant(kCore);
@@ -184,7 +185,9 @@ namespace Engine::Spatial {
         }
 
     private:
-        static constexpr int kCore = 448; // C: voxels per tile core axis
+        static constexpr int kCore = 448;                          // C: voxels per tile core axis
+        static constexpr std::size_t kParallelRouteMin = 1u << 14; // below this, bin tiles serially
+        static constexpr unsigned kMaxRouteThreads = 8u;           // cap worker threads for tile binning
 
         struct TileKey {
             int x, y, z;
@@ -203,8 +206,93 @@ namespace Engine::Spatial {
             std::vector<Eigen::Vector3f> pts, nrm;
         };
 
-        // Route each point to its owning tile plus any adjacent tile whose ghost band it falls in.
-        // Shared by both Integrate overloads (no tiles created here — that happens in tileFor).
+        int tileTargets(const Eigen::Vector3f &p, TileKey out[8]) const {
+            const Eigen::Vector3i v(static_cast<int>(std::floor(p.x() / m_voxelSize)),
+                                    static_cast<int>(std::floor(p.y() / m_voxelSize)),
+                                    static_cast<int>(std::floor(p.z() / m_voxelSize)));
+            const Eigen::Vector3i home = tileOf(v);
+            const Eigen::Vector3i local = (v - m_origin) - home * kCore;
+            int offs[3][2], nOff[3];
+            for (int a = 0; a < 3; ++a) {
+                offs[a][0] = 0;
+                nOff[a] = 1;
+                if (local[a] < m_ghost) {
+                    offs[a][1] = -1;
+                    nOff[a] = 2;
+                } else if (local[a] >= kCore - m_ghost) {
+                    offs[a][1] = +1;
+                    nOff[a] = 2;
+                }
+            }
+            int k = 0;
+            for (int ix = 0; ix < nOff[0]; ++ix)
+                for (int iy = 0; iy < nOff[1]; ++iy)
+                    for (int iz = 0; iz < nOff[2]; ++iz)
+                        out[k++] = TileKey{home.x() + offs[0][ix], home.y() + offs[1][iy],
+                                           home.z() + offs[2][iz]};
+            return k;
+        }
+
+        std::vector<TileKey> touchedTiles(const std::vector<Eigen::Vector3f> &points,
+                                          const std::vector<Eigen::Vector3f> &normals) const {
+            const std::size_t n = std::min(points.size(), normals.size());
+            std::vector<TileKey> out;
+            if (n == 0) return out;
+
+            auto binRange = [&](std::size_t lo, std::size_t hi,
+                                std::unordered_set<TileKey, TileKeyHash> &into) {
+                TileKey tgt[8];
+                for (std::size_t i = lo; i < hi; ++i) {
+                    const int m = tileTargets(points[i], tgt);
+                    for (int t = 0; t < m; ++t) into.insert(tgt[t]);
+                }
+            };
+
+            const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+            const unsigned nThreads = (n < kParallelRouteMin) ? 1u : std::min(hw, kMaxRouteThreads);
+            if (nThreads == 1u) {
+                std::unordered_set<TileKey, TileKeyHash> seen;
+                binRange(0, n, seen);
+                out.assign(seen.begin(), seen.end());
+                return out;
+            }
+
+            std::vector<std::unordered_set<TileKey, TileKeyHash>> local(nThreads);
+            std::vector<std::thread> workers;
+            workers.reserve(nThreads - 1);
+            const std::size_t chunk = (n + nThreads - 1) / nThreads;
+            for (unsigned w = 1; w < nThreads; ++w) {
+                const std::size_t lo = std::min(n, w * chunk), hi = std::min(n, lo + chunk);
+                workers.emplace_back([&, lo, hi, w] { binRange(lo, hi, local[w]); });
+            }
+            binRange(0, std::min(n, chunk), local[0]); // this thread bins the first chunk
+            for (auto &t: workers) t.join();
+
+            std::unordered_set<TileKey, TileKeyHash> merged;
+            for (const auto &s: local) merged.insert(s.begin(), s.end());
+            out.assign(merged.begin(), merged.end());
+            return out;
+        }
+
+        void UploadReuseBuffer(const std::vector<Eigen::Vector3f> &points,
+                               const std::vector<Eigen::Vector3f> &normals,
+                               uint32_t n) {
+            AllocateReusePointCloudeBuffer(n);
+            std::memcpy(m_reusePointBuffer->MappedPtr(), points.data(), n * 3u * sizeof(float));
+            std::memcpy(m_reuseNormalBuffer->MappedPtr(), normals.data(), n * 3u * sizeof(float));
+            m_reusePointBuffer->FlushMapped(n * 3u * sizeof(float));
+            m_reuseNormalBuffer->FlushMapped(n * 3u * sizeof(float));
+        }
+
+        void AllocateReusePointCloudeBuffer(uint32_t n) {
+            if (m_reusePointBuffer && n <= m_reuseBufferSize) return;
+            m_reuseBufferSize = std::max(n + n / 2u, m_maxPointsPerFrame);
+            m_reusePointBuffer = std::make_unique<Engine::Core::Buffer>(*m_ctx);
+            m_reuseNormalBuffer = std::make_unique<Engine::Core::Buffer>(*m_ctx);
+            m_reusePointBuffer->AllocateHostVisible(m_reuseBufferSize * 3u * sizeof(float));
+            m_reuseNormalBuffer->AllocateHostVisible(m_reuseBufferSize * 3u * sizeof(float));
+        }
+
         std::unordered_map<TileKey, SubList, TileKeyHash>
         route(const std::vector<Eigen::Vector3f> &points,
               const std::vector<Eigen::Vector3f> &normals) const {
@@ -261,10 +349,16 @@ namespace Engine::Spatial {
             const Eigen::Vector3f windowMinCorner = originVoxel.cast<float>() * m_voxelSize;
 
             auto tsdf = std::make_unique<Backend>();
-            tsdf->Build(*m_ctx, m_voxelSize, m_truncation, m_hashCapacityPerTile,
-                        m_maxPointsPerFrame, windowMinCorner);
+            tsdf->Build(
+                    *m_ctx,
+                    m_voxelSize,
+                    m_truncation,
+                    m_hashCapacityPerTile,
+                    m_maxPointsPerFrame,
+                    windowMinCorner);
             tsdf->SetIntegrationQuality(m_quality);
             tsdf->SetPointToPlane(m_pointToPlane);
+            if constexpr (HasSetCurrentFrame<Backend>::value) tsdf->SetCurrentFrame(m_currentFrame);
             if (m_configureHook) m_configureHook(*tsdf);
             Backend *ptr = tsdf.get();
             m_tiles.emplace(key, std::move(tsdf));
@@ -280,8 +374,13 @@ namespace Engine::Spatial {
         Eigen::Vector3i m_origin = Eigen::Vector3i::Zero(); // O
         IntegrationQuality m_quality;
         bool m_pointToPlane = true;
+        // forwarded to tiles for the per-slot first-fill stamp
+        int m_currentFrame = 0;
 
         std::unordered_map<TileKey, std::unique_ptr<Backend>, TileKeyHash> m_tiles;
+
+        std::unique_ptr<Engine::Core::Buffer> m_reusePointBuffer, m_reuseNormalBuffer;
+        uint32_t m_reuseBufferSize = 0;
     };
 
 } // namespace Engine::Spatial

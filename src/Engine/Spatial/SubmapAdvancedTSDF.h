@@ -7,9 +7,13 @@
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
 
 #include <Eigen/Core>
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -17,29 +21,29 @@
 
 namespace Engine::Spatial {
 
-    // Density-adaptive 2-level detail submap: a base TiledAdvancedTSDF at baseVoxel (ALL points)
-    // plus a detail TiledAdvancedTSDF at baseVoxel/2 populated only in dense blocks, for detail
-    // recovery where points are dense. Batch 2-pass:
-    //   AddDensity(all pts) -> FinalizeDensity() -> Integrate(all frames) -> ExtractPointCloud().
-    // A block (cube of blockVoxels base-voxels) is dense if its average points-per-occupied-base-
-    // voxel >= k (default 4): if a base voxel is averaging >= k observed points, halving the voxel
-    // resolves them; flat/sparse blocks stay coarse. Extraction is precedence dedup: detail is kept
-    // whole and base points inside a dense block are dropped (detail wins there).
     class SubmapAdvancedTSDF {
     public:
-        void Build(Engine::Core::Context &ctx, float baseVoxel, float truncation,
-                   int blockVoxels = 32, float detailPtsPerVoxel = 4.0f,
-                   uint32_t tileHashPerTile = 1u << 20, uint32_t maxPointsPerFrame = 1u << 17) {
+        void Build(Engine::Core::Context &ctx,
+                   float baseVoxel,
+                   float truncation,
+                   int blockVoxels = 32,
+                   float detailPtsPerVoxel = 4.0f,
+                   uint32_t tileHashPerTile = 1u << 20,
+                   uint32_t maxPointsPerFrame = 1u << 17,
+                   float detailTruncVoxels = 3.0f) {
             m_ctx = &ctx;
             m_baseVoxel = baseVoxel;
             m_blockWorld = baseVoxel * float(blockVoxels);
             m_detailK = detailPtsPerVoxel;
             m_finalized = false;
             m_base.Build(ctx, baseVoxel, truncation, tileHashPerTile, maxPointsPerFrame);
-            m_detail.Build(ctx, baseVoxel * 0.5f, truncation, tileHashPerTile, maxPointsPerFrame);
+            const float detailVoxel = baseVoxel * 0.5f;
+            const float detailTrunc = std::min(truncation, detailVoxel * detailTruncVoxels);
+            m_detail.Build(ctx, detailVoxel, detailTrunc, tileHashPerTile, maxPointsPerFrame);
             m_count.clear();
             m_occ.clear();
             m_dense.clear();
+            m_baseBoundaryDense.clear();
         }
 
         void SetIntegrationQuality(const IntegrationQuality &q) {
@@ -59,53 +63,95 @@ namespace Engine::Spatial {
             m_detail.SetHermitePosition(on);
         }
 
-        // Pass 1: accumulate per-block point count + distinct occupied base-voxel keys.
+        void SetDownsample(bool on) { m_downsample = on; }
+
+        void SetCurrentFrame(int frame) {
+            m_base.SetCurrentFrame(frame);
+            m_detail.SetCurrentFrame(frame);
+        }
+
         void AddDensity(const std::vector<Eigen::Vector3f> &pts) {
-            for (const Eigen::Vector3f &p : pts) {
+            for (const Eigen::Vector3f &p: pts) {
                 const BlockKey b = blockOf(p);
                 ++m_count[b];
                 m_occ[b].insert(voxelKey(p));
             }
         }
 
-        // Mark dense blocks (avg pts / occupied base-voxel >= k); free the accumulators.
         void FinalizeDensity() {
-            for (const auto &kv : m_count) {
+            for (const auto &kv: m_count) {
                 auto it = m_occ.find(kv.first);
                 const std::size_t occ =
                         (it != m_occ.end() && !it->second.empty()) ? it->second.size() : 1;
                 if (float(kv.second) / float(occ) >= m_detailK) m_dense.insert(kv.first);
+            }
+
+            m_baseBoundaryDense.clear();
+            for (const BlockKey &b: m_dense) {
+                bool boundary = false;
+                for (int dx = -1; dx <= 1 && !boundary; ++dx)
+                    for (int dy = -1; dy <= 1 && !boundary; ++dy)
+                        for (int dz = -1; dz <= 1 && !boundary; ++dz) {
+                            if (dx == 0 && dy == 0 && dz == 0) continue;
+                            const BlockKey nb{b.x + dx, b.y + dy, b.z + dz};
+                            if (m_count.count(nb) && !m_dense.count(nb)) boundary = true;
+                        }
+                if (boundary) m_baseBoundaryDense.insert(b);
             }
             m_count.clear();
             m_occ.clear();
             m_finalized = true;
         }
 
-        // Pass 2: base gets all points; detail gets only points whose block is dense.
         void Integrate(const std::vector<Eigen::Vector3f> &pts,
                        const std::vector<Eigen::Vector3f> &nrm,
                        const Eigen::Vector3f &cam = Eigen::Vector3f::Zero()) {
-            const std::size_t n = std::min(pts.size(), nrm.size());
-            if (n == 0) return;
+            std::vector<Eigen::Vector3f> dsP, dsN;
 
-            // One CommandBatch fuses base + detail tile dispatches into a SINGLE GPU submit. Base
-            // tiles and detail tiles are distinct AdvancedTSDF pipelines writing independent hashes,
-            // so batching them together is safe and needs no intra-batch barrier.
+            // 1. Downsample points
+            if (m_downsample) voxelDownsample(pts, nrm, m_baseVoxel * 0.5f, dsP, dsN);
+            const std::vector<Eigen::Vector3f> &p = m_downsample ? dsP : pts;
+            const std::vector<Eigen::Vector3f> &n = m_downsample ? dsN : nrm;
+            if (std::min(p.size(), n.size()) == 0) return;
             Engine::Compute::CommandBatch batch(*m_ctx);
-            m_base.Integrate(pts, nrm, cam, batch); // all points -> base tiles
+            std::vector<Eigen::Vector3f> basePts, baseNrm, detailPts, detailNrm;
 
-            if (m_finalized && !m_dense.empty()) {
-                std::vector<Eigen::Vector3f> dp, dn;
-                dp.reserve(n);
-                dn.reserve(n);
-                for (std::size_t i = 0; i < n; ++i)
-                    if (m_dense.count(blockOf(pts[i]))) {
-                        dp.push_back(pts[i]);
-                        dn.push_back(nrm[i]);
-                    }
-                if (!dp.empty()) m_detail.Integrate(dp, dn, cam, batch); // detail tiles
+            // 2. Split the cloud per level (base = non-dense + seam blocks, detail = dense blocks)
+            if (!SplitPointDenseOrDetail(p, n, basePts, baseNrm, detailPts, detailNrm)) {
+                m_base.Integrate(p, n, cam, batch); // no detail level -> whole cloud to base
+            } else {
+                if (!basePts.empty()) m_base.Integrate(basePts, baseNrm, cam, batch);
+                if (!detailPts.empty()) m_detail.Integrate(detailPts, detailNrm, cam, batch);
             }
             batch.Submit(); // one submit for base + detail
+        }
+
+        void IntegrateGPU(const std::vector<Eigen::Vector3f> &pts,
+                          const std::vector<Eigen::Vector3f> &nrm,
+                          const Eigen::Vector3f &cam = Eigen::Vector3f::Zero()) {
+            std::vector<Eigen::Vector3f> dsP, dsN;
+            if (m_downsample) voxelDownsample(pts, nrm, m_baseVoxel * 0.5f, dsP, dsN);
+            const std::vector<Eigen::Vector3f> &p = m_downsample ? dsP : pts;
+            const std::vector<Eigen::Vector3f> &n = m_downsample ? dsN : nrm;
+            if (std::min(p.size(), n.size()) == 0) return;
+            Engine::Compute::CommandBatch batch(*m_ctx);
+            std::vector<Eigen::Vector3f> basePts, baseNrm, detailPts, detailNrm;
+            if (!SplitPointDenseOrDetail(p, n, basePts, baseNrm, detailPts, detailNrm)) {
+                m_base.IntegrateGPU(p, n, cam, batch); // no detail level -> whole cloud to base
+            } else {
+                if (!basePts.empty()) m_base.IntegrateGPU(basePts, baseNrm, cam, batch);
+                if (!detailPts.empty()) m_detail.IntegrateGPU(detailPts, detailNrm, cam, batch);
+            }
+            batch.Submit(); // one submit for base + detail
+        }
+
+        void PreWarm() {
+            const std::vector<Eigen::Vector3f> p{Eigen::Vector3f::Zero()};
+            const std::vector<Eigen::Vector3f> q{Eigen::Vector3f::UnitZ()};
+            IntegrateGPU(p, q, Eigen::Vector3f::UnitZ());
+            std::vector<AdvancedEntry> scratch;
+            DownloadEntries(scratch);
+            Reset();
         }
 
         // Detail (whole) + base (points inside dense blocks dropped) -> precedence dedup.
@@ -125,28 +171,31 @@ namespace Engine::Spatial {
         uint32_t BaseTileCount() const { return m_base.TileCount(); }
         uint32_t DetailTileCount() const { return m_detail.TileCount(); }
 
-        // Aggregate base+detail occupied entries with precedence dedup (detail inside dense blocks,
-        // base elsewhere) -- the same rule as ExtractPointCloud, on raw voxel entries. For the
-        // voxel_fill_debugger's per-frame readout.
+        void DownloadEntries(std::vector<AdvancedEntry> &out) const {
+            if (m_dense.empty()) {
+                m_base.DownloadEntries(out);
+                return;
+            }
+            m_detail.DownloadEntries(out);         // detail into out (reuses out's capacity)
+            m_base.DownloadEntries(m_baseScratch); // base into a reused scratch (warm across frames)
+            appendBaseOutsideDenseBlocks(out);     // base entries where detail does NOT already win
+        }
+
         std::vector<AdvancedEntry> DownloadEntries() const {
-            std::vector<AdvancedEntry> out = m_detail.DownloadEntries();
-            for (const AdvancedEntry &e : m_base.DownloadEntries())
-                if (!m_dense.count(blockOf(e.center))) out.push_back(e);
+            std::vector<AdvancedEntry> out;
+            DownloadEntries(out);
             return out;
         }
 
-        // Drop all tiles in both levels (e.g. to replay integration on scrub-back). The finalized
-        // dense-block set is preserved, so re-integration refills base+detail consistently.
         void Reset() {
             m_base.Reset();
             m_detail.Reset();
         }
 
-        // World-space AABB of each dense block -- the region where the detail submap is active.
         std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> DenseBlockBoxes() const {
             std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> out;
             out.reserve(m_dense.size());
-            for (const BlockKey &b : m_dense) {
+            for (const BlockKey &b: m_dense) {
                 const Eigen::Vector3f mn(float(b.x) * m_blockWorld, float(b.y) * m_blockWorld,
                                          float(b.z) * m_blockWorld);
                 out.emplace_back(mn, mn + Eigen::Vector3f::Constant(m_blockWorld));
@@ -154,7 +203,6 @@ namespace Engine::Spatial {
             return out;
         }
 
-        // Base-level tile core boxes (the coarse 512^3 windows).
         std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> BaseCoreBoxes() const {
             return m_base.CoreBoxes();
         }
@@ -178,6 +226,78 @@ namespace Engine::Spatial {
                             static_cast<int>(std::floor(p.y() / m_blockWorld)),
                             static_cast<int>(std::floor(p.z() / m_blockWorld))};
         }
+
+        static constexpr std::size_t kParallelDedupMin = 1u << 15; // below this, filter serially
+        static constexpr unsigned kMaxDedupThreads = 8u;           // cap workers for the base dedup
+
+        // Append every base entry whose block is NOT dense (detail already covers dense blocks) onto
+        // `out`. This is O(base voxels) with a dense-set hash probe + block computation per entry, and
+        // at scale (~1.1M base voxels) it was the dominant download cost. So it is PARALLELISED with the
+        // codebase's privatisation pattern (cf. touchedTiles): each worker filters a contiguous chunk
+        // into its OWN local buffer -- no shared writes, no locks -- then the locals are concatenated
+        // onto `out`. Entry order is irrelevant (an unordered occupied-voxel set). Small models run
+        // serially (thread setup would dominate).
+        void appendBaseOutsideDenseBlocks(std::vector<AdvancedEntry> &out) const {
+            const std::size_t n = m_baseScratch.size();
+            if (n == 0) return;
+
+            auto keepInto = [this](std::size_t lo, std::size_t hi,
+                                   std::vector<AdvancedEntry> &into) {
+                for (std::size_t i = lo; i < hi; ++i)
+                    if (!m_dense.count(blockOf(m_baseScratch[i].center))) into.push_back(m_baseScratch[i]);
+            };
+
+            const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+            const unsigned nThreads = (n < kParallelDedupMin) ? 1u : std::min(hw, kMaxDedupThreads);
+            if (nThreads == 1u) {
+                out.reserve(out.size() + n);
+                keepInto(0, n, out);
+                return;
+            }
+
+            std::vector<std::vector<AdvancedEntry>> local(nThreads);
+            std::vector<std::thread> workers;
+            workers.reserve(nThreads - 1);
+            const std::size_t chunk = (n + nThreads - 1) / nThreads;
+            for (unsigned w = 1; w < nThreads; ++w) {
+                const std::size_t lo = std::min(n, w * chunk), hi = std::min(n, lo + chunk);
+                local[w].reserve(hi - lo);
+                workers.emplace_back([&, lo, hi, w] { keepInto(lo, hi, local[w]); });
+            }
+            local[0].reserve(std::min(n, chunk));
+            keepInto(0, std::min(n, chunk), local[0]); // this thread filters the first chunk
+            for (auto &t: workers) t.join();
+
+            std::size_t kept = 0;
+            for (const auto &l: local) kept += l.size();
+            out.reserve(out.size() + kept);
+            for (const auto &l: local) out.insert(out.end(), l.begin(), l.end());
+        }
+
+        bool SplitPointDenseOrDetail(const std::vector<Eigen::Vector3f> &originalPoint,
+                                     const std::vector<Eigen::Vector3f> &origialNormal,
+                                     std::vector<Eigen::Vector3f> &denseVoxelPoints,
+                                     std::vector<Eigen::Vector3f> &denseVoxelNormals,
+                                     std::vector<Eigen::Vector3f> &detailVoxelPoint,
+                                     std::vector<Eigen::Vector3f> &detailVoxelNormal) const {
+            if (!m_finalized || m_dense.empty()) return false;
+            const std::size_t n = std::min(originalPoint.size(), origialNormal.size());
+            denseVoxelPoints.reserve(n);
+            denseVoxelNormals.reserve(n);
+            detailVoxelPoint.reserve(n);
+            detailVoxelNormal.reserve(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                const BlockKey b = blockOf(originalPoint[i]);
+                if (m_dense.count(b)) {
+                    detailVoxelPoint.push_back(originalPoint[i]);
+                    detailVoxelNormal.push_back(origialNormal[i]);
+                    if (!m_baseBoundaryDense.count(b)) continue;
+                }
+                denseVoxelPoints.push_back(originalPoint[i]);
+                denseVoxelNormals.push_back(origialNormal[i]);
+            }
+            return true;
+        }
         int64_t voxelKey(const Eigen::Vector3f &p) const {
             const int64_t vx = static_cast<int64_t>(std::floor(p.x() / m_baseVoxel)) & 0x1FFFFF;
             const int64_t vy = static_cast<int64_t>(std::floor(p.y() / m_baseVoxel)) & 0x1FFFFF;
@@ -185,16 +305,40 @@ namespace Engine::Spatial {
             return vx | (vy << 21) | (vz << 42);
         }
 
+        static void voxelDownsample(const std::vector<Eigen::Vector3f> &pts,
+                                    const std::vector<Eigen::Vector3f> &nrm, float voxel,
+                                    std::vector<Eigen::Vector3f> &outP,
+                                    std::vector<Eigen::Vector3f> &outN) {
+            const float inv = 1.0f / voxel;
+            const std::size_t n = std::min(pts.size(), nrm.size());
+            std::unordered_set<int64_t> seen;
+            seen.reserve(n);
+            outP.reserve(n);
+            outN.reserve(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                const int64_t vx = static_cast<int64_t>(std::floor(pts[i].x() * inv)) & 0x1FFFFF;
+                const int64_t vy = static_cast<int64_t>(std::floor(pts[i].y() * inv)) & 0x1FFFFF;
+                const int64_t vz = static_cast<int64_t>(std::floor(pts[i].z() * inv)) & 0x1FFFFF;
+                if (seen.insert(vx | (vy << 21) | (vz << 42)).second) {
+                    outP.push_back(pts[i]);
+                    outN.push_back(nrm[i]);
+                }
+            }
+        }
+
         Engine::Core::Context *m_ctx = nullptr;
         float m_baseVoxel = 0.01f;
         float m_blockWorld = 0.32f;
         float m_detailK = 4.0f;
         bool m_finalized = false;
+        bool m_downsample = false;                        // off by default; the pipeline/debugger opt in via SetDownsample
+        mutable std::vector<AdvancedEntry> m_baseScratch; // reused base readback (dense-path download)
         TiledAdvancedTSDF m_base;
         TiledAdvancedTSDF m_detail;
         std::unordered_map<BlockKey, uint32_t, BlockKeyHash> m_count;
         std::unordered_map<BlockKey, std::unordered_set<int64_t>, BlockKeyHash> m_occ;
         std::unordered_set<BlockKey, BlockKeyHash> m_dense;
+        std::unordered_set<BlockKey, BlockKeyHash> m_baseBoundaryDense; // dense blocks base still covers
     };
 
 } // namespace Engine::Spatial

@@ -182,3 +182,94 @@ TEST(AdvancedTsdf, RecordIntegrateMatchesIntegrate) {
     ASSERT_GT(ea.size(), 100u);
     EXPECT_EQ(ea.size(), eb.size());
 }
+
+// Within the Build-time capacity, IntegrateGPU is result-equivalent to Integrate (it takes the same
+// upload+dispatch path, just without the clamp/grow kicking in).
+TEST(AdvancedTsdf, IntegrateGpuMatchesIntegrateWithinCapacity) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, 0.4f, 10); // 21*21 = 441 points, well under the default maxPoints
+    const Vector3f cam(0, 0, 1);
+
+    AdvancedTSDF a, b;
+    a.Build(ctx, 0.02f, 0.06f);
+    b.Build(ctx, 0.02f, 0.06f);
+    a.Integrate(pts, nrm, cam);
+    b.IntegrateGPU(pts, nrm, cam);
+
+    const auto ea = a.DownloadEntries();
+    const auto eb = b.DownloadEntries();
+    ASSERT_GT(ea.size(), 100u);
+    EXPECT_EQ(ea.size(), eb.size());
+}
+
+// The real-time win: a frame LARGER than the Build-time maxPoints. Plain Integrate clamps (drops the
+// excess -> less coverage); IntegrateGPU grows the upload buffers to fit, recovering the full frame.
+TEST(AdvancedTsdf, IntegrateGpuGrowsBeyondMaxPoints) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, 0.6f, 8); // 17*17 = 289 points
+    const Vector3f cam(0, 0, 1);
+    const uint32_t small = 64;    // << 289: forces the clamp/grow divergence
+
+    // Reference: whole frame integrated with a generous capacity.
+    AdvancedTSDF ref;
+    ref.Build(ctx, 0.05f, 0.15f, 1u << 20, 1u << 15);
+    ref.Integrate(pts, nrm, cam);
+    const uint32_t refFilled = ref.FilledCount();
+    ASSERT_GT(refFilled, 0u);
+
+    // Same small capacity: Integrate clamps to the first 64 points -> fewer voxels.
+    AdvancedTSDF clamped;
+    clamped.Build(ctx, 0.05f, 0.15f, 1u << 20, small);
+    clamped.Integrate(pts, nrm, cam);
+    EXPECT_LT(clamped.FilledCount(), refFilled);
+
+    // Same small capacity: IntegrateGPU grows to fit -> matches the full-capacity reference.
+    AdvancedTSDF grown;
+    grown.Build(ctx, 0.05f, 0.15f, 1u << 20, small);
+    grown.IntegrateGPU(pts, nrm, cam);
+    EXPECT_EQ(grown.FilledCount(), refFilled);
+}
+
+// Hash auto-grow: a tile that fills its initial hash doubles + GPU-rehashes instead of overflowing
+// (probe chains exceeding MAX_PROBE silently dropped voxels AND slowed integrate as the map grew). A
+// map that STARTS with a hash far too small must, fed like a stream, end with the SAME occupied set as
+// a generously-sized one -- no loss -- and the rehash must preserve the accumulators (normals recover).
+TEST(AdvancedTsdf, HashAutoGrowMatchesLargeHashNoLoss) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, 0.6f, 20); // 41*41 points -> thousands of band voxels, forcing several grows
+    const Vector3f cam(0, 0, 1);
+
+    // Reference: a generously-sized hash never grows or overflows.
+    AdvancedTSDF big;
+    big.Build(ctx, 0.02f, 0.06f, 1u << 20);
+    big.SetIntegrationQuality({1, 4, true});
+    big.IntegrateGPU(pts, nrm, cam);
+    const uint32_t refFilled = big.FilledCount();
+    ASSERT_GT(refFilled, 1024u); // must exceed the tiny start below so grows are actually forced
+
+    // Start with a hash far too small and feed the cloud in chunks (the streaming regime): the
+    // per-chunk delta stays well under capacity, so auto-grow (checked before each integrate) keeps the
+    // load bounded and no insert overflows. The final occupied set must match the big-hash reference.
+    AdvancedTSDF grow;
+    grow.Build(ctx, 0.02f, 0.06f, 1024u);
+    grow.SetIntegrationQuality({1, 4, true});
+    const std::size_t chunk = pts.size() / 20u + 1u;
+    for (std::size_t s = 0; s < pts.size(); s += chunk) {
+        const std::size_t e = std::min(pts.size(), s + chunk);
+        const std::vector<Vector3f> cp(pts.begin() + s, pts.begin() + e);
+        const std::vector<Vector3f> cn(nrm.begin() + s, nrm.begin() + e);
+        grow.IntegrateGPU(cp, cn, cam);
+    }
+    EXPECT_EQ(grow.FilledCount(), refFilled); // no overflow drops -> identical occupied set
+
+    // Rehash preserved the per-slot accumulators + gradient: the plane's normal still recovers as +Z.
+    auto cloud = grow.ExtractPointCloud(1u << 18, /*merge=*/false);
+    ASSERT_GT(cloud.normals.size(), 100u);
+    double meanNz = 0.0;
+    for (const auto &n : cloud.normals) meanNz += n.z();
+    meanNz /= double(cloud.normals.size());
+    EXPECT_GT(meanNz, 0.99);
+}

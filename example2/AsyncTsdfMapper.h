@@ -3,7 +3,7 @@
 #include "VoxelFillDebug.h" // voxdbg::FillTracker
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/AdvancedTSDF.h"       // AdvancedEntry
+#include "Engine/Spatial/AdvancedTSDF.h" // AdvancedEntry
 #include "Engine/Spatial/SubmapAdvancedTSDF.h"
 #include "utilities/Mailbox.h"
 #include "utilities/StageProfiler.h"
@@ -49,7 +49,7 @@ namespace asyncmap {
         Eigen::Vector3f allocMin = Eigen::Vector3f::Zero(), allocMax = Eigen::Vector3f::Zero();
         bool hasAlloc = false;
         double integrateMs = 0, downloadMs = 0, trackerMs = 0;
-        std::vector<Box> baseCoreBoxes;  // coarse 512^3 tile windows
+        std::vector<Box> baseCoreBoxes;   // coarse 512^3 tile windows
         std::vector<Box> denseBlockBoxes; // submap (detail) regions
     };
 
@@ -68,7 +68,9 @@ namespace asyncmap {
 
     // The single step the worker takes toward `target` from the currently-shown frame. Pure (unit
     // tested): backward target -> Reset+replay from 0; caught up -> Wait; else integrate shown+1.
-    enum class StepKind { Wait, Reset, Forward };
+    enum class StepKind { Wait,
+                          Reset,
+                          Forward };
     struct Step {
         StepKind kind;
         int frame; // valid only for Forward
@@ -152,7 +154,7 @@ namespace asyncmap {
                 submap.SetPointToPlane(m_cfg.pointToPlane);
                 submap.SetConfidenceWeight(m_cfg.confidence);
                 submap.SetHermitePosition(m_cfg.hermite);
-                for (const MapperFrame &fr : *m_frames) submap.AddDensity(fr.pts);
+                for (const MapperFrame &fr: *m_frames) submap.AddDensity(fr.pts);
                 submap.FinalizeDensity();
 
                 voxdbg::FillTracker tracker(m_cfg.baseVoxel * 0.5f); // detail voxel -> unique keys
@@ -223,7 +225,7 @@ namespace asyncmap {
             if (snap.entries.empty()) return;
             Eigen::Vector3f mn = Eigen::Vector3f::Constant(std::numeric_limits<float>::max());
             Eigen::Vector3f mx = Eigen::Vector3f::Constant(-std::numeric_limits<float>::max());
-            for (const AdvancedEntry &e : snap.entries) {
+            for (const AdvancedEntry &e: snap.entries) {
                 mn = mn.cwiseMin(e.center);
                 mx = mx.cwiseMax(e.center);
             }
