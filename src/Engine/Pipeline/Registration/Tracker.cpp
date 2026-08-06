@@ -1,5 +1,7 @@
 #include "Engine/Pipeline/Registration/Tracker.h"
 
+#include "Engine/Core/Context.h"
+#include "Engine/Pipeline/Registration/GpuIcp.h"
 #include "Engine/Registration/GlobalRegistration.h"
 #include "Engine/Registration/Icp.h"
 #include "Engine/Registration/RegistrationTypes.h"
@@ -61,6 +63,60 @@ namespace Engine::Pipeline {
             Engine::Registration::RegistrationParam m_params;
         };
 
+        // GPU point-to-plane ICP against the latest model's occupied voxels, cropped to the source
+        // frame's AABB + maxCorrDist margin so the upload + LocalGrid stay local (not O(full model)).
+        // The Context + GpuPointToPlaneIcp are created lazily on the FIRST Track() call, which runs on
+        // the ICP (RegistrationThread) thread -- mirrors how IntegrationThread creates its own Context
+        // inside its own Run(). Result: two live GPU contexts at runtime (this one + Integration's).
+        class GpuIcpTracker : public Tracker {
+        public:
+            const char *Name() const override { return "icp"; }
+
+            TrackingResult Track(const Frame &frame,
+                                 const ModelSnapshot *model,
+                                 const Eigen::Isometry3f &priorPose) override {
+                TrackingResult r;
+                r.pose = priorPose;
+                if (model == nullptr || model->entries.empty() || frame.pts.empty()) return r;
+                if (!m_ctx) {
+                    m_ctx = std::make_unique<Engine::Core::Context>();
+                    m_gpu = std::make_unique<GpuPointToPlaneIcp>(*m_ctx); // lazy, on the ICP thread
+                }
+
+                // Crop the model to the source AABB + margin so upload/grid stay local.
+                Eigen::Vector3f mn = frame.pts[0], mx = frame.pts[0];
+                for (const auto &p: frame.pts) {
+                    mn = mn.cwiseMin(p);
+                    mx = mx.cwiseMax(p);
+                }
+                const float m = m_params.maxCorrDist;
+                mn.array() -= m;
+                mx.array() += m;
+                Engine::Registration::PointCloud tgt;
+                tgt.points.reserve(model->entries.size());
+                tgt.normals.reserve(model->entries.size());
+                for (const Engine::Spatial::AdvancedEntry &e: model->entries)
+                    if ((e.center.array() >= mn.array()).all() && (e.center.array() <= mx.array()).all()) {
+                        tgt.points.push_back(e.center);
+                        tgt.normals.push_back(e.normal);
+                    }
+                if (tgt.points.size() < 3) return r; // nothing local to align to -> keep prior
+
+                const Engine::Registration::RegistrationResult icp =
+                        m_gpu->Solve(frame.pts, tgt, priorPose.matrix(), m_params);
+                r.pose = Eigen::Isometry3f(icp.T);
+                r.fitness = icp.fitness;
+                r.inliers = icp.numInliers;
+                r.valid = icp.valid;
+                return r;
+            }
+
+        private:
+            Engine::Registration::RegistrationParam m_params;
+            std::unique_ptr<Engine::Core::Context> m_ctx;
+            std::unique_ptr<GpuPointToPlaneIcp> m_gpu;
+        };
+
         // Prior-free global registration (FPFH + RANSAC + Ceres) — (re)localisation / A/B baseline.
         class GlobalRegistrationTracker : public Tracker {
         public:
@@ -101,7 +157,8 @@ namespace Engine::Pipeline {
     TrackerRegistry TrackerRegistry::Default() {
         TrackerRegistry reg;
         reg.Register("identity", [] { return std::make_unique<IdentityTracker>(); });
-        reg.Register("icp", [] { return std::make_unique<PointToPlaneIcpTracker>(); });
+        reg.Register("icp", [] { return std::make_unique<GpuIcpTracker>(); });
+        reg.Register("icp-cpu", [] { return std::make_unique<PointToPlaneIcpTracker>(); });
         reg.Register("global", [] { return std::make_unique<GlobalRegistrationTracker>(); });
         return reg;
     }

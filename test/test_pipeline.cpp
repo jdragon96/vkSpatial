@@ -140,6 +140,22 @@ TEST(Pipeline, ReconfigureRebuildsCleanly) {
     pipe.Stop();
 }
 
+// End-to-end: the GPU point-to-plane ICP tracker (registered as "icp") runs on its own lazily-created
+// Context inside the ICP thread, alongside the Integration thread's Context -- two live GPU contexts at
+// once. Also proves "icp-cpu" (the pre-existing CPU tracker) is still registered under its new name.
+TEST(Pipeline, GpuIcpTrackerRuns) {
+    const FrameDir frames(3);
+    ep::Pipeline::Config cfg = makeConfig(frames.files, 0.0);
+    ep::Pipeline pipe(std::move(cfg), ep::TrackerRegistry::Default().Create("icp"));
+    ASSERT_NE(ep::TrackerRegistry::Default().Create("icp"), nullptr);
+    ASSERT_NE(ep::TrackerRegistry::Default().Create("icp-cpu"), nullptr);
+    pipe.Start();
+    ASSERT_TRUE(waitProcessed(pipe, 2)) << "gpu-icp pipeline did not integrate frames";
+    pipe.CheckErrors();
+    EXPECT_NE(pipe.LatestModel(), nullptr);
+    pipe.Stop();
+}
+
 // Stop() before the source is exhausted must not hang or crash (interruptible shutdown).
 TEST(Pipeline, StopIsCleanMidStream) {
     const FrameDir frames(50);
