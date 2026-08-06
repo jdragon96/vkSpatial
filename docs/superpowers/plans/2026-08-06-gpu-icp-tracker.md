@@ -728,6 +728,37 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
+## Results (measured, RelWithDebInfo)
+
+**Machine:** Apple M4 Max, MoltenVK (`[Engine::Core::Context] Device: Apple M4 Max`), macOS. Build: `build-rel/` (`CMAKE_BUILD_TYPE=RelWithDebInfo`).
+
+**Method:** Headless deterministic benchmark, `test/test_gpuIcp.cpp` → `TEST(GpuIcp, DISABLED_BenchmarkVsCpu)`. Dense 3-plane corner target (apex off-origin at `(0.3,0.3,0.3)`, normals along +X/+Y/+Z so all 6 DoF are constrained), extent held ~0.6m while point spacing shrinks as N grows (N ≈ 5,043 / 20,667 / 81,675 / 201,243). Source = target transformed by a fixed known perturbation (translate `(0.02,-0.015,0.01)`, rotate 0.03 rad about Z). Both trackers run `Solve(src, tgt, Identity, params)` with the same `RegistrationParam{maxCorrDist=0.03, maxIters=20}` (matched to the worst-case initial misalignment ≈3–4cm so correspondences bootstrap at every density; ratio to point spacing ranges 2×–13× across the four sizes). One warmup call each (excludes GPU shader compile + first-size buffer allocation), then mean of 10 timed repeats via `std::chrono::steady_clock`. Both poses were asserted to agree within `5e-3` at every size (sanity check passed).
+
+Run: `./build-rel/test/vkspatial_tests --gtest_also_run_disabled_tests --gtest_filter='GpuIcp.DISABLED_BenchmarkVsCpu'`
+
+```
+         N |  GPU mean ms |  CPU mean ms |    speedup | GPU inliers
+-----------|--------------|--------------|------------|------------
+      5043 |        3.441 |        1.420 |      0.41x | 5043
+     20667 |        5.411 |        9.934 |      1.84x | 20667
+     81675 |       14.043 |      100.957 |      7.19x | 81675
+    201243 |       28.907 |      577.185 |     19.97x | 201243
+```
+
+(Re-run confirmed run-to-run stable: 0.40x / 1.76x / 7.14x / 21.43x — same shape.)
+
+Note: this measures ONLY the core ICP solve on equal-N target/source clouds. In the real pipeline, `GpuIcpTracker::Track` additionally crops the model to the frame's source AABB (+ `maxCorrDist` margin) before calling `Solve`, which is an *additional* GPU-side advantage (smaller effective N per frame as the map grows) that this microbenchmark does not capture — real-world numbers should look at least as good as this table, not worse.
+
+**Crossover:** between N=5,043 and N=20,667. Below the crossover the GPU tracker is **slower** than CPU (0.4×) — GPU per-iteration overhead dominates when there's little actual compute to hide it behind. Above it, the GPU pulls ahead fast: 1.8× at 20k, 7.2× at 80k, ~20–21× at 200k, and CPU cost is clearly scaling worse than linearly with N (grid-cell occupancy grows with density at fixed `maxCorrDist`) while GPU cost grows much more slowly (28.9ms at 200k vs 3.4ms at 5k — an ~8× time increase for a ~40× increase in N).
+
+### Phase-2 decision
+
+**Root cause identified, and it is worse than "just re-uploading buffers": inspecting `GpuPointToPlaneIcp::Solve`/`AccumulateCentred` (`src/Engine/Pipeline/Registration/GpuIcp.cpp`) shows that every one of the up-to-20 ICP iterations rebuilds the CPU-side `LocalGrid` from scratch (an O(N) counting sort over the target points) and re-uploads all of `src`, `tgt.points`, `tgt.normals`, and the grid's `bucketStart`/`bucketIdx` arrays to the GPU (each via `Buffer::Allocate` + `Upload`) — even though target and source point sets, and therefore the grid, are 100% invariant across the iterations of a single `Solve` call. The only thing that legitimately changes iteration-to-iteration is the push-constant pose `T`. On top of that, `DispatchElements` is synchronous (comment: `// synchronous`, implies a `vkQueueWaitIdle`-style per-dispatch stall) and the partials buffer is realloc'd + `memset` + `FlushMapped` every iteration too. This fully explains the shape of the results: at low N (5k) this fixed per-iteration overhead (CPU grid rebuild + 5 buffer allocate/upload round-trips + a synchronous dispatch) costs more than the CPU reference's entire solve, so GPU loses; at high N the O(N) GPU compute finally amortizes the fixed overhead and wins big.
+
+**Recommendation: prioritize hoisting the per-iteration grid-build and buffer uploads out of the iterate loop.** Concretely, inside `Solve`: build the `LocalGrid` and upload `src`/`tgt.points`/`tgt.normals`/`bucketStart`/`bucketIdx` **once**, before the iteration loop begins (they don't depend on `T`); then each iteration should only update the push-constant `T`, dispatch, and read back `H`,`b`. This directly targets the plan's anticipated follow-up ("eliminate per-iteration readback / stop re-uploading unchanged buffers, since only the push-constant T changes each iteration") but the fix is even more impactful than originally scoped, since it also removes a full O(N) CPU grid rebuild per iteration, not just GPU buffer uploads. Given the measured shape (GPU loses below ~10–15k points purely on fixed overhead), this single change should be enough to flip the small-N case to a GPU win too, making `"icp"` strictly better than `"icp-cpu"` at every map size instead of only above the crossover. Secondary/lower priority (only if the fix above still leaves per-iteration `vkQueueWaitIdle` as the bottleneck): solve the 6×6 on the GPU or reduce `maxIters` via a motion-model prior, to cut the number of CPU↔GPU round trips per `Solve` call.
+
+---
+
 ## Follow-ups (out of scope — Phase 2, only if Task 5 shows a need)
 
 - **Persistent model spatial index** (updated incrementally on download) to remove the per-frame O(model) crop scan.
