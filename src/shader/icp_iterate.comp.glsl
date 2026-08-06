@@ -12,6 +12,12 @@
 /// SAME points/T (see GpuPointToPlaneIcp::Accumulate doc comment).
 layout(local_size_x = 256) in;
 const float SCALE = 10000.0;
+// Fixed-point overflow bound: each workgroup sums up to 256 inliers' contributions into an int32
+// `shared` accumulator (atomicAdd, see below). The largest term is the H rotation block
+// J[r]*J[col]*SCALE where J[0..2] = p x n (|n| <= 1, so |p x n| <= |p|); worst case ~256 * |p|^2 * 1e4
+// stays under INT32_MAX (~2.1e9) only while centroid-relative point magnitudes |p| stay within
+// ~29 m (256 * 29^2 * 1e4 =~ 2.16e9). Fine for a cropped depth frame (centred on the target
+// centroid, extent a few metres) but keep this in mind if maxCorrDist/crop sizes grow much larger.
 
 // SCALAR push-constant fields ONLY (no vec3/ivec3): GLSL aligns vec3 to 16 bytes, which would NOT
 // match the tightly-packed C++ IcpPC struct. Reconstruct vectors in main().

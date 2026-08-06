@@ -83,11 +83,17 @@ namespace Engine::Pipeline {
                     m_gpu = std::make_unique<GpuPointToPlaneIcp>(*m_ctx); // lazy, on the ICP thread
                 }
 
-                // Crop the model to the source AABB + margin so upload/grid stay local.
-                Eigen::Vector3f mn = frame.pts[0], mx = frame.pts[0];
+                // Crop the model to the source AABB + margin so upload/grid stay local. frame.pts is
+                // SENSOR-LOCAL but model->entries[].center is WORLD-frame (IntegrationThread integrates
+                // tf.pose * tf.frame.pts[i]) -- transform each source point by priorPose before folding
+                // it into the AABB, otherwise the crop only overlaps the model when priorPose ~= Identity
+                // and silently excludes everything (< 3 survivors -> prior pose returned unchanged) once
+                // the camera has actually moved.
+                Eigen::Vector3f mn = priorPose * frame.pts[0], mx = priorPose * frame.pts[0];
                 for (const auto &p: frame.pts) {
-                    mn = mn.cwiseMin(p);
-                    mx = mx.cwiseMax(p);
+                    const Eigen::Vector3f w = priorPose * p;
+                    mn = mn.cwiseMin(w);
+                    mx = mx.cwiseMax(w);
                 }
                 const float m = m_params.maxCorrDist;
                 mn.array() -= m;

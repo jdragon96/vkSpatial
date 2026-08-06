@@ -1,7 +1,6 @@
 #include "Engine/Pipeline/Registration/GpuIcp.h"
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 
 namespace Engine::Pipeline {
 
@@ -104,10 +103,11 @@ namespace Engine::Pipeline {
         if (!grid.m_bucketIdx.empty())
             m_bucketIdx->Upload(grid.m_bucketIdx.data(), uint32_t(grid.m_bucketIdx.size() * sizeof(uint32_t)));
 
+        // No pre-zero needed here: every workgroup unconditionally writes all 28 of its slots at the end
+        // of the shader (`if (tid < 28u) g_part[...] = s_acc[tid]`, itself zero-initialised and reduced
+        // in `shared`), so a stale/garbage previous value in this buffer is never read.
         const uint32_t numWG = (uint32_t(src.size()) + kLocal - 1) / kLocal;
         m_partials->AllocateHostVisibleReadback(numWG * 28u * sizeof(int32_t));
-        std::memset(m_partials->MappedPtr(), 0, numWG * 28u * sizeof(int32_t));
-        m_partials->FlushMapped(numWG * 28u * sizeof(int32_t));
 
         IcpPC pc{};
         for (int i = 0; i < 16; ++i) pc.T[i] = T.data()[i]; // Eigen is column-major -> matches std430 mat4

@@ -257,6 +257,68 @@ TEST(Pipeline, GpuIcpTrackerCropExcludesFarModel) {
             << "pose:\n" << r.pose.matrix() << "\nprior:\n" << prior.matrix();
 }
 
+// Moving-camera regression: unlike GpuIcpTrackerRecoversPerturbation (which keeps `priorPose` at
+// Identity and moves the FRAME instead, so frame.pts and model.center happen to sit in the same
+// numeric region regardless of any world-vs-sensor-frame mixup), this test gives Track() a `priorPose`
+// with a REAL translation away from the origin -- as a moving camera actually would have. The model is
+// a world-frame corner surface sitting at that same non-origin location; frame.pts is the SENSOR-LOCAL
+// expression of that surface (i.e. what the camera would actually capture, near its own origin). If the
+// crop AABB is computed from raw (sensor-frame) frame.pts instead of priorPose-transformed (world-frame)
+// points, it lands nowhere near the world model -> <3 survivors -> Track returns the prior unchanged
+// (invalid). Tracker.cpp:Track must transform by priorPose before cropping.
+TEST(Pipeline, GpuIcpTrackerRecoversMovingCameraPose) {
+    const Corner corner = makeCorner();
+
+    // The world model sits far from the origin -- a real map region a moving camera has driven to.
+    const Vector3f worldOffset(4.0f, -3.0f, 2.5f);
+    ep::ModelSnapshot model;
+    model.entries.reserve(corner.pts.size());
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        ep::AdvancedEntry e{};
+        e.center = corner.pts[i] + worldOffset;
+        e.normal = corner.nrm[i];
+        model.entries.push_back(e);
+    }
+
+    // The TRUE camera pose (sensor -> world): a real translation to the model's location + a modest
+    // rotation -- this is what Track's crop must transform frame.pts by before comparing to the
+    // world-frame model.
+    Eigen::Isometry3f truePose = Eigen::Isometry3f::Identity();
+    truePose.translate(worldOffset);
+    truePose.rotate(Eigen::AngleAxisf(0.05f, Vector3f::UnitY()));
+
+    // A small extra perturbation on top of truePose so ICP has an actual residual to solve, not just a
+    // trivial zero-correction (same magnitude as GpuIcpTrackerRecoversPerturbation's `perturb`).
+    Eigen::Isometry3f extraPerturb = Eigen::Isometry3f::Identity();
+    extraPerturb.translate(Vector3f(0.02f, -0.015f, 0.01f));
+    extraPerturb.rotate(Eigen::AngleAxisf(0.03f, Vector3f::UnitZ()));
+    const Eigen::Isometry3f priorPose = truePose * extraPerturb;
+
+    // Sensor-local frame.pts: the world model surface expressed in the (true) sensor frame, so that
+    // truePose * frame.pts[i] == model.entries[i].center exactly.
+    ep::Frame frame;
+    frame.pts.reserve(corner.pts.size());
+    frame.nrm.reserve(corner.pts.size());
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        frame.pts.push_back(truePose.inverse() * model.entries[i].center);
+        frame.nrm.push_back(truePose.inverse().rotation() * corner.nrm[i]);
+    }
+
+    const std::unique_ptr<ep::Tracker> tracker = ep::TrackerRegistry::Default().Create("icp");
+    ASSERT_NE(tracker, nullptr);
+
+    const ep::TrackingResult r = tracker->Track(frame, &model, priorPose);
+
+    ASSERT_TRUE(r.valid) << "GPU ICP tracker did not converge for a moving camera (world-frame model, "
+                             "non-identity priorPose) -- likely the sensor-frame-vs-world-frame crop bug";
+    EXPECT_GT(r.inliers, 0u);
+
+    // r.pose should recover ~truePose (the transform that exactly aligns frame.pts back onto the
+    // world-frame model).
+    const Eigen::Matrix4f err = r.pose.matrix() - truePose.matrix();
+    EXPECT_LT(err.norm(), 5e-3f) << "pose:\n" << r.pose.matrix() << "\ntruePose:\n" << truePose.matrix();
+}
+
 // Stop() before the source is exhausted must not hang or crash (interruptible shutdown).
 TEST(Pipeline, StopIsCleanMidStream) {
     const FrameDir frames(50);

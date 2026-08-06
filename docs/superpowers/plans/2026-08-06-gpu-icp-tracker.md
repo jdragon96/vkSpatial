@@ -15,7 +15,7 @@
 - **Shaders compile at runtime** from `VKBVH_SHADER_DIR` (`src/shader/`). A new `.comp.glsl` there needs **no CMake change** (see `AdvancedTSDF::Build` calling `m_kernel->Build("advanced_tsdf_integrate.comp.glsl")`).
 - **CMake globs sources** (`Pipeline/*.cpp`, test `*.cpp`) — new `.cpp`/test files are auto-picked up, but require a **re-configure** (`cmake .` in the build dir) since GLOB is not `CONFIGURE_DEPENDS`.
 - **Two build dirs:** `build/` = Debug (`-O0`, functional check), `build-rel/` = RelWithDebInfo (`-O3`, the **only** valid perf measurement — Eigen/CPU is 10–100× slower at `-O0`).
-- **Reuse existing types** from `Engine/Registration/RegistrationTypes.h`: `PointCloud{points,normals}`, `RegistrationResult{T(Matrix4f),fitness,numInliers,valid}`, `RegistrationParam{maxIters,maxCorrDist,minInliers,convEps}`.
+- **Reuse existing types**: `PointCloud{points,normals}` and `RegistrationResult{T(Matrix4f),fitness,numInliers,valid}` from `Engine/Registration/RegistrationTypes.h`; `RegistrationParam{maxIters,maxCorrDist,minInliers,convEps}` from `Engine/Registration/Icp.h`.
 - **Everything is uncommitted** on branch `feature/dlp-structured-light`; commit each task locally (do not push to origin).
 - **ComputePipeline API** (see `AdvancedTSDF.cpp`): `pipe.Build("x.comp.glsl").Bind(slot, buffer)…;` then per dispatch `pipe.Args(pcStruct); pipe.DispatchElements(numThreads);` (self-submits + `vkQueueWaitIdle`, synchronous). `Bind` is re-callable to rebind grown buffers.
 - **Buffer API** (see `AdvancedTSDF.cpp` / `Buffer.h`): `Allocate(bytes)` (device-local), `AllocateHostVisible(bytes)`, `AllocateHostVisibleReadback(bytes)`, `MappedPtr()`, `FlushMapped(bytes)`, `InvalidateMapped(bytes)`, `Upload(ptr,bytes)`, `Download(ptr,bytes)`.
