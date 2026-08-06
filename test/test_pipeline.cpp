@@ -79,6 +79,29 @@ namespace {
         return p.ProcessedFrame() >= target;
     }
 
+    // A 3-plane corner (constrains all 6 DoF for point-to-plane) -- same fixture shape as
+    // GpuIcp.SolveMatchesCpuOnCorner (test_gpuIcp.cpp) and Icp.RecoversKnownTransform (test_icp.cpp),
+    // used here to build a hand-made ModelSnapshot + Frame that exercise GpuIcpTracker::Track directly,
+    // deterministically -- no async Pipeline/thread-race involved.
+    struct Corner {
+        std::vector<Vector3f> pts, nrm;
+    };
+
+    Corner makeCorner() {
+        Corner c;
+        auto addPlane = [&](const Vector3f &o, const Vector3f &u, const Vector3f &v, const Vector3f &n) {
+            for (int i = -10; i <= 10; ++i)
+                for (int j = -10; j <= 10; ++j) {
+                    c.pts.push_back(o + u * (i * 0.03f) + v * (j * 0.03f));
+                    c.nrm.push_back(n);
+                }
+        };
+        addPlane({0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
+        addPlane({0, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 0});
+        addPlane({0, 0, 0}, {1, 0, 0}, {0, 0, 1}, {0, 1, 0});
+        return c;
+    }
+
 } // namespace
 
 // End-to-end: a config-driven File source streams PLYs through Reconstruction -> ICP(identity) ->
@@ -154,6 +177,84 @@ TEST(Pipeline, GpuIcpTrackerRuns) {
     pipe.CheckErrors();
     EXPECT_NE(pipe.LatestModel(), nullptr);
     pipe.Stop();
+}
+
+// Direct, deterministic exercise of GpuIcpTracker::Track -- no async Pipeline, so no race with
+// IntegrationThread's first Publish (Pipeline.GpuIcpTrackerRuns above can be racily satisfied by the
+// tracker's model==nullptr early-return alone, with 3 frames draining before any model exists; this
+// test instead hand-builds a ModelSnapshot + Frame and calls Track() straight through the base Tracker
+// interface, so the crop, the lazy Context/GpuPointToPlaneIcp construction, and Solve() are all
+// actually exercised). Model = an unperturbed 3-plane corner (constrains all 6 DoF); frame = that same
+// corner moved by a small known SE(3) perturbation (so frame plays the role of "src" in
+// GpuIcp.SolveMatchesCpuOnCorner). Track should recover ~perturb^-1.
+TEST(Pipeline, GpuIcpTrackerRecoversPerturbation) {
+    const Corner corner = makeCorner();
+
+    ep::ModelSnapshot model;
+    model.entries.reserve(corner.pts.size());
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        ep::AdvancedEntry e{};
+        e.center = corner.pts[i];
+        e.normal = corner.nrm[i];
+        model.entries.push_back(e);
+    }
+
+    Eigen::Isometry3f perturb = Eigen::Isometry3f::Identity();
+    perturb.translate(Vector3f(0.02f, -0.015f, 0.01f));
+    perturb.rotate(Eigen::AngleAxisf(0.03f, Vector3f::UnitZ()));
+
+    ep::Frame frame;
+    frame.pts.reserve(corner.pts.size());
+    frame.nrm.reserve(corner.pts.size());
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        frame.pts.push_back(perturb * corner.pts[i]);
+        frame.nrm.push_back(perturb.rotation() * corner.nrm[i]);
+    }
+
+    const std::unique_ptr<ep::Tracker> tracker = ep::TrackerRegistry::Default().Create("icp");
+    ASSERT_NE(tracker, nullptr);
+
+    const ep::TrackingResult r = tracker->Track(frame, &model, Eigen::Isometry3f::Identity());
+
+    ASSERT_TRUE(r.valid) << "GPU ICP tracker did not converge on a well-constrained corner fixture";
+    EXPECT_GT(r.inliers, 0u);
+
+    // r.pose should recover ~perturb^-1 (aligns the perturbed frame back onto the model). Same
+    // T*known - I convergence check as Icp.RecoversKnownTransform (test_icp.cpp), same tolerance.
+    const Eigen::Matrix4f err = r.pose.matrix() * perturb.matrix() - Eigen::Matrix4f::Identity();
+    EXPECT_LT(err.norm(), 5e-3f) << "pose:\n" << r.pose.matrix() << "\nperturb:\n" << perturb.matrix();
+}
+
+// The model-crop's exclusion branch: entries all sit far outside the frame's AABB + maxCorrDist
+// margin, so fewer than 3 survive the crop and Track must return the prior pose UNCHANGED (nothing
+// local to align to), never touching Solve.
+TEST(Pipeline, GpuIcpTrackerCropExcludesFarModel) {
+    const Corner corner = makeCorner(); // near-origin frame -> a small AABB
+
+    ep::Frame frame;
+    frame.pts = corner.pts;
+    frame.nrm = corner.nrm;
+
+    ep::ModelSnapshot farModel;
+    for (int i = 0; i < 5; ++i) {
+        ep::AdvancedEntry e{};
+        e.center = Vector3f(100.0f + i * 0.1f, 100.0f, 100.0f); // far outside AABB+0.1 margin
+        e.normal = Vector3f(0, 0, 1);
+        farModel.entries.push_back(e);
+    }
+
+    const std::unique_ptr<ep::Tracker> tracker = ep::TrackerRegistry::Default().Create("icp");
+    ASSERT_NE(tracker, nullptr);
+
+    Eigen::Isometry3f prior = Eigen::Isometry3f::Identity();
+    prior.translate(Vector3f(0.5f, -0.3f, 0.2f));
+    prior.rotate(Eigen::AngleAxisf(0.1f, Vector3f::UnitY()));
+
+    const ep::TrackingResult r = tracker->Track(frame, &farModel, prior);
+
+    EXPECT_FALSE(r.valid);
+    EXPECT_TRUE(r.pose.matrix().isApprox(prior.matrix(), 1e-6f))
+            << "pose:\n" << r.pose.matrix() << "\nprior:\n" << prior.matrix();
 }
 
 // Stop() before the source is exhausted must not hang or crash (interruptible shutdown).

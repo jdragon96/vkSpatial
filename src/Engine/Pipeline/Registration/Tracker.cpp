@@ -33,7 +33,7 @@ namespace Engine::Pipeline {
         public:
             explicit PointToPlaneIcpTracker(Engine::Registration::RegistrationParam params = {})
                 : m_params(params) {}
-            const char *Name() const override { return "icp"; }
+            const char *Name() const override { return "icp-cpu"; }
 
             TrackingResult Track(const Frame &frame,
                                  const ModelSnapshot *model,
