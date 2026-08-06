@@ -91,6 +91,27 @@ namespace Engine::Pipeline {
         IterOut AccumulateCentred(const std::vector<Eigen::Vector3f> &src,
                                   const Engine::Registration::PointCloud &tgt, const Eigen::Vector3f &c,
                                   const Eigen::Matrix4f &T, float maxCorrDist);
+
+        // Upload phase (called ONCE per Solve): centres src/tgt on `c`, builds the LocalGrid, uploads all
+        // five GPU buffers, allocates the partials readback, and binds everything to the kernel. Returns
+        // false on the same guards as AccumulateCentred (empty src / <3 tgt / mismatched normals). None of
+        // the uploaded data depends on the pose, so Solve does this once and then only re-dispatches.
+        bool prepareCentred(const std::vector<Eigen::Vector3f> &src,
+                            const Engine::Registration::PointCloud &tgt, const Eigen::Vector3f &c,
+                            float maxCorrDist);
+
+        // Dispatch phase: runs ONE GPU accumulation for the centred pose `T` against the buffers already
+        // uploaded + bound by prepareCentred, and reduces the readback into centred-frame H,b (+ inliers).
+        // Only the push-constant T changes between iterations -- no grid rebuild, no buffer re-upload.
+        IterOut dispatchCentred(const Eigen::Matrix4f &T);
+
+        // Prepared-solve state (set by prepareCentred, consumed by dispatchCentred): grid metadata + counts.
+        Eigen::Vector3f m_pOrigin = Eigen::Vector3f::Zero();
+        Eigen::Vector3i m_pDims{1, 1, 1};
+        float m_pCell = 1.0f;
+        float m_pMaxCorr = 0.0f;
+        uint32_t m_pNumSrc = 0;
+        uint32_t m_pNumWG = 0;
     };
 
 } // namespace Engine::Pipeline

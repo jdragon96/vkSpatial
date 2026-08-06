@@ -757,6 +757,23 @@ Note: this measures ONLY the core ICP solve on equal-N target/source clouds. In 
 
 **Recommendation: prioritize hoisting the per-iteration grid-build and buffer uploads out of the iterate loop.** Concretely, inside `Solve`: build the `LocalGrid` and upload `src`/`tgt.points`/`tgt.normals`/`bucketStart`/`bucketIdx` **once**, before the iteration loop begins (they don't depend on `T`); then each iteration should only update the push-constant `T`, dispatch, and read back `H`,`b`. This directly targets the plan's anticipated follow-up ("eliminate per-iteration readback / stop re-uploading unchanged buffers, since only the push-constant T changes each iteration") but the fix is even more impactful than originally scoped, since it also removes a full O(N) CPU grid rebuild per iteration, not just GPU buffer uploads. Given the measured shape (GPU loses below ~10–15k points purely on fixed overhead), this single change should be enough to flip the small-N case to a GPU win too, making `"icp"` strictly better than `"icp-cpu"` at every map size instead of only above the crossover. Secondary/lower priority (only if the fix above still leaves per-iteration `vkQueueWaitIdle` as the bottleneck): solve the 6×6 on the GPU or reduce `maxIters` via a motion-model prior, to cut the number of CPU↔GPU round trips per `Solve` call.
 
+### Phase-2 optimization — IMPLEMENTED
+
+Prompted by a live-viewer report that `--tracker icp` ran very slowly, the hoist above was implemented: `GpuPointToPlaneIcp` now splits into `prepareCentred` (centre src/tgt, build `LocalGrid`, upload all 5 buffers, bind — **once per `Solve`**) and `dispatchCentred(T)` (only re-sends the push-constant `T` and re-dispatches). `Solve` calls `prepareCentred` once, then loops `dispatchCentred`. Same numerics (all 7 GpuIcp/LocalGrid/Pipeline correctness tests still pass, bit-for-bit tolerances unchanged).
+
+Re-measured (same machine/benchmark):
+
+```
+         N |  GPU before |  GPU after |  CPU ms |  speedup before → after
+-----------|-------------|------------|---------|------------------------
+      5043 |       3.441 |      1.851 |   1.457 |   0.41x → 0.79x
+     20667 |       5.411 |      2.474 |  10.177 |   1.84x → 4.11x
+     81675 |      14.043 |      8.526 | 102.160 |   7.19x → 11.98x
+    201243 |      28.907 |     20.005 | 584.031 |  19.97x → 29.19x
+```
+
+GPU per-`Solve` time roughly halved at every size; GPU is now near-parity at 5k (was 2.4× slower) and 4–29× faster above. The remaining sub-crossover gap is the per-iteration synchronous `vkQueueWaitIdle` (one dispatch stall × maxIters), the documented secondary follow-up. Note this microbenchmark isolates `Solve`; a separate live-viewer cost is the tracker's per-frame **O(model) crop scan** (`Persistent model spatial index` follow-up below), which grows with the map independently of `Solve`.
+
 ---
 
 ## Follow-ups (out of scope — Phase 2, only if Task 5 shows a need)

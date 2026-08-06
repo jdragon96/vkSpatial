@@ -83,12 +83,20 @@ namespace Engine::Pipeline {
             const std::vector<Eigen::Vector3f> &src, const Engine::Registration::PointCloud &tgt,
             const Eigen::Vector3f &c, const Eigen::Matrix4f &T, float maxCorrDist) {
         IterOut out; out.H.setZero(); out.b.setZero(); out.inliers = 0;
-        if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return out;
+        // One-shot convenience: upload once, dispatch once. Solve uses prepare/dispatch directly so the
+        // upload happens once per solve instead of once per iteration.
+        if (!prepareCentred(src, tgt, c, maxCorrDist)) return out;
+        return dispatchCentred(T);
+    }
+
+    bool GpuPointToPlaneIcp::prepareCentred(const std::vector<Eigen::Vector3f> &src,
+                                            const Engine::Registration::PointCloud &tgt,
+                                            const Eigen::Vector3f &c, float maxCorrDist) {
+        if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return false;
 
         // Centre on the (caller-supplied) target centroid `c` -- numerical conditioning + fixed-point
-        // safety. `T` is used AS-IS: it is the caller's responsibility to already be expressed in this
-        // centred frame (see icp_iterate.comp.glsl header + this class's doc comment: the returned H,b
-        // are the CENTRED-frame normal equations, not the un-centred/world ones).
+        // safety. None of this depends on the pose, so it is done ONCE per solve (see class doc: the H,b
+        // dispatchCentred returns are in this CENTRED frame, not the un-centred/world one).
         std::vector<Eigen::Vector3f> sc(src.size()), tc(tgt.points.size());
         for (size_t i = 0; i < src.size(); ++i) sc[i] = src[i] - c;
         for (size_t i = 0; i < tc.size(); ++i) tc[i] = tgt.points[i] - c;
@@ -103,28 +111,39 @@ namespace Engine::Pipeline {
         if (!grid.m_bucketIdx.empty())
             m_bucketIdx->Upload(grid.m_bucketIdx.data(), uint32_t(grid.m_bucketIdx.size() * sizeof(uint32_t)));
 
-        // No pre-zero needed here: every workgroup unconditionally writes all 28 of its slots at the end
-        // of the shader (`if (tid < 28u) g_part[...] = s_acc[tid]`, itself zero-initialised and reduced
-        // in `shared`), so a stale/garbage previous value in this buffer is never read.
-        const uint32_t numWG = (uint32_t(src.size()) + kLocal - 1) / kLocal;
-        m_partials->AllocateHostVisibleReadback(numWG * 28u * sizeof(int32_t));
+        m_pNumSrc = uint32_t(src.size());
+        m_pNumWG = (m_pNumSrc + kLocal - 1) / kLocal;
+        // No pre-zero needed: every workgroup unconditionally writes all 28 of its slots at the end of the
+        // shader (`if (tid < 28u) g_part[...] = s_acc[tid]`, zero-initialised + reduced in `shared`), so a
+        // stale value is never read. Overwritten wholesale on each dispatch -> reusable across iterations.
+        m_partials->AllocateHostVisibleReadback(m_pNumWG * 28u * sizeof(int32_t));
+
+        m_pOrigin = grid.m_origin; m_pDims = grid.m_dims; m_pCell = grid.m_cell; m_pMaxCorr = maxCorrDist;
+
+        // Bind once: the buffer handles are stable until the next prepareCentred reallocates them, so per
+        // iteration Solve only re-sends the push constant + re-dispatches (no descriptor churn).
+        m_kernel->Bind(0, *m_src).Bind(1, *m_tgtPts).Bind(2, *m_tgtNrm)
+                 .Bind(3, *m_bucketStart).Bind(4, *m_bucketIdx).Bind(5, *m_partials);
+        return true;
+    }
+
+    GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::dispatchCentred(const Eigen::Matrix4f &T) {
+        IterOut out; out.H.setZero(); out.b.setZero(); out.inliers = 0;
 
         IcpPC pc{};
         for (int i = 0; i < 16; ++i) pc.T[i] = T.data()[i]; // Eigen is column-major -> matches std430 mat4
-        pc.originX = grid.m_origin.x(); pc.originY = grid.m_origin.y(); pc.originZ = grid.m_origin.z();
-        pc.cell = grid.m_cell; pc.dimsX = grid.m_dims.x(); pc.dimsY = grid.m_dims.y(); pc.dimsZ = grid.m_dims.z();
-        pc.maxCorr = maxCorrDist; pc.numSrc = uint32_t(src.size());
-        pc.numCells = uint32_t(grid.m_dims.x() * grid.m_dims.y() * grid.m_dims.z());
+        pc.originX = m_pOrigin.x(); pc.originY = m_pOrigin.y(); pc.originZ = m_pOrigin.z();
+        pc.cell = m_pCell; pc.dimsX = m_pDims.x(); pc.dimsY = m_pDims.y(); pc.dimsZ = m_pDims.z();
+        pc.maxCorr = m_pMaxCorr; pc.numSrc = m_pNumSrc;
+        pc.numCells = uint32_t(m_pDims.x() * m_pDims.y() * m_pDims.z());
 
-        m_kernel->Bind(0, *m_src).Bind(1, *m_tgtPts).Bind(2, *m_tgtNrm)
-                 .Bind(3, *m_bucketStart).Bind(4, *m_bucketIdx).Bind(5, *m_partials);
         m_kernel->Args(pc);
-        m_kernel->DispatchElements(uint32_t(src.size())); // synchronous
+        m_kernel->DispatchElements(m_pNumSrc); // synchronous; buffers already bound by prepareCentred
 
-        m_partials->InvalidateMapped(numWG * 28u * sizeof(int32_t));
+        m_partials->InvalidateMapped(m_pNumWG * 28u * sizeof(int32_t));
         const int32_t *part = static_cast<const int32_t *>(m_partials->MappedPtr());
         double acc[28] = {0};
-        for (uint32_t w = 0; w < numWG; ++w) for (int k = 0; k < 28; ++k) acc[k] += part[w * 28u + k];
+        for (uint32_t w = 0; w < m_pNumWG; ++w) for (int k = 0; k < 28; ++k) acc[k] += part[w * 28u + k];
         int k = 0;
         for (int r = 0; r < 6; ++r) for (int col = r; col < 6; ++col) {
             const double v = acc[k++] / double(kScale);
@@ -147,8 +166,13 @@ namespace Engine::Pipeline {
         Eigen::Matrix4f TcInv = Eigen::Matrix4f::Identity(); TcInv.block<3,1>(0,3) = c;
         Eigen::Matrix4f T = Tc * priorT * TcInv; // work in the centred frame
 
+        // Upload the centred src/tgt + grid ONCE: they do not change across iterations (only the pose T
+        // does), so per iteration we merely re-send the push-constant T and re-dispatch -- eliminating the
+        // per-iteration grid rebuild + 5 buffer reallocate/re-uploads that dominated the small-target cost.
+        if (!prepareCentred(src, tgt, c, params.maxCorrDist)) return res;
+
         for (int iter = 0; iter < params.maxIters; ++iter) {
-            const IterOut a = AccumulateCentred(src, tgt, c, T, params.maxCorrDist);
+            const IterOut a = dispatchCentred(T);
             if (a.inliers < params.minInliers) break;
             const Eigen::Matrix<double,6,1> x = a.H.ldlt().solve(a.b);
             const Eigen::Matrix3d Rd = (Eigen::AngleAxisd(x[2], Eigen::Vector3d::UnitZ()) *
