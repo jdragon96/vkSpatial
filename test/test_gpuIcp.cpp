@@ -33,3 +33,52 @@ TEST(LocalGrid, NearestMatchesBruteForce) {
         EXPECT_NEAR((pts[g] - q).norm(), (pts[b] - q).norm(), 1e-5f);
     }
 }
+
+#include "Engine/Core/Context.h"
+#include "Engine/Pipeline/Registration/GpuIcp.h"
+#include "Engine/Registration/RegistrationTypes.h"
+
+// CPU reference: point-to-plane H,b in T's frame, over grid-NN correspondences, CENTRED on tgt centroid.
+static void cpuAccumulate(const std::vector<Vector3f>& src, const Engine::Registration::PointCloud& tgt,
+                          const Eigen::Matrix4f& T, float maxCorr,
+                          Eigen::Matrix<double,6,6>& H, Eigen::Matrix<double,6,1>& b, int& inliers) {
+    Vector3f c = Vector3f::Zero();
+    for (auto& q : tgt.points) c += q; c /= float(std::max<size_t>(1, tgt.points.size()));
+    std::vector<Vector3f> tc(tgt.points.size());
+    for (size_t i=0;i<tc.size();++i) tc[i] = tgt.points[i] - c;
+    LocalGrid grid(tc, maxCorr);
+    H.setZero(); b.setZero(); inliers = 0;
+    const Eigen::Matrix3f R = T.block<3,3>(0,0); const Vector3f t = T.block<3,1>(0,3);
+    for (auto& s : src) {
+        const Vector3f p = R * (s - c) + t;
+        const int qi = grid.Nearest(p, maxCorr);
+        if (qi < 0) continue;
+        const Vector3f& q = tc[qi]; const Vector3f& n = tgt.normals[qi];
+        const float e = (p - q).dot(n);
+        Eigen::Matrix<float,6,1> J; J.head<3>() = p.cross(n); J.tail<3>() = n;
+        H += (J * J.transpose()).cast<double>(); b += (-J * e).cast<double>(); ++inliers;
+    }
+}
+
+TEST(GpuIcp, AccumulateMatchesCpu) {
+    Engine::Core::Context ctx;
+    // A small +Z plane patch as source; a matching plane as target (with +Z normals).
+    std::vector<Vector3f> src; Engine::Registration::PointCloud tgt;
+    for (int i=-15;i<=15;++i) for (int j=-15;j<=15;++j) {
+        src.emplace_back(i*0.02f, j*0.02f, 0.01f);          // 1 cm above the target plane
+        tgt.points.emplace_back(i*0.02f, j*0.02f, 0.0f);
+        tgt.normals.emplace_back(0,0,1);
+    }
+    const Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
+    const float maxCorr = 0.05f;
+
+    Eigen::Matrix<double,6,6> Hc; Eigen::Matrix<double,6,1> bc; int nc;
+    cpuAccumulate(src, tgt, T, maxCorr, Hc, bc, nc);
+    ASSERT_GT(nc, 100);
+
+    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+    const auto out = gpu.Accumulate(src, tgt, T, maxCorr);
+    EXPECT_EQ(out.inliers, nc);
+    EXPECT_TRUE(((out.H - Hc).array().abs() < 1e-2 * (1.0 + Hc.array().abs())).all()) << out.H << "\n---\n" << Hc;
+    EXPECT_TRUE(((out.b - bc).array().abs() < 1e-2 * (1.0 + bc.array().abs())).all()) << out.b << "\n---\n" << bc;
+}
