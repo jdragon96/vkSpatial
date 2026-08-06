@@ -22,12 +22,9 @@ namespace Engine::Pipeline {
 
         EAcquisitionType Type() const;
 
-        // Play / pause the acquisition. While paused, Run() blocks at the frame gate (no frames are
-        // pulled or pushed) until resumed or stopped. Thread-safe; callable from the render thread.
         void SetPaused(bool paused);
         bool IsPaused() const { return m_paused.load(); }
 
-        // Liveness/timing: average time to acquire one frame + how many frames pulled so far.
         double AcquireMsAvg() const { return m_acquireMs.Mean(); }
         std::uint64_t AcquiredFrames() const { return m_acquireMs.Count(); }
 
@@ -36,7 +33,7 @@ namespace Engine::Pipeline {
         void Run() override;
 
     private:
-        bool waitWhilePaused(); // block while paused; false if stopped while waiting
+        bool waitWhilePaused();
 
         std::unique_ptr<IFrameSource> m_source;
         std::atomic<bool> m_paused{false};

@@ -154,8 +154,7 @@ namespace asyncmap {
                 submap.SetPointToPlane(m_cfg.pointToPlane);
                 submap.SetConfidenceWeight(m_cfg.confidence);
                 submap.SetHermitePosition(m_cfg.hermite);
-                for (const MapperFrame &fr: *m_frames) submap.AddDensity(fr.pts);
-                submap.FinalizeDensity();
+                // Density learned online during the integrate loop below (no pre-scan).
 
                 voxdbg::FillTracker tracker(m_cfg.baseVoxel * 0.5f); // detail voxel -> unique keys
                 util::StageProfiler prof;

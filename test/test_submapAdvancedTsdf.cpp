@@ -38,8 +38,8 @@ namespace {
 
 } // namespace
 
-// A locally dense sub-patch triggers a detail submap; extracted points there reach half-voxel
-// spacing that a base-only map cannot.
+// A locally dense sub-patch flips to dense ONLINE (during integration, no pre-scan) and gets a detail
+// submap; extracted points there reach half-voxel spacing a base-only map cannot.
 TEST(SubmapAdvanced, DenseRegionGetsDetail) {
     Engine::Core::Context ctx;
     std::vector<Vector3f> coarseP, coarseN, denseP, denseN;
@@ -48,12 +48,10 @@ TEST(SubmapAdvanced, DenseRegionGetsDetail) {
 
     SubmapAdvancedTSDF s;
     s.Build(ctx, 0.05f, 0.15f, 32, 4.0f);
-    s.AddDensity(coarseP);
-    s.AddDensity(denseP);
-    s.FinalizeDensity();
+    s.Integrate(coarseP, coarseN, Vector3f(6, 6, 7)); // still sparse -> no dense block yet
+    EXPECT_EQ(s.DenseBlockCount(), 0u);
+    s.Integrate(denseP, denseN, Vector3f(6, 6, 7)); // the dense patch tips the block over the threshold
     EXPECT_GT(s.DenseBlockCount(), 0u);
-    s.Integrate(coarseP, coarseN, Vector3f(6, 6, 7));
-    s.Integrate(denseP, denseN, Vector3f(6, 6, 7));
     EXPECT_GT(s.DetailTileCount(), 0u);
 
     const OrientedPointCloud cloud = s.ExtractPointCloud(/*merge=*/false);
@@ -61,7 +59,7 @@ TEST(SubmapAdvanced, DenseRegionGetsDetail) {
     EXPECT_LT(minSpacing(cloud.points), 0.035f); // detail (0.025) present
 }
 
-// A uniformly sparse scene triggers no detail; extraction is base-only resolution.
+// A uniformly sparse scene never flips any block dense; extraction is base-only resolution.
 TEST(SubmapAdvanced, SparseSceneNoDetail) {
     Engine::Core::Context ctx;
     std::vector<Vector3f> p, n;
@@ -69,10 +67,8 @@ TEST(SubmapAdvanced, SparseSceneNoDetail) {
 
     SubmapAdvancedTSDF s;
     s.Build(ctx, 0.05f, 0.15f, 32, 4.0f);
-    s.AddDensity(p);
-    s.FinalizeDensity();
-    EXPECT_EQ(s.DenseBlockCount(), 0u);
     s.Integrate(p, n, Vector3f(6, 6, 7));
+    EXPECT_EQ(s.DenseBlockCount(), 0u);
     EXPECT_EQ(s.DetailTileCount(), 0u);
 
     const OrientedPointCloud cloud = s.ExtractPointCloud(/*merge=*/false);
@@ -89,33 +85,18 @@ TEST(SubmapAdvanced, BaseReplacedNotAddedInDenseBlocks) {
 
     auto run = [&](float k) {
         SubmapAdvancedTSDF s;
-        s.Build(ctx, 0.05f, 0.15f, 32, k);
-        s.AddDensity(denseP);
-        s.FinalizeDensity();
-        s.Integrate(denseP, denseN, Vector3f(6, 6, 7));
+        s.Build(ctx, 0.05f, 0.15f, 32, k); // detailK = k
+        s.Integrate(denseP, denseN, Vector3f(6, 6, 7)); // online density flips (or not) this frame
         return s.ExtractPointCloud(/*merge=*/false).points.size();
     };
-    const double nBase = double(run(1.0e9f)); // k huge -> no dense -> base only
-    const double nSub = double(run(4.0f));     // dense -> detail replaces base
+    const double nBase = double(run(1.0e9f)); // k huge -> never flips dense -> base only
+    const double nSub = double(run(4.0f));     // flips dense -> detail replaces base
     ASSERT_GT(nBase, 50.0);
     EXPECT_GT(nSub, 2.5 * nBase); // detail present (finer)
     EXPECT_LT(nSub, 4.7 * nBase); // base dropped in the dense block (not ~5x = base+detail)
 }
 
-// Integrate before FinalizeDensity leaves the detail level empty (usage gate).
-TEST(SubmapAdvanced, FinalizeGate) {
-    Engine::Core::Context ctx;
-    std::vector<Vector3f> denseP, denseN;
-    makePlane(denseP, denseN, Vector3f(6, 6, 6), 1.2f, 0.012f);
-
-    SubmapAdvancedTSDF s;
-    s.Build(ctx, 0.05f, 0.15f, 32, 4.0f);
-    s.Integrate(denseP, denseN, Vector3f(6, 6, 7)); // no FinalizeDensity yet
-    EXPECT_EQ(s.DetailTileCount(), 0u);
-    EXPECT_EQ(s.DenseBlockCount(), 0u);
-}
-
-// DownloadEntries aggregates base+detail; DenseBlockBoxes/BaseCoreBoxes match the counts.
+// DownloadEntries aggregates base+detail; DenseBlockBoxes/BaseCoreBoxes match the counts (online).
 TEST(SubmapAdvanced, DownloadEntriesAndBoxes) {
     Engine::Core::Context ctx;
     std::vector<Vector3f> coarseP, coarseN, denseP, denseN;
@@ -124,9 +105,6 @@ TEST(SubmapAdvanced, DownloadEntriesAndBoxes) {
 
     SubmapAdvancedTSDF s;
     s.Build(ctx, 0.05f, 0.15f, 32, 4.0f);
-    s.AddDensity(coarseP);
-    s.AddDensity(denseP);
-    s.FinalizeDensity();
     s.Integrate(coarseP, coarseN, Vector3f(6, 6, 7));
     s.Integrate(denseP, denseN, Vector3f(6, 6, 7));
 
@@ -135,24 +113,22 @@ TEST(SubmapAdvanced, DownloadEntriesAndBoxes) {
     EXPECT_EQ(s.BaseCoreBoxes().size(), std::size_t(s.BaseTileCount()));
 }
 
-// Reset drops both levels but keeps the finalized dense-block set (scrub-replay stays consistent).
-TEST(SubmapAdvanced, ResetKeepsDensity) {
+// Reset drops both levels AND the learned dense set: online density is re-learned from the stream on a
+// replay-from-frame-0, unlike the old pre-scan which kept a fixed dense set.
+TEST(SubmapAdvanced, ResetClearsDensity) {
     Engine::Core::Context ctx;
     std::vector<Vector3f> denseP, denseN;
     makePlane(denseP, denseN, Vector3f(6, 6, 6), 1.2f, 0.012f);
 
     SubmapAdvancedTSDF s;
     s.Build(ctx, 0.05f, 0.15f, 32, 4.0f);
-    s.AddDensity(denseP);
-    s.FinalizeDensity();
-    const uint32_t dense = s.DenseBlockCount();
-    ASSERT_GT(dense, 0u);
     s.Integrate(denseP, denseN, Vector3f(6, 6, 7));
+    ASSERT_GT(s.DenseBlockCount(), 0u);
     ASSERT_GT(s.DetailTileCount(), 0u);
 
     s.Reset();
     EXPECT_EQ(s.BaseTileCount(), 0u);
     EXPECT_EQ(s.DetailTileCount(), 0u);
     EXPECT_TRUE(s.DownloadEntries().empty());
-    EXPECT_EQ(s.DenseBlockCount(), dense); // density preserved
+    EXPECT_EQ(s.DenseBlockCount(), 0u); // density cleared -> re-learned on the next stream
 }

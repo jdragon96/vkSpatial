@@ -39,8 +39,6 @@ namespace pipeline {
             std::size_t captureQueue = 8; // Frame channel capacity
             std::size_t trackQueue = 4;   // TrackedFrame channel capacity (drop-oldest)
             int downloadEveryN = 1;       // Map download cadence (raise to decouple slow download)
-            // Optional world-registered frames for the density precompute (batch/debugger case).
-            std::shared_ptr<const std::vector<Frame>> densityFrames;
         };
 
         ~ReconstructionPipeline() { joinAll(); }
@@ -148,10 +146,7 @@ namespace pipeline {
                 submap.SetPointToPlane(m_cfg.map.pointToPlane);
                 submap.SetConfidenceWeight(m_cfg.map.confidence);
                 submap.SetHermitePosition(m_cfg.map.hermite);
-                if (m_cfg.densityFrames) {
-                    for (const Frame &frame: *m_cfg.densityFrames) submap.AddDensity(frame.pts);
-                    submap.FinalizeDensity();
-                }
+                // Density learned online during the integrate loop below (no pre-scan).
 
                 voxdbg::FillTracker tracker(m_cfg.map.baseVoxel * 0.5f);
                 util::StageProfiler prof;

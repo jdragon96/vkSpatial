@@ -212,7 +212,7 @@ void VoxelFillRenderStrategy::drawUi(ep::Pipeline &pipe) {
     ImGui::SameLine();
     ImGui::Text("%s", pipe.IsPaused() ? "(paused)" : "(playing)");
     ImGui::Text("frame %d / %d (source: %s)", pipe.ProcessedFrame() + 1, m_p.nFrames,
-                m_p.alignName.c_str());
+                m_p.trackerName.c_str());
     ImGui::SeparatorText("Color mode");
     int m = int(m_state.mode);
     bool cm = false;
@@ -256,7 +256,7 @@ void VoxelFillRenderStrategy::drawUi(ep::Pipeline &pipe) {
     }
     ImGui::SeparatorText("Stats");
     const ep::PipelineStats ps = pipe.GetStats();
-    ImGui::Text("align: %s   integrated frames: %d", m_p.alignName.c_str(), ps.processedFrame + 1);
+    ImGui::Text("tracker: %s   integrated frames: %d", m_p.trackerName.c_str(), ps.processedFrame + 1);
     ImGui::Text("queues: capture %zu, track %zu (dropped %zu)", ps.captureDepth, ps.trackDepth,
                 ps.trackDropped);
 

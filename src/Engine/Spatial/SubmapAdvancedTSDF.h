@@ -35,7 +35,6 @@ namespace Engine::Spatial {
             m_baseVoxel = baseVoxel;
             m_blockWorld = baseVoxel * float(blockVoxels);
             m_detailK = detailPtsPerVoxel;
-            m_finalized = false;
             m_base.Build(ctx, baseVoxel, truncation, tileHashPerTile, maxPointsPerFrame);
             const float detailVoxel = baseVoxel * 0.5f;
             const float detailTrunc = std::min(truncation, detailVoxel * detailTruncVoxels);
@@ -43,7 +42,6 @@ namespace Engine::Spatial {
             m_count.clear();
             m_occ.clear();
             m_dense.clear();
-            m_baseBoundaryDense.clear();
         }
 
         void SetIntegrationQuality(const IntegrationQuality &q) {
@@ -70,42 +68,10 @@ namespace Engine::Spatial {
             m_detail.SetCurrentFrame(frame);
         }
 
-        void AddDensity(const std::vector<Eigen::Vector3f> &pts) {
-            for (const Eigen::Vector3f &p: pts) {
-                const BlockKey b = blockOf(p);
-                ++m_count[b];
-                m_occ[b].insert(voxelKey(p));
-            }
-        }
-
-        void FinalizeDensity() {
-            for (const auto &kv: m_count) {
-                auto it = m_occ.find(kv.first);
-                const std::size_t occ =
-                        (it != m_occ.end() && !it->second.empty()) ? it->second.size() : 1;
-                if (float(kv.second) / float(occ) >= m_detailK) m_dense.insert(kv.first);
-            }
-
-            m_baseBoundaryDense.clear();
-            for (const BlockKey &b: m_dense) {
-                bool boundary = false;
-                for (int dx = -1; dx <= 1 && !boundary; ++dx)
-                    for (int dy = -1; dy <= 1 && !boundary; ++dy)
-                        for (int dz = -1; dz <= 1 && !boundary; ++dz) {
-                            if (dx == 0 && dy == 0 && dz == 0) continue;
-                            const BlockKey nb{b.x + dx, b.y + dy, b.z + dz};
-                            if (m_count.count(nb) && !m_dense.count(nb)) boundary = true;
-                        }
-                if (boundary) m_baseBoundaryDense.insert(b);
-            }
-            m_count.clear();
-            m_occ.clear();
-            m_finalized = true;
-        }
-
         void Integrate(const std::vector<Eigen::Vector3f> &pts,
                        const std::vector<Eigen::Vector3f> &nrm,
                        const Eigen::Vector3f &cam = Eigen::Vector3f::Zero()) {
+            updateDensity(pts); // online: learn dense blocks from this frame BEFORE splitting the cloud
             std::vector<Eigen::Vector3f> dsP, dsN;
 
             // 1. Downsample points
@@ -129,6 +95,7 @@ namespace Engine::Spatial {
         void IntegrateGPU(const std::vector<Eigen::Vector3f> &pts,
                           const std::vector<Eigen::Vector3f> &nrm,
                           const Eigen::Vector3f &cam = Eigen::Vector3f::Zero()) {
+            updateDensity(pts); // online: learn dense blocks from this frame BEFORE splitting the cloud
             std::vector<Eigen::Vector3f> dsP, dsN;
             if (m_downsample) voxelDownsample(pts, nrm, m_baseVoxel * 0.5f, dsP, dsN);
             const std::vector<Eigen::Vector3f> &p = m_downsample ? dsP : pts;
@@ -190,6 +157,11 @@ namespace Engine::Spatial {
         void Reset() {
             m_base.Reset();
             m_detail.Reset();
+            // Online density is learned from the stream, so a replay-from-frame-0 re-learns it: clear
+            // the accumulators + the dense set (unlike the old pre-scan, which kept a fixed dense set).
+            m_count.clear();
+            m_occ.clear();
+            m_dense.clear();
         }
 
         std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> DenseBlockBoxes() const {
@@ -274,27 +246,51 @@ namespace Engine::Spatial {
             for (const auto &l: local) out.insert(out.end(), l.begin(), l.end());
         }
 
+        // Online density: accumulate this frame's per-block point count + distinct occupied base-voxel
+        // count, and flip a block to dense the moment its running (avg points / occupied voxel) crosses
+        // detailK. Dense is MONOTONIC (never un-flips), so a block is decided once and only detail covers
+        // it thereafter. A flipped block stops being tracked (count/occ erased) -> memory tracks only the
+        // still-undecided blocks, bounded for arbitrarily long streams. No pre-scan / future frames.
+        void updateDensity(const std::vector<Eigen::Vector3f> &pts) {
+            for (const Eigen::Vector3f &p: pts) {
+                const BlockKey b = blockOf(p);
+                if (m_dense.count(b)) continue; // already decided -> not tracked
+                auto &occ = m_occ[b];
+                occ.insert(voxelKey(p));
+                const uint32_t c = ++m_count[b];
+                if (float(c) / float(occ.size()) >= m_detailK) {
+                    m_dense.insert(b); // enough overlap -> detail from now on
+                    m_count.erase(b);
+                    m_occ.erase(b);
+                }
+            }
+        }
+
+        // Split the frame per level using the CURRENTLY-known dense set (updateDensity ran first this
+        // frame). Detail gets dense-block points; base gets the rest. A block that has flipped dense is
+        // dropped from base entirely from that frame on (its earlier base voxels are discarded on
+        // download, where detail wins) -- the online form of interior-dense-skip. Returns false when no
+        // block is dense yet, so the caller integrates the whole cloud into base (the early-stream ramp).
         bool SplitPointDenseOrDetail(const std::vector<Eigen::Vector3f> &originalPoint,
                                      const std::vector<Eigen::Vector3f> &origialNormal,
-                                     std::vector<Eigen::Vector3f> &denseVoxelPoints,
-                                     std::vector<Eigen::Vector3f> &denseVoxelNormals,
+                                     std::vector<Eigen::Vector3f> &basePoints,
+                                     std::vector<Eigen::Vector3f> &baseNormals,
                                      std::vector<Eigen::Vector3f> &detailVoxelPoint,
                                      std::vector<Eigen::Vector3f> &detailVoxelNormal) const {
-            if (!m_finalized || m_dense.empty()) return false;
+            if (m_dense.empty()) return false;
             const std::size_t n = std::min(originalPoint.size(), origialNormal.size());
-            denseVoxelPoints.reserve(n);
-            denseVoxelNormals.reserve(n);
+            basePoints.reserve(n);
+            baseNormals.reserve(n);
             detailVoxelPoint.reserve(n);
             detailVoxelNormal.reserve(n);
             for (std::size_t i = 0; i < n; ++i) {
-                const BlockKey b = blockOf(originalPoint[i]);
-                if (m_dense.count(b)) {
-                    detailVoxelPoint.push_back(originalPoint[i]);
+                if (m_dense.count(blockOf(originalPoint[i]))) {
+                    detailVoxelPoint.push_back(originalPoint[i]); // dense -> detail only (base stops)
                     detailVoxelNormal.push_back(origialNormal[i]);
-                    if (!m_baseBoundaryDense.count(b)) continue;
+                } else {
+                    basePoints.push_back(originalPoint[i]); // non-dense -> base
+                    baseNormals.push_back(origialNormal[i]);
                 }
-                denseVoxelPoints.push_back(originalPoint[i]);
-                denseVoxelNormals.push_back(origialNormal[i]);
             }
             return true;
         }
@@ -330,15 +326,13 @@ namespace Engine::Spatial {
         float m_baseVoxel = 0.01f;
         float m_blockWorld = 0.32f;
         float m_detailK = 4.0f;
-        bool m_finalized = false;
         bool m_downsample = false;                        // off by default; the pipeline/debugger opt in via SetDownsample
         mutable std::vector<AdvancedEntry> m_baseScratch; // reused base readback (dense-path download)
         TiledAdvancedTSDF m_base;
         TiledAdvancedTSDF m_detail;
         std::unordered_map<BlockKey, uint32_t, BlockKeyHash> m_count;
         std::unordered_map<BlockKey, std::unordered_set<int64_t>, BlockKeyHash> m_occ;
-        std::unordered_set<BlockKey, BlockKeyHash> m_dense;
-        std::unordered_set<BlockKey, BlockKeyHash> m_baseBoundaryDense; // dense blocks base still covers
+        std::unordered_set<BlockKey, BlockKeyHash> m_dense; // blocks decided dense (monotonic, online)
     };
 
 } // namespace Engine::Spatial

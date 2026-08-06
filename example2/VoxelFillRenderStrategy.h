@@ -42,7 +42,7 @@ public:
         Eigen::Vector3f center = Eigen::Vector3f::Zero();
         float extent = 1.0f;
         float wThresh = 0.0f;  // initial weight threshold
-        std::string alignName; // shown in the UI
+        std::string trackerName; // shown in the UI
         Opts opts;             // initial option-toggle state
         std::function<void(const Opts &)> onRebuild; // rebuild the pipeline with new opts (may be null)
     };

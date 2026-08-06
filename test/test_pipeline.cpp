@@ -1,4 +1,4 @@
-#include "Engine/Pipeline/ICP/Alignment.h" // Engine::Pipeline::AlignmentRegistry
+#include "Engine/Pipeline/Registration/Tracker.h" // Engine::Pipeline::TrackerRegistry
 #include "Engine/Pipeline/Pipeline.h"  // Engine::Pipeline::Pipeline / Config / EAcquisitionType
 
 #include "utilities/PointCloudIO.h"
@@ -62,14 +62,14 @@ namespace {
         ep::Pipeline::Config cfg;
         cfg.map.baseVoxel = 0.05f;
         cfg.map.truncation = 0.15f;
-        cfg.source.type = ep::EAcquisitionType::File;
-        cfg.source.framePaths = files;
-        cfg.source.intervalMs = intervalMs;
+        cfg.acquisition.type = ep::EAcquisitionType::File;
+        cfg.acquisition.framePaths = files;
+        cfg.acquisition.intervalMs = intervalMs;
         return cfg; // no densityFrames -> base-only integration (still yields entries)
     }
 
-    std::unique_ptr<ep::AlignmentCommand> identity() {
-        return ep::AlignmentRegistry::Default().Create("identity");
+    std::unique_ptr<ep::Tracker> identity() {
+        return ep::TrackerRegistry::Default().Create("identity");
     }
 
     bool waitProcessed(const ep::Pipeline &p, int target, int seconds = 60) {

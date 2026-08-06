@@ -1,7 +1,6 @@
-#include "Engine/Pipeline/ICP/ICPThread.h"
-
-#include "Engine/Pipeline/ICP/Alignment.h"
+#include "Engine/Pipeline/Registration/RegistrationThread.h"
 #include "Engine/Pipeline/CommunicationModule.h"
+#include "Engine/Pipeline/Registration/Tracker.h"
 
 #include <Eigen/Geometry>
 
@@ -10,22 +9,22 @@
 
 namespace Engine::Pipeline {
 
-    ICPThread::ICPThread(CommunicationModule &comm, std::unique_ptr<AlignmentCommand> align)
-        : PipelineStage(comm), m_align(std::move(align)) {}
+    RegistrationThread::RegistrationThread(CommunicationModule &comm, std::unique_ptr<Tracker> tracker)
+        : PipelineStage(comm), m_tracker(std::move(tracker)) {}
 
-    ICPThread::~ICPThread() { Stop(); }
+    RegistrationThread::~RegistrationThread() { Stop(); }
 
-    void ICPThread::Interrupt() { m_comm.capturedFrames.Close(); } // wake a blocked Pop
+    void RegistrationThread::Interrupt() { m_comm.capturedFrames.Close(); } // wake a blocked Pop
 
-    void ICPThread::Run() {
+    void RegistrationThread::Run() {
         Eigen::Isometry3f prev = Eigen::Isometry3f::Identity();
         Frame f;
         while (!StopRequested() && m_comm.capturedFrames.Pop(f)) {
             const std::shared_ptr<const ModelSnapshot> model = m_comm.model.Latest();
-            AlignmentResult a;
+            TrackingResult a;
             {
-                util::ScopedMean t(m_alignMs);
-                a = m_align->Execute(f, model.get(), prev);
+                util::ScopedMean t(m_trackerMs);
+                a = m_tracker->Track(f, model.get(), prev);
             }
             const Eigen::Isometry3f pose = a.valid ? a.pose : prev;
             if (a.valid) prev = a.pose;

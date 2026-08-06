@@ -14,20 +14,17 @@
 
 namespace Engine::Registration {
 
-    // Local point-to-plane ICP: refines a rigid transform mapping `src` points onto the `tgt`
-    // surface, seeded by `priorT`. Frame-to-model tracking primitive (per-frame refinement), as
-    // opposed to GlobalRegistration's prior-free FPFH+RANSAC. `tgt` MUST carry per-point normals.
-    struct IcpParams {
+    struct RegistrationParam {
         int maxIters = 20;
-        float maxCorrDist = 0.1f; // correspondence gate (world units); set to the data scale
+        // correspondence gate (world units); set to the data scale
+        float maxCorrDist = 0.1f;
         int minInliers = 10;
-        float convEps = 1e-6f; // stop when the incremental update norm drops below this
+        // stop when the incremental update norm drops below this
+        float convEps = 1e-6f;
     };
 
     namespace detail {
 
-        // Uniform-grid nearest-neighbour over a point set; cell = search radius, so the true NN
-        // within `radius` lies in the 27-cell neighbourhood of the query cell.
         class IcpGridNN {
         public:
             IcpGridNN(const std::vector<Eigen::Vector3f> &pts, float cell)
@@ -46,7 +43,7 @@ namespace Engine::Registration {
                         for (int dx = -1; dx <= 1; ++dx) {
                             const auto it = m_grid.find(key(Eigen::Vector3i(c.x() + dx, c.y() + dy, c.z() + dz)));
                             if (it == m_grid.end()) continue;
-                            for (int idx : it->second) {
+                            for (int idx: it->second) {
                                 const float d2 = (q - m_pts[idx]).squaredNorm();
                                 if (d2 < bestD2) {
                                     bestD2 = d2;
@@ -75,10 +72,11 @@ namespace Engine::Registration {
 
     } // namespace detail
 
-    // Returns T (src->tgt) refining `priorT`, plus inlier count / fitness. `valid` iff enough inliers.
+
     inline RegistrationResult AlignPointToPlaneIcp(const std::vector<Eigen::Vector3f> &src,
-                                                   const PointCloud &tgt, const Eigen::Matrix4f &priorT,
-                                                   const IcpParams &params = {}) {
+                                                   const PointCloud &tgt,
+                                                   const Eigen::Matrix4f &priorT,
+                                                   const RegistrationParam &params = {}) {
         RegistrationResult res;
         res.T = priorT;
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return res;
@@ -94,16 +92,16 @@ namespace Engine::Registration {
             int inliers = 0;
 
             // 1. Accumulate the point-to-plane normal equations over current correspondences.
-            for (const Eigen::Vector3f &s : src) {
-                const Eigen::Vector3f p = R * s + t;                 // src point in the current frame
+            for (const Eigen::Vector3f &s: src) {
+                const Eigen::Vector3f p = R * s + t; // src point in the current frame
                 const int qi = grid.Nearest(p, params.maxCorrDist);
                 if (qi < 0) continue;
                 const Eigen::Vector3f &q = tgt.points[qi];
                 const Eigen::Vector3f &n = tgt.normals[qi];
-                const float e = (p - q).dot(n);                      // point-to-plane residual
+                const float e = (p - q).dot(n); // point-to-plane residual
                 Eigen::Matrix<float, 6, 1> J;
-                J.head<3>() = p.cross(n);                            // rotation part
-                J.tail<3>() = n;                                     // translation part
+                J.head<3>() = p.cross(n); // rotation part
+                J.tail<3>() = n;          // translation part
                 H += J * J.transpose();
                 b += -J * e;
                 ++inliers;

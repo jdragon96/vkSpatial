@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Pipeline/Types.h" // Frame, ModelSnapshot
+#include "Engine/Pipeline/Types.h"
 
 #include <Eigen/Geometry>
 
@@ -13,36 +13,36 @@
 
 namespace Engine::Pipeline {
 
-    struct AlignmentResult {
+    struct TrackingResult {
         Eigen::Isometry3f pose = Eigen::Isometry3f::Identity(); // sensor -> world
         float fitness = 0.0f;
         std::size_t inliers = 0;
         bool valid = false;
     };
 
-    class AlignmentCommand {
+    class Tracker {
     public:
-        virtual ~AlignmentCommand() = default;
+        virtual ~Tracker() = default;
         virtual const char *Name() const = 0;
-        // Align `frame` to `model` (null before the first map), seeded by `priorPose`. Pure CPU.
-        virtual AlignmentResult Execute(const Frame &frame, const ModelSnapshot *model,
-                                        const Eigen::Isometry3f &priorPose) = 0;
+        virtual TrackingResult Track(const Frame &frame,
+                                     const ModelSnapshot *model,
+                                     const Eigen::Isometry3f &priorPose) = 0;
     };
 
-    class AlignmentRegistry {
+    class TrackerRegistry {
     public:
-        using Factory = std::function<std::unique_ptr<AlignmentCommand>()>;
+        using Factory = std::function<std::unique_ptr<Tracker>()>;
 
         void Register(const std::string &name, Factory factory) {
             m_factories[name] = std::move(factory);
         }
-        std::unique_ptr<AlignmentCommand> Create(const std::string &name) const {
+        std::unique_ptr<Tracker> Create(const std::string &name) const {
             const auto it = m_factories.find(name);
             return it == m_factories.end() ? nullptr : it->second();
         }
         bool Has(const std::string &name) const { return m_factories.count(name) != 0; }
 
-        static AlignmentRegistry Default();
+        static TrackerRegistry Default();
 
     private:
         std::unordered_map<std::string, Factory> m_factories;

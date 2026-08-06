@@ -44,9 +44,9 @@ namespace Engine::Pipeline {
                 if (!waitForNextSlot()) return false;
 
                 Frame fr;
-                if (!util::LoadPly(m_cfg.files[m_cursor++], fr.pts, fr.nrm) ||
-                    fr.nrm.size() != fr.pts.size())
-                    continue; // load failed or missing per-point normals -> skip, try the next file
+                std::string filePath = m_cfg.files[m_cursor++];
+                if (!util::LoadPly(filePath, fr.pts, fr.nrm) || fr.nrm.size() != fr.pts.size())
+                    continue;
                 fr.cam = EstimateCameraHint(fr.pts, fr.nrm);
                 m_lastEmit = Clock::now();
                 m_hasLast = true;

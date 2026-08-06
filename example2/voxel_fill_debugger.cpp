@@ -2,9 +2,9 @@
 #include "VoxelFillRenderStrategy.h" // VoxelFillRenderStrategy
 
 #include "Engine/Core/Context.h"
-#include "Engine/Pipeline/ICP/Alignment.h"              // AlignmentRegistry / AlignmentCommand
 #include "Engine/Pipeline/Pipeline.h"                   // Pipeline / Config / MapConfig / Frame
 #include "Engine/Pipeline/Reconstruction/FrameLoader.h" // LoadFrames / ComputeBounds
+#include "Engine/Pipeline/Registration/Tracker.h"       // TrackerRegistry / Tracker
 #include "Engine/Pipeline/Render/RenderThread.h"        // RenderThread
 #include "Engine/Spatial/SubmapAdvancedTSDF.h"          // headless --dump map
 
@@ -67,11 +67,6 @@ namespace {
         m.downsample = o.downsample;
     }
 
-    ///////////////////////////////////////////////////////////////////////////////////////////
-    // Headless per-frame benchmark: integrate every frame through the SAME SubmapAdvancedTSDF the
-    // live pipeline runs (IntegrateGPU + DownloadEntries), reporting per-stage timing and how many
-    // frames (past the first) breach the 30 ms real-time budget. No window / render dependencies.
-    ///////////////////////////////////////////////////////////////////////////////////////////
     int runDump(const ep::MapConfig &cfg, const std::vector<ep::Frame> &frames, float wThresh) {
         Engine::Core::Context ctx;
         Engine::Spatial::SubmapAdvancedTSDF submap;
@@ -82,10 +77,8 @@ namespace {
         submap.SetConfidenceWeight(cfg.confidence);
         submap.SetHermitePosition(cfg.hermite);
         submap.SetDownsample(cfg.downsample);
-        if (cfg.submap) { // submap off -> skip density -> base-only map (no detail level)
-            for (const ep::Frame &fr: frames) submap.AddDensity(fr.pts);
-            submap.FinalizeDensity();
-        }
+        // Density is learned online inside IntegrateGPU (no pre-scan) -- submap off never flips a block
+        // dense (base-only), submap on grows the detail level as dense regions appear during the replay.
         submap.PreWarm(); // compile shaders now, off the first measured frame
 
         const int nFrames = int(frames.size());
@@ -127,50 +120,46 @@ namespace {
         return 0;
     }
 
-    ///////////////////////////////////////////////////////////////////////////////////////////
-    // Live viewer: the TSDF runs on a background Engine::Pipeline (Reconstruction + ICP + Integration
-    // worker threads); RenderThread owns the window / camera / render loop and drives the swappable
-    // VoxelFillRenderStrategy from the latest model snapshot. A UI option toggle rebuilds the pipeline
-    // in place (Pipeline::Reconfigure) and replays from frame 0.
-    ///////////////////////////////////////////////////////////////////////////////////////////
-    int runViewer(std::shared_ptr<const std::vector<ep::Frame>> frames, const ep::MapConfig &baseMap,
-                  const std::vector<std::string> &framePaths, const ep::FrameBounds &bounds,
-                  float wThresh, const std::string &alignName, double intervalMs, bool loop,
+    int runViewer(std::shared_ptr<const std::vector<ep::Frame>> frames,
+                  const ep::MapConfig &baseMap,
+                  const std::vector<std::string> &framePaths,
+                  const ep::FrameBounds &bounds,
+                  float wThresh,
+                  const std::string &trackerName,
+                  double intervalMs,
+                  bool loop,
                   const VoxelFillRenderStrategy::Opts &initOpts) {
-        ep::AlignmentRegistry registry = ep::AlignmentRegistry::Default();
-        const float confValue = baseMap.confidence > 0.0f ? baseMap.confidence : 0.5f; // "on" weight
+        ep::TrackerRegistry registry = ep::TrackerRegistry::Default();
+        const float confValue = baseMap.confidence > 0.0f ? baseMap.confidence : 0.5f;
 
-        // A full pipeline Config for a given option set. Reused for the initial build and every toggle
-        // rebuild; the density frames + File source (path list + pacing) stay fixed.
         auto makeConfig = [&](const VoxelFillRenderStrategy::Opts &o) {
             ep::MapConfig m = baseMap;
             applyOpts(m, o, confValue);
-            ep::Pipeline::Config pc;
-            pc.map = m;
-            pc.densityFrames = frames;                   // world-registered frames -> density precompute
-            pc.source.type = ep::EAcquisitionType::File; // config-driven acquisition strategy
-            pc.source.framePaths = framePaths;           // read one frame per Next()
-            pc.source.intervalMs = intervalMs;
-            pc.source.loop = loop;
-            return pc;
+            ep::Pipeline::Config config;
+            config.map = m;
+            config.acquisition.type = ep::EAcquisitionType::File;
+            config.acquisition.framePaths = framePaths;
+            config.acquisition.intervalMs = intervalMs;
+            config.acquisition.loop = loop;
+            return config;
         };
 
-        ep::Pipeline pipe(makeConfig(initOpts), registry.Create(alignName));
-        pipe.SetPaused(true); // start paused -- press Play to begin the fill
+        ep::Pipeline pipe(makeConfig(initOpts), registry.Create(trackerName));
+        pipe.SetPaused(true);
         pipe.Start();
 
         VoxelFillRenderStrategy::Params params;
         params.frames = frames;
         params.voxel = baseMap.baseVoxel;
-        params.trunc = baseMap.truncation; // same value main passed in; no need for a separate param
+        params.trunc = baseMap.truncation;
         params.nFrames = int(frames->size());
         params.center = bounds.Center();
         params.extent = bounds.Extent();
         params.wThresh = wThresh;
-        params.alignName = alignName;
+        params.trackerName = trackerName;
         params.opts = initOpts;
         params.onRebuild = [&](const VoxelFillRenderStrategy::Opts &o) {
-            pipe.Reconfigure(makeConfig(o), registry.Create(alignName));
+            pipe.Reconfigure(makeConfig(o), registry.Create(trackerName));
             pipe.SetPaused(false); // resume playing so the effect of the toggle is visible
         };
         VoxelFillRenderStrategy strategy(std::move(params));
@@ -205,7 +194,7 @@ int main(int argc, char **argv) {
                                        "[--trunc t] [--submap] [--downsample] [--no-p2p] [--conf L] "
                                        "[--hermite] [--wthresh w] [--tile-hash N] [--block V] "
                                        "[--detail-k K] [--detail-trunc-vox R] [--max-points N] "
-                                       "[--align a] [--interval ms] [--loop] [--dump]")
+                                       "[--tracker a] [--interval ms] [--loop] [--dump]")
                         .Option("--voxel") // default runtime-computed (extent / 200)
                         .Option("--trunc") // default runtime-computed (voxel * 2, real-time band)
                         .Option("--conf", 0.5)
@@ -215,7 +204,7 @@ int main(int argc, char **argv) {
                         .Option("--detail-k", 4.0)
                         .Option("--detail-trunc-vox", 3.0) // detail band radius in detail voxels
                         .Option("--max-points")            // default = largest loaded frame
-                        .Option("--align", "identity")
+                        .Option("--tracker", "identity")
                         .Option("--interval", 33.0); // ~30 fps pacing; 0 = as fast as consumed
         if (!arg) return 2;
 
@@ -270,7 +259,7 @@ int main(int argc, char **argv) {
 
         // ---- Run: headless benchmark or the live viewer ----
         if (arg.Has("--dump") || arg.Has("--no-view")) return runDump(cfg, *frames, wThresh);
-        return runViewer(frames, cfg, framePaths, bounds, wThresh, arg.Value("--align"),
+        return runViewer(frames, cfg, framePaths, bounds, wThresh, arg.Value("--tracker"),
                          arg.ValueFloat("--interval"), arg.Has("--loop"), opts);
     } catch (const std::exception &e) {
         std::cerr << e.what() << "\n";

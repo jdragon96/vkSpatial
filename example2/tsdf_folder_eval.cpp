@@ -250,9 +250,9 @@ int main(int argc, char **argv) {
             s.SetPointToPlane(p2p);
             s.SetConfidenceWeight(conf);
             s.SetHermitePosition(hermite);
-            for (const auto &fr: frames) s.AddDensity(fr.pts);   // pass 1: density
-            s.FinalizeDensity();
-            for (const auto &fr: frames) s.Integrate(fr.pts, fr.nrm, fr.cam); // pass 2
+            // Density is learned online inside Integrate (dense blocks flip as their observed density
+            // crosses the threshold), so there is no separate density pass -- one integrate pass.
+            for (const auto &fr: frames) s.Integrate(fr.pts, fr.nrm, fr.cam);
             recon = s.ExtractPointCloud(/*merge=*/true);
             std::printf("path      : SUBMAP (base %.4f + detail %.4f); dense blocks %u, base tiles "
                         "%u, detail tiles %u\n",

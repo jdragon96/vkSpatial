@@ -55,7 +55,7 @@ namespace pipeline {
     // Real local point-to-plane ICP against the latest model's occupied voxels (centres + normals).
     class PointToPlaneIcpAlignment : public AlignmentCommand {
     public:
-        explicit PointToPlaneIcpAlignment(Engine::Registration::IcpParams params = {})
+        explicit PointToPlaneIcpAlignment(Engine::Registration::RegistrationParam params = {})
             : m_params(params) {}
         const char *Name() const override { return "icp"; }
 
@@ -82,7 +82,7 @@ namespace pipeline {
         }
 
     private:
-        Engine::Registration::IcpParams m_params;
+        Engine::Registration::RegistrationParam m_params;
     };
 
     // Prior-free global registration (FPFH + RANSAC + Ceres) — (re)localisation / A/B baseline.

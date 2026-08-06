@@ -4,10 +4,6 @@
 #include <chrono>
 #include <cstdint>
 
-// Thread-safe running average for pipeline liveness/timing: ONE writer (a worker thread) records a
-// sample per item; MANY readers (the render thread's HUD) read the mean + count. Lock-free — the
-// single writer means the read-modify-write of the mean is never contended, and the render thread
-// only ever reads. Count doubling as a liveness signal: a stage whose count keeps rising is alive.
 namespace util {
 
     class RunningMean {
@@ -27,13 +23,11 @@ namespace util {
         std::atomic<std::uint64_t> m_count{0};
     };
 
-    // RAII: records the wall-clock time of its own scope into `mean` when it goes out of scope.
     class ScopedMean {
     public:
         explicit ScopedMean(RunningMean &mean) : m_mean(mean), m_start(Clock::now()) {}
         ~ScopedMean() {
-            const double ms =
-                    std::chrono::duration<double, std::milli>(Clock::now() - m_start).count();
+            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - m_start).count();
             m_mean.Add(ms);
         }
         ScopedMean(const ScopedMean &) = delete;

@@ -9,7 +9,7 @@
 #include <vector>
 
 using Engine::Registration::AlignPointToPlaneIcp;
-using Engine::Registration::IcpParams;
+using Engine::Registration::RegistrationParam;
 using Engine::Registration::PointCloud;
 using Eigen::Vector3f;
 
@@ -50,7 +50,7 @@ TEST(Icp, RecoversKnownTransform) {
     for (const Vector3f &p : tgt.points)
         src.push_back((known * p.homogeneous()).head<3>());
 
-    IcpParams params;
+    RegistrationParam params;
     params.maxCorrDist = 0.1f;
     params.maxIters = 30;
     params.minInliers = 20;

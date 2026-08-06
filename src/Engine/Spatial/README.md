@@ -130,20 +130,28 @@ rehash 커널로 점유 슬롯을 재삽입. 부하율을 상한 아래로 유�
 - **base** — voxel `v`, 씬 전체의 coarse 커버리지.
 - **detail** — voxel `v/2`, **조밀한 영역만** 2배 해상도로 정밀화.
 
-### 4.1 밀도 감지 (`AddDensity` → `FinalizeDensity`)
+### 4.1 밀도 감지 — 온라인 (pre-scan 없음)
 
-- 블록(= `blockVoxels`³ 크기)마다 포인트 수와 distinct 점유 base-복셀 수를 누적.
-- `avg 포인트/점유복셀 ≥ detailK`인 블록을 **dense**로 표시 (조밀 = 그 복셀에 여러 관측이 겹침 = 정밀화 가치 있음).
+density는 **스트림에서 증분(online)으로 학습**합니다 — 미래 프레임을 미리 보지 않습니다.
 
-### 4.2 레벨 분배 (`splitForLevels`) — interior-dense-skip
+- 매 `Integrate`/`IntegrateGPU` 시작에서 `updateDensity(pts)`가 블록별 포인트 수 + distinct 점유 base-복셀 수를 누적.
+- 어떤 블록의 running `avg 포인트/점유복셀 ≥ detailK`가 되는 **순간 dense로 전환**(monotonic — 한번 dense면 유지).
+- dense로 뒤집힌 블록은 추적 중단(count/occ 해제) → 아직 미결정 블록만 추적 → **임의로 긴 스트림에서도 메모리 유계**.
+- `Reset()`은 학습된 density를 **clear**(replay-from-frame-0 = density 재학습).
 
-한 번의 패스로 프레임을 두 레벨로 분배:
+> 왜 online인가: 실시간 센서는 미래 프레임이 없습니다. 예전엔 전체 프레임을 미리 스캔(`AddDensity`×전체 → `FinalizeDensity`)해서
+> dense 집합을 고정했지만, 그건 오프라인 replay에서만 성립하는 편법이었습니다.
 
-- **dense 블록 포인트 → detail** (그 영역의 최정밀 커버리지).
-- **non-dense 포인트 → base**.
-- **base가 interior dense 블록은 건너뜀**: dense/non-dense **경계에 인접한** dense 블록만 base도 통합(1블록 ghost margin), 사방이 dense인 **내부** dense 블록은 base가 생략.
-  - 이유: 내부 dense 블록은 detail이 완전 커버 + base 복셀은 어차피 download의 precedence dedup에서 버려짐.
-  - 효과: **균일-dense 씬은 base가 ~0 통합 → integrate ~2배↓, 출력은 완전 동일**. 혼합 씬은 경계 1블록 margin으로 품질 손실 0.
+### 4.2 레벨 분배 (`SplitPointDenseOrDetail`) — 온라인 base-stops-on-flip
+
+`updateDensity`가 먼저 돈 뒤, **현재까지 학습된** dense 집합으로 프레임을 두 레벨로 분배:
+
+- **dense 블록 포인트 → detail만**.
+- **non-dense 포인트 → base만**.
+- 블록이 dense로 뒤집히면 **그 프레임부터 base는 그 블록을 건너뜀**(이전 base 복셀은 download의 precedence dedup에서 어차피 버려짐) — interior-dense-skip의 온라인 형태.
+- dense 집합이 아직 비었으면(초반 램프) → base가 전체 통합.
+  - 효과: **균일-dense 씬은 대부분 블록이 초반에 flip → 램프 이후 base ~0 → integrate ~2배↓**.
+  - 트레이드오프: 블록이 프레임 f에 flip하면 detail은 f 이후만 관측(f 이전은 base로 갔다 버려짐). pre-scan 대비 "초반 detail 지연"이나 스캔 진행되며 따라잡음.
 
 ### 4.3 detail truncation 축소 (`detailTruncVoxels`)
 

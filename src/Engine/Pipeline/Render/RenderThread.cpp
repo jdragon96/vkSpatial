@@ -49,29 +49,42 @@ namespace Engine::Pipeline {
         app.GetView().SetCamera(&camera);
         app.GetView().SetRenderGraph(&graph);
 
-        // Generic trackball navigation (drag orbit, scroll zoom, ESC to close).
+        // Generic navigation: left-drag orbits (trackball), right-drag pans (translate), scroll zooms,
+        // ESC closes. Right-drag panning needs the previous cursor position to form a per-frame delta
+        // (the trackball tracks its own state internally; Camera::Pan takes a pixel delta).
         Engine::Render::MouseListenerGroup mouse(app.GetWindow().Mouse());
+        bool panning = false;
+        double lastPanX = 0.0, lastPanY = 0.0;
         mouse.Add(
                 Engine::Render::MouseEventType::Drag,
                 [&](Engine::Render::MouseEvent &e) {
+                    const VkExtent2D s = app.GetWindow().FramebufferSize();
+                    if (s.width == 0 || s.height == 0) return;
                     if (e.button == Engine::Render::MouseButton::Left) {
-                        const VkExtent2D s = app.GetWindow().FramebufferSize();
-                        if (s.width == 0 || s.height == 0) return;
                         if (!camera.IsTrackballDragging()) {
                             camera.BeginTrackballDrag(e.x, e.y, int(s.width), int(s.height));
                             return;
                         }
                         camera.DragTrackball(e.x, e.y, int(s.width), int(s.height));
                         e.handled = true;
-                    }
-                    if (e.button == Engine::Render::MouseButton::Right) {
-                        // TODO: Translate
+                    } else if (e.button == Engine::Render::MouseButton::Right) {
+                        if (!panning) { // first event of a drag: anchor the cursor, no move yet
+                            panning = true;
+                            lastPanX = e.x;
+                            lastPanY = e.y;
+                            return;
+                        }
+                        camera.Pan(e.x - lastPanX, e.y - lastPanY, int(s.width), int(s.height));
+                        lastPanX = e.x;
+                        lastPanY = e.y;
+                        e.handled = true;
                     }
                 });
         mouse.Add(
                 Engine::Render::MouseEventType::ButtonUp,
                 [&](Engine::Render::MouseEvent &e) {
                     if (e.button == Engine::Render::MouseButton::Left) camera.EndTrackballDrag();
+                    else if (e.button == Engine::Render::MouseButton::Right) panning = false;
                 });
         mouse.Add(
                 Engine::Render::MouseEventType::Scroll,

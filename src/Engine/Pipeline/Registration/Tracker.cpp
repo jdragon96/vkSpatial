@@ -1,4 +1,4 @@
-#include "Engine/Pipeline/ICP/Alignment.h"
+#include "Engine/Pipeline/Registration/Tracker.h"
 
 #include "Engine/Registration/GlobalRegistration.h"
 #include "Engine/Registration/Icp.h"
@@ -13,12 +13,12 @@ namespace Engine::Pipeline {
 
         // Frames are already world-registered (e.g. object_scan_viewer output): pose = identity. Also
         // the bootstrap command when no model exists yet.
-        class IdentityAlignment : public AlignmentCommand {
+        class IdentityTracker : public Tracker {
         public:
             const char *Name() const override { return "identity"; }
-            AlignmentResult Execute(const Frame &, const ModelSnapshot *,
-                                    const Eigen::Isometry3f &) override {
-                AlignmentResult r;
+            TrackingResult Track(const Frame &, const ModelSnapshot *,
+                                 const Eigen::Isometry3f &) override {
+                TrackingResult r;
                 r.pose = Eigen::Isometry3f::Identity();
                 r.fitness = 1.0f;
                 r.valid = true;
@@ -27,16 +27,17 @@ namespace Engine::Pipeline {
         };
 
         // Local point-to-plane ICP against the latest model's occupied voxels (centres + normals).
-        class PointToPlaneIcpAlignment : public AlignmentCommand {
+        class PointToPlaneIcpTracker : public Tracker {
         public:
-            explicit PointToPlaneIcpAlignment(Engine::Registration::IcpParams params = {})
+            explicit PointToPlaneIcpTracker(Engine::Registration::RegistrationParam params = {})
                 : m_params(params) {}
             const char *Name() const override { return "icp"; }
 
-            AlignmentResult Execute(const Frame &frame, const ModelSnapshot *model,
-                                    const Eigen::Isometry3f &priorPose) override {
-                AlignmentResult r;
-                r.pose = priorPose; // fall back to the prior when there is nothing to align to yet
+            TrackingResult Track(const Frame &frame,
+                                 const ModelSnapshot *model,
+                                 const Eigen::Isometry3f &priorPose) override {
+                TrackingResult r;
+                r.pose = priorPose;
                 if (model == nullptr || model->entries.empty() || frame.pts.empty()) return r;
 
                 Engine::Registration::PointCloud tgt;
@@ -57,19 +58,19 @@ namespace Engine::Pipeline {
             }
 
         private:
-            Engine::Registration::IcpParams m_params;
+            Engine::Registration::RegistrationParam m_params;
         };
 
         // Prior-free global registration (FPFH + RANSAC + Ceres) — (re)localisation / A/B baseline.
-        class GlobalRegistrationAlignment : public AlignmentCommand {
+        class GlobalRegistrationTracker : public Tracker {
         public:
-            explicit GlobalRegistrationAlignment(Engine::Registration::RegistrationConfig cfg = {})
+            explicit GlobalRegistrationTracker(Engine::Registration::RegistrationConfig cfg = {})
                 : m_cfg(cfg) {}
             const char *Name() const override { return "global"; }
 
-            AlignmentResult Execute(const Frame &frame, const ModelSnapshot *model,
-                                    const Eigen::Isometry3f &priorPose) override {
-                AlignmentResult r;
+            TrackingResult Track(const Frame &frame, const ModelSnapshot *model,
+                                 const Eigen::Isometry3f &priorPose) override {
+                TrackingResult r;
                 r.pose = priorPose;
                 if (model == nullptr || model->entries.empty() || frame.pts.empty()) return r;
 
@@ -97,11 +98,11 @@ namespace Engine::Pipeline {
 
     } // namespace
 
-    AlignmentRegistry AlignmentRegistry::Default() {
-        AlignmentRegistry reg;
-        reg.Register("identity", [] { return std::make_unique<IdentityAlignment>(); });
-        reg.Register("icp", [] { return std::make_unique<PointToPlaneIcpAlignment>(); });
-        reg.Register("global", [] { return std::make_unique<GlobalRegistrationAlignment>(); });
+    TrackerRegistry TrackerRegistry::Default() {
+        TrackerRegistry reg;
+        reg.Register("identity", [] { return std::make_unique<IdentityTracker>(); });
+        reg.Register("icp", [] { return std::make_unique<PointToPlaneIcpTracker>(); });
+        reg.Register("global", [] { return std::make_unique<GlobalRegistrationTracker>(); });
         return reg;
     }
 

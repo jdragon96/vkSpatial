@@ -12,7 +12,7 @@ namespace Engine::Pipeline {
     ///////////////////////////////////////////////////////////////////////////////////////////////
     // Structured-light strategy (extensible) — reconstruct a point cloud from a set of projected-
     // pattern images. The DECODE/triangulation algorithm varies (gray-code, phase-shift, ...), so it
-    // is itself a pluggable strategy (Command Pattern), exactly like the ICP AlignmentCommand: a new
+    // is itself a pluggable strategy (Command Pattern), exactly like the ICP Tracker: a new
     // decoder is a new IStructuredLightDecoder, not a new source. The source grabs pattern sets from
     // an IPatternProvider and reconstructs each set with the chosen decoder.
     ///////////////////////////////////////////////////////////////////////////////////////////////

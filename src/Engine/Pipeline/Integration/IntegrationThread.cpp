@@ -55,12 +55,8 @@ namespace Engine::Pipeline {
             snap.denseBlocks = submap.DenseBlockCount();
             snap.baseCoreBoxes = submap.BaseCoreBoxes();
             snap.denseBlockBoxes = submap.DenseBlockBoxes();
-            snap.hasAlloc = false; // reset (reused snapshot); set below if there are entries
+            snap.hasAlloc = false;
             if (!snap.entries.empty()) {
-                // Plain-float min/max, NOT Eigen cwiseMin/cwiseMax: this is an O(occupied) scan run every
-                // frame, and Eigen's expression templates are pathologically slow in an unoptimised
-                // (-O0) build (~250 ns/voxel measured -> a >250 ms stall at ~1 M voxels). Scalar float
-                // min/max stays cheap regardless of build type.
                 float mnx = 1e30f, mny = 1e30f, mnz = 1e30f;
                 float mxx = -1e30f, mxy = -1e30f, mxz = -1e30f;
                 for (const Engine::Spatial::AdvancedEntry &e: snap.entries) {
@@ -81,9 +77,8 @@ namespace Engine::Pipeline {
 
     } // namespace
 
-    IntegrationThread::IntegrationThread(CommunicationModule &comm, MapConfig cfg,
-                                         std::shared_ptr<const std::vector<Frame>> densityFrames)
-        : PipelineStage(comm), m_cfg(cfg), m_densityFrames(std::move(densityFrames)) {}
+    IntegrationThread::IntegrationThread(CommunicationModule &comm, MapConfig cfg)
+        : PipelineStage(comm), m_cfg(cfg) {}
 
     IntegrationThread::~IntegrationThread() { Stop(); }
 
@@ -105,10 +100,10 @@ namespace Engine::Pipeline {
         submap.SetConfidenceWeight(m_cfg.confidence);
         submap.SetHermitePosition(m_cfg.hermite);
         submap.SetDownsample(m_cfg.downsample);
-        if (m_cfg.submap && m_densityFrames) {
-            for (const Frame &fr: *m_densityFrames) submap.AddDensity(fr.pts);
-            submap.FinalizeDensity();
-        }
+        // Density is learned ONLINE from the stream (no pre-scan of future frames): each integrate
+        // updates per-block density and flips blocks to dense as their observed density crosses the
+        // threshold. So there is nothing to precompute here -- submap == false just never flips any
+        // block dense (base-only), submap == true lets the detail level grow as dense regions appear.
         submap.PreWarm(); // compile the per-frame shaders now, so the first frame isn't a ~900ms spike
 
         // Snapshot pool: reuse a snapshot once nothing but the pool still references it (the mailbox +

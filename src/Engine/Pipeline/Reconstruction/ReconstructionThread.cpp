@@ -37,15 +37,15 @@ namespace Engine::Pipeline {
 
     void ReconstructionThread::SetPaused(bool paused) {
         m_paused.store(paused);
-        m_pauseCv.notify_all(); // wake the frame gate on resume
+        m_pauseCv.notify_all();
     }
 
     void ReconstructionThread::Interrupt() {
-        if (m_source) m_source->Close(); // wake a paced Next()
-        m_pauseCv.notify_all();          // wake the pause gate so Stop() joins promptly
+        if (m_source) m_source->Close();
+        m_pauseCv.notify_all();
     }
 
-    // Block (interruptibly) while paused; returns false if the stage was stopped while waiting.
+
     bool ReconstructionThread::waitWhilePaused() {
         std::unique_lock<std::mutex> lock(m_pauseMutex);
         m_pauseCv.wait(lock, [this] { return !m_paused.load() || StopRequested(); });

@@ -36,7 +36,7 @@ namespace {
         cfg.map.baseVoxel = 0.05f;
         cfg.map.truncation = 0.15f;
         cfg.captureQueue = 16; // > frame count -> no drops in the test
-        cfg.densityFrames = frames;
+        (void) frames;         // density is learned online now (no pre-scan frame set)
         return cfg;
     }
 } // namespace
