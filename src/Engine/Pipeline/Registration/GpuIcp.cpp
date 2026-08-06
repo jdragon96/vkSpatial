@@ -74,15 +74,22 @@ namespace Engine::Pipeline {
     GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::Accumulate(
             const std::vector<Eigen::Vector3f> &src, const Engine::Registration::PointCloud &tgt,
             const Eigen::Matrix4f &T, float maxCorrDist) {
-        IterOut out; out.H.setZero(); out.b.setZero(); out.inliers = 0;
-        if (src.empty() || tgt.points.size() < 3) return out;
-
-        // Centre on the target centroid (numerical conditioning + fixed-point safety). See
-        // icp_iterate.comp.glsl header: the point-to-plane residual and Jacobian are computed
-        // consistently in this centred frame on both CPU and GPU, so H,b equal the CPU reference on
-        // the SAME (uncentred) points and T.
+        if (tgt.points.empty()) return AccumulateCentred(src, tgt, Eigen::Vector3f::Zero(), T, maxCorrDist);
         Eigen::Vector3f c = Eigen::Vector3f::Zero();
         for (const auto &q : tgt.points) c += q; c /= float(tgt.points.size());
+        return AccumulateCentred(src, tgt, c, T, maxCorrDist);
+    }
+
+    GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::AccumulateCentred(
+            const std::vector<Eigen::Vector3f> &src, const Engine::Registration::PointCloud &tgt,
+            const Eigen::Vector3f &c, const Eigen::Matrix4f &T, float maxCorrDist) {
+        IterOut out; out.H.setZero(); out.b.setZero(); out.inliers = 0;
+        if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return out;
+
+        // Centre on the (caller-supplied) target centroid `c` -- numerical conditioning + fixed-point
+        // safety. `T` is used AS-IS: it is the caller's responsibility to already be expressed in this
+        // centred frame (see icp_iterate.comp.glsl header + this class's doc comment: the returned H,b
+        // are the CENTRED-frame normal equations, not the un-centred/world ones).
         std::vector<Eigen::Vector3f> sc(src.size()), tc(tgt.points.size());
         for (size_t i = 0; i < src.size(); ++i) sc[i] = src[i] - c;
         for (size_t i = 0; i < tc.size(); ++i) tc[i] = tgt.points[i] - c;
@@ -126,6 +133,37 @@ namespace Engine::Pipeline {
         for (int r = 0; r < 6; ++r) out.b(r) = acc[21 + r] / double(kScale);
         out.inliers = int(std::llround(acc[27])); // inlier count stored x1 (SCALE not applied to it)
         return out;
+    }
+
+    Engine::Registration::RegistrationResult GpuPointToPlaneIcp::Solve(
+            const std::vector<Eigen::Vector3f> &src, const Engine::Registration::PointCloud &tgt,
+            const Eigen::Matrix4f &priorT, const Engine::Registration::RegistrationParam &params) {
+        Engine::Registration::RegistrationResult res; res.T = priorT;
+        if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return res;
+
+        Eigen::Vector3f c = Eigen::Vector3f::Zero();
+        for (const auto &q : tgt.points) c += q; c /= float(tgt.points.size());
+        Eigen::Matrix4f Tc = Eigen::Matrix4f::Identity(); Tc.block<3,1>(0,3) = -c;  // shift world->centred
+        Eigen::Matrix4f TcInv = Eigen::Matrix4f::Identity(); TcInv.block<3,1>(0,3) = c;
+        Eigen::Matrix4f T = Tc * priorT * TcInv; // work in the centred frame
+
+        for (int iter = 0; iter < params.maxIters; ++iter) {
+            const IterOut a = AccumulateCentred(src, tgt, c, T, params.maxCorrDist);
+            if (a.inliers < params.minInliers) break;
+            const Eigen::Matrix<double,6,1> x = a.H.ldlt().solve(a.b);
+            const Eigen::Matrix3d Rd = (Eigen::AngleAxisd(x[2], Eigen::Vector3d::UnitZ()) *
+                                        Eigen::AngleAxisd(x[1], Eigen::Vector3d::UnitY()) *
+                                        Eigen::AngleAxisd(x[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
+            Eigen::Matrix4f delta = Eigen::Matrix4f::Identity();
+            delta.block<3,3>(0,0) = Rd.cast<float>(); delta.block<3,1>(0,3) = x.tail<3>().cast<float>();
+            T = delta * T;
+            res.numInliers = size_t(a.inliers);
+            res.fitness = float(a.inliers) / float(src.size());
+            if (x.norm() < params.convEps) break;
+        }
+        res.T = TcInv * T * Tc;                    // un-centre back to world
+        res.valid = res.numInliers >= size_t(params.minInliers);
+        return res;
     }
 
 } // namespace Engine::Pipeline

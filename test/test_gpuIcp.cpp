@@ -82,3 +82,35 @@ TEST(GpuIcp, AccumulateMatchesCpu) {
     EXPECT_TRUE(((out.H - Hc).array().abs() < 1e-2 * (1.0 + Hc.array().abs())).all()) << out.H << "\n---\n" << Hc;
     EXPECT_TRUE(((out.b - bc).array().abs() < 1e-2 * (1.0 + bc.array().abs())).all()) << out.b << "\n---\n" << bc;
 }
+
+#include "Engine/Registration/Icp.h"
+#include <Eigen/Geometry>
+
+TEST(GpuIcp, SolveMatchesCpuOnCorner) {
+    Engine::Core::Context ctx;
+    // A 3-plane corner target (constrains all 6 DoF); source = target perturbed by a small transform.
+    Engine::Registration::PointCloud tgt; std::vector<Vector3f> src;
+    auto addPlane = [&](const Vector3f& o, const Vector3f& u, const Vector3f& v, const Vector3f& n){
+        for (int i=-10;i<=10;++i) for (int j=-10;j<=10;++j) {
+            const Vector3f p = o + u*(i*0.03f) + v*(j*0.03f);
+            tgt.points.push_back(p); tgt.normals.push_back(n);
+        }
+    };
+    addPlane({0,0,0},{1,0,0},{0,1,0},{0,0,1});
+    addPlane({0,0,0},{0,1,0},{0,0,1},{1,0,0});
+    addPlane({0,0,0},{1,0,0},{0,0,1},{0,1,0});
+    Eigen::Isometry3f perturb = Eigen::Isometry3f::Identity();
+    perturb.translate(Vector3f(0.02f, -0.015f, 0.01f));
+    perturb.rotate(Eigen::AngleAxisf(0.03f, Vector3f::UnitZ()));
+    for (const auto& q : tgt.points) src.push_back(perturb * q); // source is the model, moved
+
+    Engine::Registration::RegistrationParam params; params.maxCorrDist = 0.1f; params.maxIters = 30;
+    const auto cpu = Engine::Registration::AlignPointToPlaneIcp(src, tgt, Eigen::Matrix4f::Identity(), params);
+    ASSERT_TRUE(cpu.valid);
+
+    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+    const auto g = gpu.Solve(src, tgt, Eigen::Matrix4f::Identity(), params);
+    ASSERT_TRUE(g.valid);
+    // Both should recover ~perturb⁻¹ (align source back onto target). Compare the two poses directly.
+    EXPECT_TRUE(((g.T - cpu.T).array().abs() < 5e-3f).all()) << "gpu:\n" << g.T << "\ncpu:\n" << cpu.T;
+}

@@ -3,6 +3,7 @@
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
+#include "Engine/Registration/Icp.h" // RegistrationParam
 #include "Engine/Registration/RegistrationTypes.h"
 #include <Eigen/Dense>
 #include <cstdint>
@@ -48,22 +49,48 @@ namespace Engine::Pipeline {
     // One GPU dispatch of point-to-plane ICP accumulation: transforms `src` by `T`, finds grid-NN
     // correspondences against `tgt`, and reduces the 6x6 normal equations H,b (+ inlier count) via a
     // per-workgroup fixed-point shared-memory reduction (MoltenVK has no GPU float atomics). Internally
-    // centres source and target on the target centroid for fixed-point numerical safety; since a common
-    // translation leaves the point-to-plane residual and Jacobian invariant (see icp_iterate.comp.glsl
-    // header), the returned H,b equal the CPU reference computed on the SAME (uncentred) points and T.
+    // centres source and target on the target centroid for fixed-point numerical safety. IMPORTANT: the
+    // returned H,b are the TARGET-CENTROID-CENTRED-frame normal equations, NOT the un-centred (world)
+    // frame's -- p x n (the Jacobian's rotational block) is not translation-invariant, so centring
+    // changes H,b's values even though it leaves the point-to-plane residual itself invariant. See
+    // icp_iterate.comp.glsl header for the same statement on the GPU side.
     class GpuPointToPlaneIcp {
     public:
         struct IterOut { Eigen::Matrix<double, 6, 6> H; Eigen::Matrix<double, 6, 1> b; int inliers; };
         explicit GpuPointToPlaneIcp(Engine::Core::Context &ctx);
+
+        // Thin wrapper: computes the target centroid `c` from `tgt` and delegates to AccumulateCentred.
+        // `T` here is used AS-IS in the centred frame (it is NOT re-centred internally) -- see
+        // AccumulateCentred's doc comment.
         IterOut Accumulate(const std::vector<Eigen::Vector3f> &src,
                            const Engine::Registration::PointCloud &tgt,
                            const Eigen::Matrix4f &T, float maxCorrDist);
+
+        // Full ICP iterate loop: repeatedly calls AccumulateCentred, solves the 6x6 normal equations
+        // with Eigen LDLT, composes the incremental twist onto a centred working pose, and converges --
+        // producing a RegistrationResult equivalent to Engine::Registration::AlignPointToPlaneIcp. Seeds
+        // and un-centres around `priorT`/`tgt`'s centroid once, up front/at the end respectively (see
+        // .cpp for the exact Tc * priorT * Tc^-1 / Tc^-1 * T * Tc composition).
+        Engine::Registration::RegistrationResult Solve(
+                const std::vector<Eigen::Vector3f> &src, const Engine::Registration::PointCloud &tgt,
+                const Eigen::Matrix4f &priorT, const Engine::Registration::RegistrationParam &params);
+
     private:
         static constexpr uint32_t kLocal = 256;
         static constexpr float kScale = 10000.0f;
         Engine::Core::Context *m_ctx;
         std::unique_ptr<Engine::Core::ComputePipeline> m_kernel;
         std::unique_ptr<Engine::Core::Buffer> m_src, m_tgtPts, m_tgtNrm, m_bucketStart, m_bucketIdx, m_partials;
+
+        // One GPU dispatch in the CENTRED frame: `c` (precomputed target centroid) and `T` (the CENTRED
+        // working pose, i.e. NOT re-centred here -- callers that seed/iterate in the centred frame, like
+        // Solve, must pass an already-centred T) are both used as-is. Builds sc = src - c, tc =
+        // tgt.points - c, uploads, dispatches with T, and returns the centred-frame H,b (+ inliers).
+        // Guards: zero IterOut if src is empty, tgt has < 3 points, or tgt.normals.size() !=
+        // tgt.points.size() (mismatched normals would read out of bounds on the GPU).
+        IterOut AccumulateCentred(const std::vector<Eigen::Vector3f> &src,
+                                  const Engine::Registration::PointCloud &tgt, const Eigen::Vector3f &c,
+                                  const Eigen::Matrix4f &T, float maxCorrDist);
     };
 
 } // namespace Engine::Pipeline
