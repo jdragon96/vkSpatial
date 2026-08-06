@@ -49,9 +49,13 @@ namespace Engine::Pipeline {
                     tgt.points.push_back(e.center);
                     tgt.normals.push_back(e.normal);
                 }
+                // Scale the correspondence distance to the map voxel (a fixed default is far too tight
+                // for a coarse map -> almost no correspondences). See GpuIcpTracker for the same scaling.
+                Engine::Registration::RegistrationParam params = m_params;
+                if (model->voxel > 0.0f) params.maxCorrDist = 2.0f * model->voxel;
                 const Engine::Registration::RegistrationResult icp =
                         Engine::Registration::AlignPointToPlaneIcp(frame.pts, tgt, priorPose.matrix(),
-                                                                   m_params);
+                                                                   params);
                 r.pose = Eigen::Isometry3f(icp.T);
                 r.fitness = icp.fitness;
                 r.inliers = icp.numInliers;
@@ -95,7 +99,13 @@ namespace Engine::Pipeline {
                     mn = mn.cwiseMin(w);
                     mx = mx.cwiseMax(w);
                 }
-                const float m = m_params.maxCorrDist;
+                // Scale the correspondence distance to the map voxel: a fixed 0.1m against a 0.5m map is
+                // both too tight to find correspondences AND makes the dense LocalGrid cell (= maxCorrDist)
+                // 5x finer than the voxel, exploding nCells = (extent/cell)^3 (a 190m scene at 0.1m ~=
+                // 1.6e9 cells -> a multi-GB bucketStart per frame). 2x voxel keeps the grid ~voxel-res.
+                Engine::Registration::RegistrationParam params = m_params;
+                if (model->voxel > 0.0f) params.maxCorrDist = 2.0f * model->voxel;
+                const float m = params.maxCorrDist;
                 mn.array() -= m;
                 mx.array() += m;
                 Engine::Registration::PointCloud tgt;
@@ -109,7 +119,7 @@ namespace Engine::Pipeline {
                 if (tgt.points.size() < 3) return r; // nothing local to align to -> keep prior
 
                 const Engine::Registration::RegistrationResult icp =
-                        m_gpu->Solve(frame.pts, tgt, priorPose.matrix(), m_params);
+                        m_gpu->Solve(frame.pts, tgt, priorPose.matrix(), params);
                 r.pose = Eigen::Isometry3f(icp.T);
                 r.fitness = icp.fitness;
                 r.inliers = icp.numInliers;

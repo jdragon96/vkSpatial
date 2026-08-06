@@ -10,8 +10,24 @@ namespace Engine::Pipeline {
         Eigen::Vector3f mn = pts[0], mx = pts[0];
         for (const auto &p : pts) { mn = mn.cwiseMin(p); mx = mx.cwiseMax(p); }
         m_origin = mn;
-        for (int a = 0; a < 3; ++a)
-            m_dims[a] = std::max(1, int(std::floor((mx[a] - mn[a]) / m_cell)) + 1);
+
+        auto computeDims = [&]() {
+            for (int a = 0; a < 3; ++a)
+                m_dims[a] = std::max(1, int(std::floor((mx[a] - mn[a]) / m_cell)) + 1);
+        };
+        computeDims();
+        // Defensive cap on the dense cell count. bucketStart is a dense array of size dims.prod()+1, so a
+        // cell far finer than the point extent (e.g. a fixed maxCorrDist over a 100m+ scene) would request
+        // a multi-GB allocation. If dims.prod() would exceed the cap, coarsen the cell until it fits. This
+        // never drops a correspondence: the shader (and Nearest) still filter by the true radius (<= cell),
+        // so a coarser cell only scans more points per cell -- it does not shrink the search radius.
+        constexpr uint64_t kMaxCells = 32ull * 1024 * 1024; // 32M cells -> <= ~128 MB bucketStart
+        for (int guard = 0; guard < 64; ++guard) {
+            const uint64_t nc = uint64_t(m_dims.x()) * uint64_t(m_dims.y()) * uint64_t(m_dims.z());
+            if (nc <= kMaxCells) break;
+            m_cell *= float(std::cbrt(double(nc) / double(kMaxCells))) * 1.02f; // +2% to converge in one step
+            computeDims();
+        }
         const int nCells = m_dims.x() * m_dims.y() * m_dims.z();
 
         // Counting sort of point indices by cell -> CSR (bucketStart prefix sum, bucketIdx grouped).

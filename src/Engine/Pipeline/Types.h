@@ -41,6 +41,9 @@ namespace Engine::Pipeline {
         std::vector<char> isNew;            // parallel to entries: first filled this frame
         std::vector<int> firstFrame;        // parallel to entries: frame that first filled it
         int processedFrame = -1;
+        float voxel = 0.0f; // map base voxel size -> lets trackers scale the ICP correspondence distance
+                            // to the map resolution (a fixed maxCorrDist mismatched to a coarse voxel both
+                            // finds too few correspondences AND blows up the GPU LocalGrid cell count).
         uint32_t baseTiles = 0, detailTiles = 0, denseBlocks = 0;
         Eigen::Vector3f allocMin = Eigen::Vector3f::Zero(), allocMax = Eigen::Vector3f::Zero();
         bool hasAlloc = false;

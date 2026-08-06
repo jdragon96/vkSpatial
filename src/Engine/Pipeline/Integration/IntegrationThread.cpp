@@ -50,6 +50,7 @@ namespace Engine::Pipeline {
             snap.integrateMs = prof.LastMs("integrate");
             snap.trackerMs = 0.0;
             snap.processedFrame = processed;
+            snap.voxel = baseVoxel; // so the tracker can scale its correspondence distance to the map
             snap.baseTiles = submap.BaseTileCount();
             snap.detailTiles = submap.DetailTileCount();
             snap.denseBlocks = submap.DenseBlockCount();
