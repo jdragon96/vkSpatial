@@ -15,7 +15,7 @@
 // (Tasks 1-5) works end-to-end, not just on synthetic fixtures.
 #include "Engine/Core/Context.h"
 #include "Engine/Registration/GlobalRegistration.h"
-#include "Engine/Registration/RegistrationTypes.h"
+#include "Engine/Features/RegistrationTypes.h"
 #include "Engine/Spatial/DirectionalTSDF.h"
 
 #include <Eigen/Core>

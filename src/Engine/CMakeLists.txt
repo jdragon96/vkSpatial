@@ -80,10 +80,19 @@ target_include_directories(EngineBackend
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
             /opt/homebrew/opt/eigen/include/eigen3)
 
+file(GLOB_RECURSE ENGINE_FEATURES_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Features/*.cpp")
+add_library(EngineFeatures STATIC ${ENGINE_FEATURES_SOURCES})
+add_library(Engine::Features ALIAS EngineFeatures)
+target_link_libraries(EngineFeatures PUBLIC Eigen3::Eigen)
+target_include_directories(EngineFeatures
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
+            /opt/homebrew/opt/eigen/include/eigen3)
+
 file(GLOB_RECURSE ENGINE_REGISTRATION_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Registration/*.cpp")
 add_library(EngineRegistration STATIC ${ENGINE_REGISTRATION_SOURCES})
 add_library(Engine::Registration ALIAS EngineRegistration)
-target_link_libraries(EngineRegistration PUBLIC Eigen3::Eigen Ceres::ceres)
+target_link_libraries(EngineRegistration PUBLIC Eigen3::Eigen Ceres::ceres Engine::Features)
 target_include_directories(EngineRegistration
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>

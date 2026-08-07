@@ -1,10 +1,10 @@
-#include "Engine/Registration/Downsample.h"
+#include "Engine/Features/Downsample.h"
 
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
 
-namespace Engine::Registration {
+namespace Engine::Features {
 
     namespace {
 
@@ -75,4 +75,4 @@ namespace Engine::Registration {
         return out;
     }
 
-} // namespace Engine::Registration
+} // namespace Engine::Features

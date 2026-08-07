@@ -1,14 +1,16 @@
 #include "Engine/Registration/GlobalRegistration.h"
 
-#include "Engine/Registration/Downsample.h"
-#include "Engine/Registration/FeatureMatching.h"
-#include "Engine/Registration/Fpfh.h"
+#include "Engine/Features/Downsample.h"
+#include "Engine/Features/FeatureMatching.h"
+#include "Engine/Features/Fpfh.h"
 
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>
 
 #include <Eigen/Geometry>
 #include <random>
+
+using namespace Engine::Features;
 
 namespace Engine::Registration {
 

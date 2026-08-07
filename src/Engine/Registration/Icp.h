@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Registration/RegistrationTypes.h"
+#include "Engine/Features/RegistrationTypes.h"
 
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
@@ -13,15 +13,6 @@
 #include <vector>
 
 namespace Engine::Registration {
-
-    struct RegistrationParam {
-        int maxIters = 20;
-        // correspondence gate (world units); set to the data scale
-        float maxCorrDist = 0.1f;
-        int minInliers = 10;
-        // stop when the incremental update norm drops below this
-        float convEps = 1e-6f;
-    };
 
     namespace detail {
 

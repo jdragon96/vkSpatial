@@ -1,8 +1,8 @@
-#include "Engine/Registration/Downsample.h"
-#include "Engine/Registration/FeatureMatching.h"
-#include "Engine/Registration/Fpfh.h"
+#include "Engine/Features/Downsample.h"
+#include "Engine/Features/FeatureMatching.h"
+#include "Engine/Features/Fpfh.h"
 #include "Engine/Registration/GlobalRegistration.h"
-#include "Engine/Registration/RegistrationTypes.h"
+#include "Engine/Features/RegistrationTypes.h"
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>
 #include <random>
@@ -15,7 +15,7 @@ TEST(Registration, VoxelDownsampleReducesAndKeepsExtent) {
             in.points.emplace_back(i * 0.25f, j * 0.25f, 0.0f); // dense 10x10mm plane, 0.25mm spacing
             in.normals.emplace_back(0, 0, 1);
         }
-    PointCloud out = DownsampleVoxel(in, 1.0f); // 1mm cells → ~10x10 = ~100 pts
+    PointCloud out = Engine::Features::DownsampleVoxel(in, 1.0f); // 1mm cells → ~10x10 = ~100 pts
     EXPECT_LT(out.points.size(), in.points.size());
     EXPECT_GT(out.points.size(), 50u);
     EXPECT_EQ(out.normals.size(), out.points.size());
@@ -40,8 +40,8 @@ TEST(Registration, FpfhIsApproximatelyRotationInvariant) {
     Engine::Registration::PointCloud sr = s;
     for (auto& p : sr.points) p = R * p;
     for (auto& nrm : sr.normals) nrm = R * nrm;
-    auto f0 = Engine::Registration::ComputeFpfh(s,  60.0f, 100.0f);
-    auto f1 = Engine::Registration::ComputeFpfh(sr, 60.0f, 100.0f);
+    auto f0 = Engine::Features::ComputeFpfh(s,  60.0f, 100.0f);
+    auto f1 = Engine::Features::ComputeFpfh(sr, 60.0f, 100.0f);
     // point i maps to point i under R (same ordering), so descriptors should be close
     double maxdiff = 0;
     for (size_t i = 0; i < f0.size(); ++i) maxdiff = std::max<double>(maxdiff, (f0[i]-f1[i]).norm());
@@ -60,9 +60,9 @@ TEST(Registration, MatchRecoversIdentityCorrespondencesUnderRotation) {
     Engine::Registration::PointCloud sr = s;
     for (auto& p : sr.points) p = R * p;
     for (auto& n : sr.normals) n = R * n;
-    auto fs = Engine::Registration::ComputeFpfh(s,  60.0f, 100.0f);
-    auto ft = Engine::Registration::ComputeFpfh(sr, 60.0f, 100.0f);
-    auto corr = Engine::Registration::MatchFeatures(fs, ft);
+    auto fs = Engine::Features::ComputeFpfh(s,  60.0f, 100.0f);
+    auto ft = Engine::Features::ComputeFpfh(sr, 60.0f, 100.0f);
+    auto corr = Engine::Features::MatchFeatures(fs, ft);
     // most correspondences should be i→i (descriptor space is symmetric under R)
     int selfMatches = 0; for (auto& c : corr) if (c.srcIdx == c.tgtIdx) ++selfMatches;
     EXPECT_GT(corr.size(), 100u);
@@ -177,13 +177,13 @@ TEST(Registration, EstimateRecoversUnderOutlierCorruptionButNaiveBaselineFails) 
 
     // (2) No-RANSAC baseline: re-run downsample/FPFH/match on the SAME corrupted clouds, but
     // Umeyama-fit ALL matched correspondences directly (no RANSAC outlier rejection).
-    const auto srcDs = Engine::Registration::DownsampleVoxel(src, cfg.voxelSize);
-    const auto tgtDs = Engine::Registration::DownsampleVoxel(tgt, cfg.voxelSize);
+    const auto srcDs = Engine::Features::DownsampleVoxel(src, cfg.voxelSize);
+    const auto tgtDs = Engine::Features::DownsampleVoxel(tgt, cfg.voxelSize);
     const float normalRadius = cfg.normalRadiusGain * cfg.voxelSize;
     const float fpfhRadius = cfg.fpfhRadiusGain * cfg.voxelSize;
-    auto srcF = Engine::Registration::ComputeFpfh(srcDs, normalRadius, fpfhRadius);
-    auto tgtF = Engine::Registration::ComputeFpfh(tgtDs, normalRadius, fpfhRadius);
-    auto corr = Engine::Registration::MatchFeatures(srcF, tgtF, 0.95f, cfg.numMaxCorr);
+    auto srcF = Engine::Features::ComputeFpfh(srcDs, normalRadius, fpfhRadius);
+    auto tgtF = Engine::Features::ComputeFpfh(tgtDs, normalRadius, fpfhRadius);
+    auto corr = Engine::Features::MatchFeatures(srcF, tgtF, 0.95f, cfg.numMaxCorr);
     ASSERT_GE(corr.size(), 3u);
 
     std::vector<Eigen::Vector3f> allSrc, allDst;

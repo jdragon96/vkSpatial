@@ -4,7 +4,7 @@
 #include "Engine/Pipeline/Registration/GpuIcp.h"
 #include "Engine/Registration/GlobalRegistration.h"
 #include "Engine/Registration/Icp.h"
-#include "Engine/Registration/RegistrationTypes.h"
+#include "Engine/Features/RegistrationTypes.h"
 #include "Engine/Spatial/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
 
 #include <memory>

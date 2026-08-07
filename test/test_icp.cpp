@@ -1,5 +1,5 @@
 #include "Engine/Registration/Icp.h"
-#include "Engine/Registration/RegistrationTypes.h"
+#include "Engine/Features/RegistrationTypes.h"
 
 #include <gtest/gtest.h>
 

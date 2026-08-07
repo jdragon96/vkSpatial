@@ -1,10 +1,10 @@
-#include "Engine/Registration/FeatureMatching.h"
+#include "Engine/Features/FeatureMatching.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
-namespace Engine::Registration {
+namespace Engine::Features {
 
     namespace {
 
@@ -66,4 +66,4 @@ namespace Engine::Registration {
         return result;
     }
 
-} // namespace Engine::Registration
+} // namespace Engine::Features

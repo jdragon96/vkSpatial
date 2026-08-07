@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Registration/RegistrationTypes.h"
+#include "Engine/Features/RegistrationTypes.h"
 
 #include <vector>
 

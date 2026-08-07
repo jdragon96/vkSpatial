@@ -1,10 +1,10 @@
-#include "Engine/Registration/Fpfh.h"
+#include "Engine/Features/Fpfh.h"
 
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
 
-namespace Engine::Registration {
+namespace Engine::Features {
 
     namespace {
 
@@ -186,4 +186,4 @@ namespace Engine::Registration {
         return result;
     }
 
-} // namespace Engine::Registration
+} // namespace Engine::Features

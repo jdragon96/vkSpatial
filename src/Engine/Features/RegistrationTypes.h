@@ -34,6 +34,15 @@ namespace Engine::Registration {
         float fitness = 0.0f;
     };
 
+    struct RegistrationParam {
+        int maxIters = 20;
+        // correspondence gate (world units); set to the data scale
+        float maxCorrDist = 0.1f;
+        int minInliers = 10;
+        // stop when the incremental update norm drops below this
+        float convEps = 1e-6f;
+    };
+
     using Fpfh33 = Eigen::Matrix<float, 33, 1>;
 
     struct Correspondence {
