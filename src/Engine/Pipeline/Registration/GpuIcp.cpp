@@ -6,9 +6,15 @@ namespace Engine::Pipeline {
 
     LocalGrid::LocalGrid(const std::vector<Eigen::Vector3f> &pts, float cell) : m_pts(pts) {
         m_cell = cell > 1e-8f ? cell : 1e-8f;
-        if (pts.empty()) { m_bucketStart.assign(2, 0); return; }
+        if (pts.empty()) {
+            m_bucketStart.assign(2, 0);
+            return;
+        }
         Eigen::Vector3f mn = pts[0], mx = pts[0];
-        for (const auto &p : pts) { mn = mn.cwiseMin(p); mx = mx.cwiseMax(p); }
+        for (const auto &p: pts) {
+            mn = mn.cwiseMin(p);
+            mx = mx.cwiseMax(p);
+        }
         m_origin = mn;
 
         auto computeDims = [&]() {
@@ -32,11 +38,11 @@ namespace Engine::Pipeline {
 
         // Counting sort of point indices by cell -> CSR (bucketStart prefix sum, bucketIdx grouped).
         m_bucketStart.assign(nCells + 1, 0);
-        for (const auto &p : pts) ++m_bucketStart[cellIndex(cellOf(p)) + 1];
+        for (const auto &p: pts) ++m_bucketStart[cellIndex(cellOf(p)) + 1];
         for (int i = 0; i < nCells; ++i) m_bucketStart[i + 1] += m_bucketStart[i];
         m_bucketIdx.resize(pts.size());
         std::vector<uint32_t> cursor(m_bucketStart.begin(), m_bucketStart.end() - 1);
-        for (int i = 0; i < (int)pts.size(); ++i)
+        for (int i = 0; i < (int) pts.size(); ++i)
             m_bucketIdx[cursor[cellIndex(cellOf(pts[i]))]++] = uint32_t(i);
     }
 
@@ -44,7 +50,8 @@ namespace Engine::Pipeline {
         if (m_pts.empty()) return -1;
         const Eigen::Vector3i c = cellOf(q);
         const float r2 = radius * radius;
-        int best = -1; float bestD2 = r2;
+        int best = -1;
+        float bestD2 = r2;
         for (int dz = -1; dz <= 1; ++dz)
             for (int dy = -1; dy <= 1; ++dy)
                 for (int dx = -1; dx <= 1; ++dx) {
@@ -54,7 +61,10 @@ namespace Engine::Pipeline {
                     for (uint32_t k = m_bucketStart[ci]; k < m_bucketStart[ci + 1]; ++k) {
                         const int idx = int(m_bucketIdx[k]);
                         const float d2 = (q - m_pts[idx]).squaredNorm();
-                        if (d2 < bestD2) { bestD2 = d2; best = idx; }
+                        if (d2 < bestD2) {
+                            bestD2 = d2;
+                            best = idx;
+                        }
                     }
                 }
         return best;
@@ -62,18 +72,23 @@ namespace Engine::Pipeline {
 
     namespace {
         struct IcpPC {
-            float T[16];               // column-major mat4
+            float T[16]; // column-major mat4
             float originX, originY, originZ, cell;
-            int32_t dimsX, dimsY, dimsZ; float maxCorr;
+            int32_t dimsX, dimsY, dimsZ;
+            float maxCorr;
             uint32_t numSrc, numCells;
         };
         void writeVec3Buf(Engine::Core::Buffer &buf, const std::vector<Eigen::Vector3f> &v) {
-            std::vector<float> pad(v.size() * 4u, 0.0f);           // vec4 std430 stride
-            for (size_t i = 0; i < v.size(); ++i) { pad[i*4]=v[i].x(); pad[i*4+1]=v[i].y(); pad[i*4+2]=v[i].z(); }
+            std::vector<float> pad(v.size() * 4u, 0.0f); // vec4 std430 stride
+            for (size_t i = 0; i < v.size(); ++i) {
+                pad[i * 4] = v[i].x();
+                pad[i * 4 + 1] = v[i].y();
+                pad[i * 4 + 2] = v[i].z();
+            }
             buf.Allocate(uint32_t(pad.size() * sizeof(float)));
             buf.Upload(pad.data(), uint32_t(pad.size() * sizeof(float)));
         }
-    }
+    } // namespace
 
     GpuPointToPlaneIcp::GpuPointToPlaneIcp(Engine::Core::Context &ctx) : m_ctx(&ctx) {
         m_src = std::make_unique<Engine::Core::Buffer>(ctx);
@@ -91,14 +106,18 @@ namespace Engine::Pipeline {
             const Eigen::Matrix4f &T, float maxCorrDist) {
         if (tgt.points.empty()) return AccumulateCentred(src, tgt, Eigen::Vector3f::Zero(), T, maxCorrDist);
         Eigen::Vector3f c = Eigen::Vector3f::Zero();
-        for (const auto &q : tgt.points) c += q; c /= float(tgt.points.size());
+        for (const auto &q: tgt.points) c += q;
+        c /= float(tgt.points.size());
         return AccumulateCentred(src, tgt, c, T, maxCorrDist);
     }
 
     GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::AccumulateCentred(
             const std::vector<Eigen::Vector3f> &src, const Engine::Registration::PointCloud &tgt,
             const Eigen::Vector3f &c, const Eigen::Matrix4f &T, float maxCorrDist) {
-        IterOut out; out.H.setZero(); out.b.setZero(); out.inliers = 0;
+        IterOut out;
+        out.H.setZero();
+        out.b.setZero();
+        out.inliers = 0;
         // One-shot convenience: upload once, dispatch once. Solve uses prepare/dispatch directly so the
         // upload happens once per solve instead of once per iteration.
         if (!prepareCentred(src, tgt, c, maxCorrDist)) return out;
@@ -134,23 +153,34 @@ namespace Engine::Pipeline {
         // stale value is never read. Overwritten wholesale on each dispatch -> reusable across iterations.
         m_partials->AllocateHostVisibleReadback(m_pNumWG * 28u * sizeof(int32_t));
 
-        m_pOrigin = grid.m_origin; m_pDims = grid.m_dims; m_pCell = grid.m_cell; m_pMaxCorr = maxCorrDist;
+        m_pOrigin = grid.m_origin;
+        m_pDims = grid.m_dims;
+        m_pCell = grid.m_cell;
+        m_pMaxCorr = maxCorrDist;
 
         // Bind once: the buffer handles are stable until the next prepareCentred reallocates them, so per
         // iteration Solve only re-sends the push constant + re-dispatches (no descriptor churn).
-        m_kernel->Bind(0, *m_src).Bind(1, *m_tgtPts).Bind(2, *m_tgtNrm)
-                 .Bind(3, *m_bucketStart).Bind(4, *m_bucketIdx).Bind(5, *m_partials);
+        m_kernel->Bind(0, *m_src).Bind(1, *m_tgtPts).Bind(2, *m_tgtNrm).Bind(3, *m_bucketStart).Bind(4, *m_bucketIdx).Bind(5, *m_partials);
         return true;
     }
 
     GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::dispatchCentred(const Eigen::Matrix4f &T) {
-        IterOut out; out.H.setZero(); out.b.setZero(); out.inliers = 0;
+        IterOut out;
+        out.H.setZero();
+        out.b.setZero();
+        out.inliers = 0;
 
         IcpPC pc{};
         for (int i = 0; i < 16; ++i) pc.T[i] = T.data()[i]; // Eigen is column-major -> matches std430 mat4
-        pc.originX = m_pOrigin.x(); pc.originY = m_pOrigin.y(); pc.originZ = m_pOrigin.z();
-        pc.cell = m_pCell; pc.dimsX = m_pDims.x(); pc.dimsY = m_pDims.y(); pc.dimsZ = m_pDims.z();
-        pc.maxCorr = m_pMaxCorr; pc.numSrc = m_pNumSrc;
+        pc.originX = m_pOrigin.x();
+        pc.originY = m_pOrigin.y();
+        pc.originZ = m_pOrigin.z();
+        pc.cell = m_pCell;
+        pc.dimsX = m_pDims.x();
+        pc.dimsY = m_pDims.y();
+        pc.dimsZ = m_pDims.z();
+        pc.maxCorr = m_pMaxCorr;
+        pc.numSrc = m_pNumSrc;
         pc.numCells = uint32_t(m_pDims.x() * m_pDims.y() * m_pDims.z());
 
         m_kernel->Args(pc);
@@ -159,12 +189,15 @@ namespace Engine::Pipeline {
         m_partials->InvalidateMapped(m_pNumWG * 28u * sizeof(int32_t));
         const int32_t *part = static_cast<const int32_t *>(m_partials->MappedPtr());
         double acc[28] = {0};
-        for (uint32_t w = 0; w < m_pNumWG; ++w) for (int k = 0; k < 28; ++k) acc[k] += part[w * 28u + k];
+        for (uint32_t w = 0; w < m_pNumWG; ++w)
+            for (int k = 0; k < 28; ++k) acc[k] += part[w * 28u + k];
         int k = 0;
-        for (int r = 0; r < 6; ++r) for (int col = r; col < 6; ++col) {
-            const double v = acc[k++] / double(kScale);
-            out.H(r, col) = v; out.H(col, r) = v;
-        }
+        for (int r = 0; r < 6; ++r)
+            for (int col = r; col < 6; ++col) {
+                const double v = acc[k++] / double(kScale);
+                out.H(r, col) = v;
+                out.H(col, r) = v;
+            }
         for (int r = 0; r < 6; ++r) out.b(r) = acc[21 + r] / double(kScale);
         out.inliers = int(std::llround(acc[27])); // inlier count stored x1 (SCALE not applied to it)
         return out;
@@ -173,35 +206,38 @@ namespace Engine::Pipeline {
     Engine::Registration::RegistrationResult GpuPointToPlaneIcp::Solve(
             const std::vector<Eigen::Vector3f> &src, const Engine::Registration::PointCloud &tgt,
             const Eigen::Matrix4f &priorT, const Engine::Registration::RegistrationParam &params) {
-        Engine::Registration::RegistrationResult res; res.T = priorT;
+        Engine::Registration::RegistrationResult res;
+        res.T = priorT;
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return res;
 
         Eigen::Vector3f c = Eigen::Vector3f::Zero();
-        for (const auto &q : tgt.points) c += q; c /= float(tgt.points.size());
-        Eigen::Matrix4f Tc = Eigen::Matrix4f::Identity(); Tc.block<3,1>(0,3) = -c;  // shift world->centred
-        Eigen::Matrix4f TcInv = Eigen::Matrix4f::Identity(); TcInv.block<3,1>(0,3) = c;
+        for (const auto &q: tgt.points) c += q;
+        c /= float(tgt.points.size());
+        Eigen::Matrix4f Tc = Eigen::Matrix4f::Identity();
+        Tc.block<3, 1>(0, 3) = -c; // shift world->centred
+        Eigen::Matrix4f TcInv = Eigen::Matrix4f::Identity();
+        TcInv.block<3, 1>(0, 3) = c;
         Eigen::Matrix4f T = Tc * priorT * TcInv; // work in the centred frame
 
-        // Upload the centred src/tgt + grid ONCE: they do not change across iterations (only the pose T
-        // does), so per iteration we merely re-send the push-constant T and re-dispatch -- eliminating the
-        // per-iteration grid rebuild + 5 buffer reallocate/re-uploads that dominated the small-target cost.
         if (!prepareCentred(src, tgt, c, params.maxCorrDist)) return res;
 
         for (int iter = 0; iter < params.maxIters; ++iter) {
             const IterOut a = dispatchCentred(T);
             if (a.inliers < params.minInliers) break;
-            const Eigen::Matrix<double,6,1> x = a.H.ldlt().solve(a.b);
+            const Eigen::Matrix<double, 6, 1> x = a.H.ldlt().solve(a.b);
             const Eigen::Matrix3d Rd = (Eigen::AngleAxisd(x[2], Eigen::Vector3d::UnitZ()) *
                                         Eigen::AngleAxisd(x[1], Eigen::Vector3d::UnitY()) *
-                                        Eigen::AngleAxisd(x[0], Eigen::Vector3d::UnitX())).toRotationMatrix();
+                                        Eigen::AngleAxisd(x[0], Eigen::Vector3d::UnitX()))
+                                               .toRotationMatrix();
             Eigen::Matrix4f delta = Eigen::Matrix4f::Identity();
-            delta.block<3,3>(0,0) = Rd.cast<float>(); delta.block<3,1>(0,3) = x.tail<3>().cast<float>();
+            delta.block<3, 3>(0, 0) = Rd.cast<float>();
+            delta.block<3, 1>(0, 3) = x.tail<3>().cast<float>();
             T = delta * T;
             res.numInliers = size_t(a.inliers);
             res.fitness = float(a.inliers) / float(src.size());
             if (x.norm() < params.convEps) break;
         }
-        res.T = TcInv * T * Tc;                    // un-centre back to world
+        res.T = TcInv * T * Tc; // un-centre back to world
         res.valid = res.numInliers >= size_t(params.minInliers);
         return res;
     }

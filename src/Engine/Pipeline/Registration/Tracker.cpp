@@ -49,13 +49,15 @@ namespace Engine::Pipeline {
                     tgt.points.push_back(e.center);
                     tgt.normals.push_back(e.normal);
                 }
-                // Scale the correspondence distance to the map voxel (a fixed default is far too tight
-                // for a coarse map -> almost no correspondences). See GpuIcpTracker for the same scaling.
+
                 Engine::Registration::RegistrationParam params = m_params;
                 if (model->voxel > 0.0f) params.maxCorrDist = 2.0f * model->voxel;
                 const Engine::Registration::RegistrationResult icp =
-                        Engine::Registration::AlignPointToPlaneIcp(frame.pts, tgt, priorPose.matrix(),
-                                                                   params);
+                        Engine::Registration::AlignPointToPlaneIcp(
+                                frame.pts,
+                                tgt,
+                                priorPose.matrix(),
+                                params);
                 r.pose = Eigen::Isometry3f(icp.T);
                 r.fitness = icp.fitness;
                 r.inliers = icp.numInliers;
