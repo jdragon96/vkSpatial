@@ -14,7 +14,7 @@
 // success signal: near-identity deltas on real data means the registration pipeline
 // (Tasks 1-5) works end-to-end, not just on synthetic fixtures.
 #include "Engine/Core/Context.h"
-#include "Engine/Registration/GlobalRegistration.h"
+#include "Engine/Pipeline/Registration/GlobalRegistration.h"
 #include "Engine/Features/RegistrationTypes.h"
 #include "Engine/Spatial/DirectionalTSDF.h"
 

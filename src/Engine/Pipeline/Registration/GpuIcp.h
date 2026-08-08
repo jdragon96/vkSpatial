@@ -3,7 +3,7 @@
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
-#include "Engine/Registration/Icp.h" // RegistrationParam
+#include "Engine/Pipeline/Registration/PointToPlaneIcp.h" // RegistrationParam
 #include "Engine/Features/RegistrationTypes.h"
 #include <Eigen/Dense>
 #include <cstdint>

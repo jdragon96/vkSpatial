@@ -1,4 +1,4 @@
-#include "Engine/Registration/Icp.h"
+#include "Engine/Pipeline/Registration/PointToPlaneIcp.h"
 #include "Engine/Features/RegistrationTypes.h"
 
 #include <gtest/gtest.h>

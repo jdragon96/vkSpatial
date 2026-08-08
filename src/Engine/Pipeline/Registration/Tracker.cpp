@@ -2,8 +2,8 @@
 
 #include "Engine/Core/Context.h"
 #include "Engine/Pipeline/Registration/GpuIcp.h"
-#include "Engine/Registration/GlobalRegistration.h"
-#include "Engine/Registration/Icp.h"
+#include "Engine/Pipeline/Registration/GlobalRegistration.h"
+#include "Engine/Pipeline/Registration/PointToPlaneIcp.h"
 #include "Engine/Features/RegistrationTypes.h"
 #include "Engine/Spatial/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
 

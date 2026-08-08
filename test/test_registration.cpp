@@ -1,7 +1,7 @@
 #include "Engine/Features/Downsample.h"
 #include "Engine/Features/FeatureMatching.h"
 #include "Engine/Features/Fpfh.h"
-#include "Engine/Registration/GlobalRegistration.h"
+#include "Engine/Pipeline/Registration/GlobalRegistration.h"
 #include "Engine/Features/RegistrationTypes.h"
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>

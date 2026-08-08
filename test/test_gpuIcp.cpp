@@ -83,7 +83,7 @@ TEST(GpuIcp, AccumulateMatchesCpu) {
     EXPECT_TRUE(((out.b - bc).array().abs() < 1e-2 * (1.0 + bc.array().abs())).all()) << out.b << "\n---\n" << bc;
 }
 
-#include "Engine/Registration/Icp.h"
+#include "Engine/Pipeline/Registration/PointToPlaneIcp.h"
 #include <Eigen/Geometry>
 
 TEST(GpuIcp, SolveMatchesCpuOnCorner) {

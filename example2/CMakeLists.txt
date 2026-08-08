@@ -55,7 +55,7 @@ target_link_libraries(tsdf_folder_eval PRIVATE Engine::Core)
 # DirectionalTSDF (drops the "already pre-registered" assumption the chair benchmark makes).
 add_spatial_example(registration_chair_demo registration_chair_demo.cpp)
 add_spatial_example(tsdf_slice_debug tsdf_slice_debug.cpp)
-target_link_libraries(registration_chair_demo PRIVATE Engine::Registration)
+target_link_libraries(registration_chair_demo PRIVATE Engine::Pipeline)
 
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
 if (GLSLC_EXECUTABLE)

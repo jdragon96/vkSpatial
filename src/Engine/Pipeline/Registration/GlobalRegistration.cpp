@@ -1,4 +1,4 @@
-#include "Engine/Registration/GlobalRegistration.h"
+#include "Engine/Pipeline/Registration/GlobalRegistration.h"
 
 #include "Engine/Features/Downsample.h"
 #include "Engine/Features/FeatureMatching.h"

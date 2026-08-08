@@ -89,19 +89,10 @@ target_include_directories(EngineFeatures
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
             /opt/homebrew/opt/eigen/include/eigen3)
 
-file(GLOB_RECURSE ENGINE_REGISTRATION_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Registration/*.cpp")
-add_library(EngineRegistration STATIC ${ENGINE_REGISTRATION_SOURCES})
-add_library(Engine::Registration ALIAS EngineRegistration)
-target_link_libraries(EngineRegistration PUBLIC Eigen3::Eigen Ceres::ceres Engine::Features)
-target_include_directories(EngineRegistration
-        PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
-            /opt/homebrew/opt/eigen/include/eigen3)
-
 # Reconstruction pipeline: the Track/Map worker stages (acquisition strategies, ICP alignment
 # commands, async TSDF mapping) and the Pipeline coordinator that owns them. Self-contained — it
-# composes Engine::Spatial (TSDF), Engine::Registration (ICP), and Engine::Core (device), plus the
-# header-only utilities (Channel/Mailbox/StageProfiler/PointCloudIO) via the src include dir.
+# composes Engine::Spatial (TSDF), Engine::Features (ICP/registration), and Engine::Core (device),
+# plus the header-only utilities (Channel/Mailbox/StageProfiler/PointCloudIO) via the src include dir.
 file(GLOB_RECURSE ENGINE_PIPELINE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Pipeline/*.cpp")
 
 add_library(EnginePipeline STATIC ${ENGINE_PIPELINE_SOURCES})
@@ -110,7 +101,7 @@ add_library(Engine::Pipeline ALIAS EnginePipeline)
 # Engine::Render is PRIVATE: only the Render/ stage (RenderThread.cpp) uses it, and RenderThread.h
 # forward-declares all render types, so consumers (and the headless tests) don't pull in GLFW/render.
 target_link_libraries(EnginePipeline
-        PUBLIC Engine::Spatial Engine::Registration Engine::Core
+        PUBLIC Engine::Spatial Engine::Features Engine::Core Ceres::ceres
         PRIVATE Engine::Render)
 
 target_include_directories(EnginePipeline
