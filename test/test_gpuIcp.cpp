@@ -1,4 +1,4 @@
-#include "Engine/Pipeline/Registration/GpuIcp.h"
+#include "Engine/Pipeline/Registration/GpuPointToPlaneIcp.h"
 #include <gtest/gtest.h>
 #include <Eigen/Core>
 #include <random>
@@ -35,7 +35,7 @@ TEST(LocalGrid, NearestMatchesBruteForce) {
 }
 
 #include "Engine/Core/Context.h"
-#include "Engine/Pipeline/Registration/GpuIcp.h"
+#include "Engine/Pipeline/Registration/GpuPointToPlaneIcp.h"
 #include "Engine/Features/RegistrationTypes.h"
 
 // CPU reference: point-to-plane H,b in T's frame, over grid-NN correspondences, CENTRED on tgt centroid.

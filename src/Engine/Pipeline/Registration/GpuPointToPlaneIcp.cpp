@@ -1,4 +1,4 @@
-#include "Engine/Pipeline/Registration/GpuIcp.h"
+#include "Engine/Pipeline/Registration/GpuPointToPlaneIcp.h"
 #include <algorithm>
 #include <cmath>
 
