@@ -265,7 +265,7 @@ TEST(Pipeline, GpuIcpTrackerCropExcludesFarModel) {
 // expression of that surface (i.e. what the camera would actually capture, near its own origin). If the
 // crop AABB is computed from raw (sensor-frame) frame.pts instead of priorPose-transformed (world-frame)
 // points, it lands nowhere near the world model -> <3 survivors -> Track returns the prior unchanged
-// (invalid). Tracker.cpp:Track must transform by priorPose before cropping.
+// (invalid). GpuIcpTracker.cpp:Track must transform by priorPose before cropping.
 TEST(Pipeline, GpuIcpTrackerRecoversMovingCameraPose) {
     const Corner corner = makeCorner();
 

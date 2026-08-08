@@ -51,7 +51,7 @@ add_spatial_example(scan_dataset_gen scan_dataset_gen.cpp)
 add_spatial_example(tsdf_folder_eval tsdf_folder_eval.cpp)
 target_link_libraries(tsdf_folder_eval PRIVATE Engine::Core)
 
-# Registers raw scanData/frame_*.ply frames with Engine::Registration before feeding
+# Registers raw scanData/frame_*.ply frames with Engine::Pipeline before feeding
 # DirectionalTSDF (drops the "already pre-registered" assumption the chair benchmark makes).
 add_spatial_example(registration_chair_demo registration_chair_demo.cpp)
 add_spatial_example(tsdf_slice_debug tsdf_slice_debug.cpp)

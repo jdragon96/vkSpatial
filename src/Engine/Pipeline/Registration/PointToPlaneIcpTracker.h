@@ -2,6 +2,7 @@
 
 #include "Engine/Pipeline/Registration/Tracker.h"
 #include "Engine/Pipeline/Registration/PointToPlaneIcp.h"
+#include "Engine/Features/RegistrationTypes.h"
 #include "Engine/Spatial/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
 
 namespace Engine::Pipeline {
