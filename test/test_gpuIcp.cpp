@@ -112,7 +112,7 @@ TEST(GpuIcp, SolveMatchesCpuOnCorner) {
     Engine::Core::Context ctx;
     // A 3-plane corner target (constrains all 6 DoF); source = target perturbed by a small transform.
     Engine::Registration::PointCloud tgt;
-    std::vector<Vector3f> src;
+    std::vector<Vector3f> src, srcNormals;
     auto addPlane = [&](const Vector3f &o, const Vector3f &u, const Vector3f &v, const Vector3f &n) {
         for (int i = -10; i <= 10; ++i)
             for (int j = -10; j <= 10; ++j) {
@@ -127,16 +127,22 @@ TEST(GpuIcp, SolveMatchesCpuOnCorner) {
     Eigen::Isometry3f perturb = Eigen::Isometry3f::Identity();
     perturb.translate(Vector3f(0.02f, -0.015f, 0.01f));
     perturb.rotate(Eigen::AngleAxisf(0.03f, Vector3f::UnitZ()));
-    for (const auto &q: tgt.points) src.push_back(perturb * q); // source is the model, moved
+    // source is the model, moved -- its true normal at each point is the target's normal there,
+    // rotated by the SAME perturbation (normals don't translate); index-aligned with tgt.points/normals.
+    for (size_t i = 0; i < tgt.points.size(); ++i) {
+        src.push_back(perturb * tgt.points[i]);
+        srcNormals.push_back(perturb.rotation() * tgt.normals[i]);
+    }
 
     Engine::Registration::RegistrationParam params;
     params.maxCorrDist = 0.1f;
     params.maxIters = 30;
-    const auto cpu = Engine::Registration::AlignPointToPlaneIcp(src, tgt, Eigen::Matrix4f::Identity(), params);
+    const auto cpu = Engine::Registration::AlignPointToPlaneIcp(src, srcNormals, tgt,
+                                                                 Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(cpu.valid);
 
     Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
-    const auto g = gpu.Solve(src, tgt, Eigen::Matrix4f::Identity(), params);
+    const auto g = gpu.Solve(src, srcNormals, tgt, Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(g.valid);
     // Both should recover ~perturb⁻¹ (align source back onto target). Compare the two poses directly.
     EXPECT_TRUE(((g.T - cpu.T).array().abs() < 5e-3f).all()) << "gpu:\n"
@@ -179,11 +185,15 @@ TEST(GpuIcp, ResidualRmseMatchesCpu) {
     Engine::Registration::RegistrationParam params;
     params.maxCorrDist = 0.1f;
 
-    const auto cpu = Engine::Registration::AlignPointToPlaneIcp(src, tgt, Eigen::Matrix4f::Identity(), params);
+    // No source normals here (this fixture is about the RESIDUAL-RMSE floor, not normal rejection) --
+    // {} skips the normal-compatibility check identically on both paths (see AlignPointToPlaneIcp /
+    // GpuPointToPlaneIcp::Solve doc comments).
+    const auto cpu =
+            Engine::Registration::AlignPointToPlaneIcp(src, {}, tgt, Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(cpu.valid);
 
     Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
-    const auto gpuResult = gpu.Solve(src, tgt, Eigen::Matrix4f::Identity(), params);
+    const auto gpuResult = gpu.Solve(src, {}, tgt, Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(gpuResult.valid);
 
     EXPECT_GT(cpu.rmse, 0.0f);
@@ -267,9 +277,11 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
         const Eigen::Matrix4f I = Eigen::Matrix4f::Identity();
 
         // Warmup (excluded from timing): first GPU dispatch at THIS size compiles the shader (once,
-        // globally) and (re)allocates buffers for this N; also warms CPU allocations/caches.
-        const auto warmGpu = gpu.Solve(src, tgt, I, params);
-        const auto warmCpu = Engine::Registration::AlignPointToPlaneIcp(src, tgt, I, params);
+        // globally) and (re)allocates buffers for this N; also warms CPU allocations/caches. No source
+        // normals -- this benchmark is about raw solve throughput, not robust-correspondence behaviour;
+        // {} skips the normal-compatibility check identically on both paths.
+        const auto warmGpu = gpu.Solve(src, {}, tgt, I, params);
+        const auto warmCpu = Engine::Registration::AlignPointToPlaneIcp(src, {}, tgt, I, params);
         ASSERT_TRUE(warmGpu.valid) << "GPU warmup failed to converge at N=" << tgt.points.size();
         ASSERT_TRUE(warmCpu.valid) << "CPU warmup failed to converge at N=" << tgt.points.size();
 
@@ -277,12 +289,12 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
         Engine::Registration::RegistrationResult lastGpu, lastCpu;
         for (int k = 0; k < kRepeats; ++k) {
             const auto g0 = std::chrono::steady_clock::now();
-            lastGpu = gpu.Solve(src, tgt, I, params);
+            lastGpu = gpu.Solve(src, {}, tgt, I, params);
             const auto g1 = std::chrono::steady_clock::now();
             gpuTotalMs += std::chrono::duration<double, std::milli>(g1 - g0).count();
 
             const auto c0 = std::chrono::steady_clock::now();
-            lastCpu = Engine::Registration::AlignPointToPlaneIcp(src, tgt, I, params);
+            lastCpu = Engine::Registration::AlignPointToPlaneIcp(src, {}, tgt, I, params);
             const auto c1 = std::chrono::steady_clock::now();
             cpuTotalMs += std::chrono::duration<double, std::milli>(c1 - c0).count();
         }
@@ -456,4 +468,119 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarness) {
             << "sub-voxel target should beat the Task 2 raw-center baseline (transErr 0.03001)";
     EXPECT_LT(reconRmse, 0.01f)
             << "sub-voxel target should beat the Task 2 raw-center baseline (reconNnRmse 0.02237)";
+}
+
+// ---------------------------------------------------------------------------------------------
+// Registration-quality plan, Task 4 (Tier 2): noisy/outlier fixture. The harness above is CLEAN (an
+// exact rigid map of the model, no sensor noise), so it cannot show any benefit from robust
+// weighting -- this test contaminates the same corner fixture with Gaussian sensor noise on some
+// points plus a fraction of gross outliers (both a larger positional offset AND a corrupted/negated
+// normal -- a realistic depth-discontinuity artifact), then solves it TWICE with the GPU path:
+// once with Huber weighting + normal rejection disabled (huge huberScale, empty sourceNormals --
+// reproduces the pre-Tier-2/Task 1-3 behaviour) and once with them enabled at the values the real
+// trackers use (huberScale = voxel, default normalCompatibilityCosine). DISABLED -- gated like the
+// harness above, not part of the normal suite; this is a MEASUREMENT test (records both numbers).
+TEST(GpuIcp, DISABLED_RegistrationQualityHarnessNoisyRobustness) {
+    Engine::Core::Context ctx;
+    const float voxel = 0.05f, truncation = 0.15f;
+    std::vector<Eigen::Vector3f> trueSurface = MakeCornerSurfacePoints(); // dense corner, sub-voxel
+    std::vector<Eigen::Vector3f> trueNormals = MakeCornerSurfaceNormals(); // parallel to trueSurface
+    Engine::Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation);
+    model.voxel = voxel;
+    model.truncationDistance = truncation;
+
+    Eigen::Isometry3f knownPerturbation = Eigen::Isometry3f::Identity();
+    knownPerturbation.translate(Eigen::Vector3f(0.02f, -0.015f, 0.01f));
+    knownPerturbation.rotate(Eigen::AngleAxisf(0.03f, Eigen::Vector3f::UnitZ()));
+
+    // Contaminate the clean (knownPerturbation-only) source frame: every 4th point gets small
+    // Gaussian sensor noise (sigma 1cm -- Huber's target: inflates the residual moderately, still
+    // findable within maxCorrDist). Every 15th point ALSO gets a larger (but still inside
+    // maxCorrDist=2*voxel=0.1, so the PRE-EXISTING hard distance gate alone cannot drop it) random
+    // offset AND a negated normal -- a realistic depth-edge artifact, and exactly what
+    // normal-compatibility rejection exists to catch.
+    std::mt19937 noiseRng(42);
+    std::normal_distribution<float> gaussianNoise(0.0f, 0.01f);
+    std::uniform_real_distribution<float> outlierOffsetMag(0.04f, 0.08f);
+    std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+    Engine::Pipeline::Frame frame;
+    int numOutliers = 0, numNoisy = 0;
+    for (size_t i = 0; i < trueSurface.size(); ++i) {
+        Eigen::Vector3f p = knownPerturbation * trueSurface[i];
+        Eigen::Vector3f n = knownPerturbation.rotation() * trueNormals[i];
+        if (i % 15 == 0) {
+            const Eigen::Vector3f randomDir =
+                    Eigen::Vector3f(unit(noiseRng), unit(noiseRng), unit(noiseRng)).normalized();
+            p += randomDir * outlierOffsetMag(noiseRng);
+            n = -n; // corrupted normal: no longer compatible with the true target normal
+            ++numOutliers;
+        } else if (i % 4 == 0) {
+            p += Eigen::Vector3f(gaussianNoise(noiseRng), gaussianNoise(noiseRng), gaussianNoise(noiseRng));
+            ++numNoisy;
+        }
+        frame.pts.push_back(p);
+        frame.nrm.push_back(n);
+    }
+
+    // Same target construction the real trackers use (uncropped -- the model here is small enough
+    // that cropping is unnecessary): sub-voxel surface point per entry.
+    Engine::Registration::PointCloud tgt;
+    tgt.points.reserve(model.entries.size());
+    tgt.normals.reserve(model.entries.size());
+    for (const auto &entry: model.entries) {
+        tgt.points.push_back(entry.center - entry.tsdf * truncation * entry.normal);
+        tgt.normals.push_back(entry.normal);
+    }
+
+    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+
+    // Tier 1 baseline: Huber weighting + normal rejection both effectively OFF (huge huberScale =>
+    // robustWeight == 1 always; empty sourceNormals => rejection skipped entirely), everything else
+    // identical -- reproduces the pre-Tier-2 (Task 1-3) behaviour this task must beat.
+    Engine::Registration::RegistrationParam nonRobustParams;
+    nonRobustParams.maxCorrDist = 2.0f * voxel;
+    nonRobustParams.huberScale = 1e6f;
+    const auto nonRobust =
+            gpu.Solve(frame.pts, {}, tgt, Eigen::Isometry3f::Identity().matrix(), nonRobustParams);
+
+    // Tier 2: robust weighting + normal rejection at the values the real trackers set (huberScale =
+    // model voxel; default normalCompatibilityCosine, ~60deg).
+    Engine::Registration::RegistrationParam robustParams;
+    robustParams.maxCorrDist = 2.0f * voxel;
+    robustParams.huberScale = voxel;
+    const auto robust =
+            gpu.Solve(frame.pts, frame.nrm, tgt, Eigen::Isometry3f::Identity().matrix(), robustParams);
+
+    ASSERT_TRUE(nonRobust.valid);
+    ASSERT_TRUE(robust.valid);
+
+    auto measure = [&](const Engine::Registration::RegistrationResult &r, float &transErr, float &reconRmse) {
+        const Eigen::Isometry3f pose(r.T);
+        const Eigen::Isometry3f error = pose * knownPerturbation; // should be ~identity
+        transErr = error.translation().norm();
+        // reconRmse: apply the recovered pose to the CLEAN (uncontaminated) perturbed surface, NOT the
+        // noisy/outlier frame.pts -- a noisy/outlier point stays ~its own injected offset away from the
+        // true surface under ANY rigid correction, so measuring against frame.pts would have the
+        // contamination's own footprint dominate the metric regardless of pose quality, masking the
+        // very effect under test. This isolates POSE quality, consistent with transErr.
+        std::vector<Eigen::Vector3f> alignedClean;
+        alignedClean.reserve(trueSurface.size());
+        for (const auto &s: trueSurface) alignedClean.push_back(pose * (knownPerturbation * s));
+        reconRmse = Engine::Eval::NearestNeighbourRMSE(alignedClean, trueSurface);
+    };
+    float transErrNonRobust = 0.0f, reconRmseNonRobust = 0.0f, transErrRobust = 0.0f, reconRmseRobust = 0.0f;
+    measure(nonRobust, transErrNonRobust, reconRmseNonRobust);
+    measure(robust, transErrRobust, reconRmseRobust);
+
+    std::printf("[harness-noisy] outliers=%d noisy=%d/%zu | non-robust transErr %.5f reconNnRmse %.5f | "
+                "robust transErr %.5f reconNnRmse %.5f\n",
+                numOutliers, numNoisy, trueSurface.size(), transErrNonRobust, reconRmseNonRobust,
+                transErrRobust, reconRmseRobust);
+
+    // Registration-quality plan, Task 4 (Tier 2): on a fixture contaminated with sensor noise + gross
+    // outliers, Huber weighting + normal rejection must measurably beat the non-robust baseline.
+    EXPECT_LT(transErrRobust, transErrNonRobust)
+            << "robust weighting + normal rejection should beat the non-robust baseline on a noisy fixture";
+    EXPECT_LT(reconRmseRobust, reconRmseNonRobust)
+            << "robust weighting + normal rejection should beat the non-robust baseline on a noisy fixture";
 }

@@ -64,13 +64,18 @@ namespace Engine::Registration {
     } // namespace detail
 
 
+    // `sourceNormals` (sensor/source-frame, pre-pose) may be empty to skip the normal-compatibility
+    // rejection entirely (e.g. when the caller has no per-point source normals); when non-empty it MUST
+    // be index-aligned with `src` (sourceNormals[i] corresponds to src[i]).
     inline RegistrationResult AlignPointToPlaneIcp(const std::vector<Eigen::Vector3f> &src,
+                                                   const std::vector<Eigen::Vector3f> &sourceNormals,
                                                    const PointCloud &tgt,
                                                    const Eigen::Matrix4f &priorT,
                                                    const RegistrationParam &params = {}) {
         RegistrationResult res;
         res.T = priorT;
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return res;
+        if (!sourceNormals.empty() && sourceNormals.size() != src.size()) return res;
 
         const detail::IcpGridNN grid(tgt.points, params.maxCorrDist);
         Eigen::Matrix4f T = priorT;
@@ -84,20 +89,36 @@ namespace Engine::Registration {
             float sumOfSquaredResiduals = 0.0f;
 
             // 1. Accumulate the point-to-plane normal equations over current correspondences.
-            for (const Eigen::Vector3f &s: src) {
+            for (size_t sourceIndex = 0; sourceIndex < src.size(); ++sourceIndex) {
+                const Eigen::Vector3f &s = src[sourceIndex];
                 const Eigen::Vector3f p = R * s + t; // src point in the current frame
                 const int qi = grid.Nearest(p, params.maxCorrDist);
                 if (qi < 0) continue;
                 const Eigen::Vector3f &q = tgt.points[qi];
                 const Eigen::Vector3f &n = tgt.normals[qi];
                 const float e = (p - q).dot(n); // point-to-plane residual
+
+                // Normal-compatibility rejection: drop correspondences whose surfaces face too
+                // differently (e.g. opposite sides of a thin structure), even if close in distance.
+                if (!sourceNormals.empty()) {
+                    const Eigen::Vector3f transformedSourceNormal = R * sourceNormals[sourceIndex];
+                    if (transformedSourceNormal.dot(n) < params.normalCompatibilityCosine) continue;
+                }
+
                 Eigen::Matrix<float, 6, 1> J;
                 J.head<3>() = p.cross(n); // rotation part
                 J.tail<3>() = n;          // translation part
-                H += J * J.transpose();
-                b += -J * e;
+
+                // Huber (robust) weight: full trust inside the knee, down-weighted (not hard-rejected)
+                // beyond it, so a few gross outliers cannot dominate the normal equations.
+                const float absoluteResidual = std::abs(e);
+                const float robustWeight = absoluteResidual <= params.huberScale
+                                               ? 1.0f
+                                               : params.huberScale / absoluteResidual;
+                H += robustWeight * (J * J.transpose());
+                b += robustWeight * (-J * e);
+                sumOfSquaredResiduals += e * e; // RMSE stays unweighted (a true fit metric)
                 ++inliers;
-                sumOfSquaredResiduals += e * e;
             }
             if (inliers < params.minInliers) break;
 

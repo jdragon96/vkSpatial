@@ -55,7 +55,7 @@ TEST(Icp, RecoversKnownTransform) {
     params.maxIters = 30;
     params.minInliers = 20;
 
-    const auto res = AlignPointToPlaneIcp(src, tgt, Eigen::Matrix4f::Identity(), params);
+    const auto res = AlignPointToPlaneIcp(src, {}, tgt, Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(res.valid);
 
     // Applying T to src should land on the target: residual near zero.
@@ -78,7 +78,7 @@ TEST(Icp, RecoversKnownTransform) {
 TEST(Icp, RejectsBadTarget) {
     std::vector<Vector3f> src{{0, 0, 0}, {1, 0, 0}};
     PointCloud tgt; // no points
-    const auto res = AlignPointToPlaneIcp(src, tgt, Eigen::Matrix4f::Identity());
+    const auto res = AlignPointToPlaneIcp(src, {}, tgt, Eigen::Matrix4f::Identity());
     EXPECT_FALSE(res.valid);
     EXPECT_TRUE(res.T.isApprox(Eigen::Matrix4f::Identity()));
 }

@@ -73,7 +73,7 @@ namespace pipeline {
                 tgt.normals.push_back(e.normal);
             }
             const Engine::Registration::RegistrationResult icp = Engine::Registration::AlignPointToPlaneIcp(
-                    frame.pts, tgt, priorPose.matrix(), m_params);
+                    frame.pts, frame.nrm, tgt, priorPose.matrix(), m_params);
             r.pose = Eigen::Isometry3f(icp.T);
             r.fitness = icp.fitness;
             r.inliers = icp.numInliers;

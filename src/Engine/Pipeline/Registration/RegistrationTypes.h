@@ -42,6 +42,8 @@ namespace Engine::Registration {
         int minInliers = 10;
         // stop when the incremental update norm drops below this
         float convEps = 1e-6f;
+        float huberScale = 0.05f;               // robust-weight knee (world units; caller sets ~voxel)
+        float normalCompatibilityCosine = 0.5f; // reject correspondence if sourceN·targetN < this (~60deg)
     };
 
     using Fpfh33 = Eigen::Matrix<float, 33, 1>;

@@ -76,6 +76,7 @@ namespace Engine::Pipeline {
             float originX, originY, originZ, cell;
             int32_t dimsX, dimsY, dimsZ;
             float maxCorr;
+            float huberScale, normalCompatibilityCosine; // Tier 2: robust weighting + normal rejection
             uint32_t numSrc, numCells;
         };
         void writeVec3Buf(Engine::Core::Buffer &buf, const std::vector<Eigen::Vector3f> &v) {
@@ -97,6 +98,7 @@ namespace Engine::Pipeline {
         m_bucketStart = std::make_unique<Engine::Core::Buffer>(ctx);
         m_bucketIdx = std::make_unique<Engine::Core::Buffer>(ctx);
         m_partials = std::make_unique<Engine::Core::Buffer>(ctx);
+        m_sourceNormals = std::make_unique<Engine::Core::Buffer>(ctx);
         m_kernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         m_kernel->Build("icp_iterate.comp.glsl");
     }
@@ -120,14 +122,21 @@ namespace Engine::Pipeline {
         out.inliers = 0;
         // One-shot convenience: upload once, dispatch once. Solve uses prepare/dispatch directly so the
         // upload happens once per solve instead of once per iteration.
-        if (!prepareCentred(src, tgt, c, maxCorrDist)) return out;
-        return dispatchCentred(T);
+        //
+        // This legacy entry point predates RegistrationParam, so it has no caller-chosen huberScale /
+        // normalCompatibilityCosine: pass no source normals (rejection sentinel, off) and a huge Huber
+        // scale (robustWeight == 1 for any real residual), reproducing the pre-Tier-2 raw (unweighted,
+        // unrejected) accumulation exactly.
+        if (!prepareCentred(src, {}, tgt, c, maxCorrDist)) return out;
+        return dispatchCentred(T, kNoRobustWeightingHuberScale, kNoNormalRejectionCosine);
     }
 
     bool GpuPointToPlaneIcp::prepareCentred(const std::vector<Eigen::Vector3f> &src,
+                                            const std::vector<Eigen::Vector3f> &sourceNormals,
                                             const Engine::Registration::PointCloud &tgt,
                                             const Eigen::Vector3f &c, float maxCorrDist) {
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return false;
+        if (!sourceNormals.empty() && sourceNormals.size() != src.size()) return false;
 
         // Centre on the (caller-supplied) target centroid `c` -- numerical conditioning + fixed-point
         // safety. None of this depends on the pose, so it is done ONCE per solve (see class doc: the H,b
@@ -140,6 +149,13 @@ namespace Engine::Pipeline {
         writeVec3Buf(*m_src, sc);
         writeVec3Buf(*m_tgtPts, tc);
         writeVec3Buf(*m_tgtNrm, tgt.normals);
+        // Source normals do NOT translate -- upload as-is (not centred). When the caller supplies none,
+        // upload a same-length zero-filled buffer so the shader's unconditional g_srcNrm[i] read (i in
+        // [0, numSrc)) stays in-bounds; the caller pairs this with kNoNormalRejectionCosine so those
+        // zeros are never actually used to reject a correspondence.
+        writeVec3Buf(*m_sourceNormals,
+                     sourceNormals.empty() ? std::vector<Eigen::Vector3f>(src.size(), Eigen::Vector3f::Zero())
+                                            : sourceNormals);
         m_bucketStart->Allocate(uint32_t(grid.m_bucketStart.size() * sizeof(uint32_t)));
         m_bucketStart->Upload(grid.m_bucketStart.data(), uint32_t(grid.m_bucketStart.size() * sizeof(uint32_t)));
         m_bucketIdx->Allocate(uint32_t(std::max<size_t>(1, grid.m_bucketIdx.size()) * sizeof(uint32_t)));
@@ -160,11 +176,12 @@ namespace Engine::Pipeline {
 
         // Bind once: the buffer handles are stable until the next prepareCentred reallocates them, so per
         // iteration Solve only re-sends the push constant + re-dispatches (no descriptor churn).
-        m_kernel->Bind(0, *m_src).Bind(1, *m_tgtPts).Bind(2, *m_tgtNrm).Bind(3, *m_bucketStart).Bind(4, *m_bucketIdx).Bind(5, *m_partials);
+        m_kernel->Bind(0, *m_src).Bind(1, *m_tgtPts).Bind(2, *m_tgtNrm).Bind(3, *m_bucketStart).Bind(4, *m_bucketIdx).Bind(5, *m_partials).Bind(6, *m_sourceNormals);
         return true;
     }
 
-    GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::dispatchCentred(const Eigen::Matrix4f &T) {
+    GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::dispatchCentred(const Eigen::Matrix4f &T, float huberScale,
+                                                                    float normalCompatibilityCosine) {
         IterOut out;
         out.H.setZero();
         out.b.setZero();
@@ -180,6 +197,8 @@ namespace Engine::Pipeline {
         pc.dimsY = m_pDims.y();
         pc.dimsZ = m_pDims.z();
         pc.maxCorr = m_pMaxCorr;
+        pc.huberScale = huberScale;
+        pc.normalCompatibilityCosine = normalCompatibilityCosine;
         pc.numSrc = m_pNumSrc;
         pc.numCells = uint32_t(m_pDims.x() * m_pDims.y() * m_pDims.z());
 
@@ -206,12 +225,14 @@ namespace Engine::Pipeline {
 
     Engine::Registration::RegistrationResult GpuPointToPlaneIcp::Solve(
             const std::vector<Eigen::Vector3f> &src,
+            const std::vector<Eigen::Vector3f> &sourceNormals,
             const Engine::Registration::PointCloud &tgt,
             const Eigen::Matrix4f &priorT,
             const Engine::Registration::RegistrationParam &params) {
         Engine::Registration::RegistrationResult res;
         res.T = priorT;
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return res;
+        if (!sourceNormals.empty() && sourceNormals.size() != src.size()) return res;
 
         Eigen::Vector3f c = Eigen::Vector3f::Zero();
         for (const auto &q: tgt.points) c += q;
@@ -222,11 +243,16 @@ namespace Engine::Pipeline {
         TcInv.block<3, 1>(0, 3) = c;
         Eigen::Matrix4f T = Tc * priorT * TcInv; // work in the centred frame
 
-        if (!prepareCentred(src, tgt, c, params.maxCorrDist)) return res;
+        if (!prepareCentred(src, sourceNormals, tgt, c, params.maxCorrDist)) return res;
+
+        // sourceNormals empty -> sentinel that disables the rejection, mirroring
+        // AlignPointToPlaneIcp's CPU `sourceNormals.empty()` early-out.
+        const float normalCompatibilityCosine =
+                sourceNormals.empty() ? kNoNormalRejectionCosine : params.normalCompatibilityCosine;
 
         double lastSumOfSquaredResiduals = 0.0;
         for (int iter = 0; iter < params.maxIters; ++iter) {
-            const IterOut a = dispatchCentred(T);
+            const IterOut a = dispatchCentred(T, params.huberScale, normalCompatibilityCosine);
             if (a.inliers < params.minInliers) break;
             const Eigen::Matrix<double, 6, 1> x = a.H.ldlt().solve(a.b);
             const Eigen::Matrix3d Rd = (Eigen::AngleAxisd(x[2], Eigen::Vector3d::UnitZ()) *

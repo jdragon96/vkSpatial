@@ -30,7 +30,10 @@ namespace Engine::Pipeline {
         // 5x finer than the voxel, exploding nCells = (extent/cell)^3 (a 190m scene at 0.1m ~=
         // 1.6e9 cells -> a multi-GB bucketStart per frame). 2x voxel keeps the grid ~voxel-res.
         Engine::Registration::RegistrationParam params = m_params;
-        if (model->voxel > 0.0f) params.maxCorrDist = 2.0f * model->voxel;
+        if (model->voxel > 0.0f) {
+            params.maxCorrDist = 2.0f * model->voxel;
+            params.huberScale = model->voxel;
+        }
         const float m = params.maxCorrDist;
         mn.array() -= m;
         mx.array() += m;
@@ -51,7 +54,7 @@ namespace Engine::Pipeline {
         if (tgt.points.size() < 3) return r; // nothing local to align to -> keep prior
 
         const Engine::Registration::RegistrationResult icp =
-                m_gpu->Solve(frame.pts, tgt, priorPose.matrix(), params);
+                m_gpu->Solve(frame.pts, frame.nrm, tgt, priorPose.matrix(), params);
         r.pose = Eigen::Isometry3f(icp.T);
         r.fitness = icp.fitness;
         r.inliers = icp.numInliers;

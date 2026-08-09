@@ -24,10 +24,14 @@ namespace Engine::Pipeline {
         }
 
         Engine::Registration::RegistrationParam params = m_params;
-        if (model->voxel > 0.0f) params.maxCorrDist = 2.0f * model->voxel;
+        if (model->voxel > 0.0f) {
+            params.maxCorrDist = 2.0f * model->voxel;
+            params.huberScale = model->voxel;
+        }
         const Engine::Registration::RegistrationResult icp =
                 Engine::Registration::AlignPointToPlaneIcp(
                         frame.pts,
+                        frame.nrm,
                         tgt,
                         priorPose.matrix(),
                         params);

@@ -26,6 +26,8 @@ layout(push_constant) uniform PC {
     float g_originX, g_originY, g_originZ, g_cell;  // grid AABB min + cell size
     int   g_dimsX, g_dimsY, g_dimsZ;                // cells per axis
     float g_maxCorr;
+    float g_huberScale;                 // robust-weight knee (world units)
+    float g_normalCompatibilityCosine;  // reject correspondence if sourceN.targetN < this
     uint  g_numSrc, g_numCells;
 };
 layout(std430, binding=0) readonly buffer Src        { vec4 g_src[]; };        // xyz used (centred)
@@ -34,6 +36,7 @@ layout(std430, binding=2) readonly buffer TgtNrm     { vec4 g_tgtNrm[]; };
 layout(std430, binding=3) readonly buffer BucketStart{ uint g_bstart[]; };
 layout(std430, binding=4) readonly buffer BucketIdx  { uint g_bidx[]; };
 layout(std430, binding=5) buffer Partials            { int g_part[]; };        // [numWG * 29]
+layout(std430, binding=6) readonly buffer SrcNrm     { vec4 g_srcNrm[]; };     // xyz used (NOT centred)
 
 shared int s_acc[29];
 
@@ -65,17 +68,31 @@ void main() {
         if (best >= 0) {
             vec3 q = g_tgtPts[best].xyz;
             vec3 n = g_tgtNrm[best].xyz;
-            float e = dot(p - q, n);
-            float J[6];
-            vec3 pxn = cross(p, n);
-            J[0]=pxn.x; J[1]=pxn.y; J[2]=pxn.z; J[3]=n.x; J[4]=n.y; J[5]=n.z;
-            int k = 0;                                   // upper-triangular H (row-major, 21 entries)
-            for (int r=0; r<6; ++r) for (int col=r; col<6; ++col)
-                atomicAdd(s_acc[k++], int(round(J[r]*J[col]*SCALE)));
-            for (int r=0; r<6; ++r)
-                atomicAdd(s_acc[21+r], int(round(-J[r]*e*SCALE)));
-            atomicAdd(s_acc[27], 1);                      // inlier count: raw +1, NOT scaled
-            atomicAdd(s_acc[28], int(round(e * e * SCALE))); // sum of squared residuals (fixed-point)
+            // Normal-compatibility rejection: drop the correspondence when the (pose-rotated) source
+            // normal disagrees too much with the target normal, even though it passed the distance
+            // gate above -- same rejection the CPU reference (AlignPointToPlaneIcp) applies.
+            vec3 transformedSourceNormal = mat3(g_T) * g_srcNrm[i].xyz;
+            if (dot(transformedSourceNormal, n) < g_normalCompatibilityCosine) {
+                // rejected: contributes nothing (fall through, no atomics)
+            } else {
+                float e = dot(p - q, n);
+                float J[6];
+                vec3 pxn = cross(p, n);
+                J[0]=pxn.x; J[1]=pxn.y; J[2]=pxn.z; J[3]=n.x; J[4]=n.y; J[5]=n.z;
+                // Huber (robust) weight: full trust inside the knee, down-weighted beyond it, so a few
+                // gross outliers cannot dominate the normal equations -- same weighting the CPU
+                // reference applies. sum of squared residuals (slot 28) stays UNWEIGHTED (a true fit
+                // metric), matching AlignPointToPlaneIcp.
+                float absoluteResidual = abs(e);
+                float robustWeight = absoluteResidual <= g_huberScale ? 1.0 : g_huberScale / absoluteResidual;
+                int k = 0;                                   // upper-triangular H (row-major, 21 entries)
+                for (int r=0; r<6; ++r) for (int col=r; col<6; ++col)
+                    atomicAdd(s_acc[k++], int(round(robustWeight*J[r]*J[col]*SCALE)));
+                for (int r=0; r<6; ++r)
+                    atomicAdd(s_acc[21+r], int(round(robustWeight*(-J[r]*e)*SCALE)));
+                atomicAdd(s_acc[27], 1);                      // inlier count: raw +1, NOT scaled
+                atomicAdd(s_acc[28], int(round(e * e * SCALE))); // sum of squared residuals (fixed-point, unweighted)
+            }
         }
     }
     barrier();

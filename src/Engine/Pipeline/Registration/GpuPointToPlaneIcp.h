@@ -51,26 +51,40 @@ namespace Engine::Pipeline {
                            const Engine::Registration::PointCloud &tgt,
                            const Eigen::Matrix4f &T, float maxCorrDist);
 
+        // `sourceNormals` (sensor/source-frame, pre-pose) may be empty to skip the normal-compatibility
+        // rejection entirely, matching AlignPointToPlaneIcp's CPU semantics; when non-empty it MUST be
+        // index-aligned with `src`.
         Engine::Registration::RegistrationResult Solve(
-                const std::vector<Eigen::Vector3f> &src, const Engine::Registration::PointCloud &tgt,
+                const std::vector<Eigen::Vector3f> &src, const std::vector<Eigen::Vector3f> &sourceNormals,
+                const Engine::Registration::PointCloud &tgt,
                 const Eigen::Matrix4f &priorT, const Engine::Registration::RegistrationParam &params);
 
     private:
         static constexpr uint32_t kLocal = 256;
         static constexpr float kScale = 10000.0f;
+        // Sentinel normal-compatibility cosine used when the caller supplies no source normals: real
+        // cosines lie in [-1,1], so this threshold is never crossed and the rejection is effectively off
+        // (mirrors the CPU's `sourceNormals.empty()` early-out).
+        static constexpr float kNoNormalRejectionCosine = -2.0f;
+        // Sentinel Huber scale used by the legacy Accumulate() convenience path (no RegistrationParam,
+        // so no caller-chosen knee): large enough that robustWeight == 1 for any real-world residual,
+        // reproducing pre-Tier-2 (unweighted) accumulation exactly.
+        static constexpr float kNoRobustWeightingHuberScale = 1e30f;
         Engine::Core::Context *m_ctx;
         std::unique_ptr<Engine::Core::ComputePipeline> m_kernel;
-        std::unique_ptr<Engine::Core::Buffer> m_src, m_tgtPts, m_tgtNrm, m_bucketStart, m_bucketIdx, m_partials;
+        std::unique_ptr<Engine::Core::Buffer> m_src, m_tgtPts, m_tgtNrm, m_bucketStart, m_bucketIdx, m_partials,
+                m_sourceNormals;
 
         IterOut AccumulateCentred(const std::vector<Eigen::Vector3f> &src,
                                   const Engine::Registration::PointCloud &tgt, const Eigen::Vector3f &c,
                                   const Eigen::Matrix4f &T, float maxCorrDist);
 
         bool prepareCentred(const std::vector<Eigen::Vector3f> &src,
+                            const std::vector<Eigen::Vector3f> &sourceNormals,
                             const Engine::Registration::PointCloud &tgt, const Eigen::Vector3f &c,
                             float maxCorrDist);
 
-        IterOut dispatchCentred(const Eigen::Matrix4f &T);
+        IterOut dispatchCentred(const Eigen::Matrix4f &T, float huberScale, float normalCompatibilityCosine);
 
         Eigen::Vector3f m_pOrigin = Eigen::Vector3f::Zero();
         Eigen::Vector3i m_pDims{1, 1, 1};
