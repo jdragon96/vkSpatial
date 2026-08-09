@@ -27,7 +27,10 @@ namespace Engine::Pipeline {
                 a = m_tracker->Track(f, model.get(), prev);
             }
             const Eigen::Isometry3f pose = a.valid ? a.pose : prev;
-            if (a.valid) prev = a.pose;
+            if (a.valid) {
+                prev = a.pose;
+                m_trackerRmse.Add(a.rmse);
+            }
 
             TrackedFrame tf;
             tf.cameraWorld = pose * f.cam; // sensor camera -> world

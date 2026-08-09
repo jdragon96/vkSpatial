@@ -17,6 +17,7 @@ namespace Engine::Pipeline {
         Eigen::Isometry3f pose = Eigen::Isometry3f::Identity(); // sensor -> world
         float fitness = 0.0f;
         std::size_t inliers = 0;
+        float rmse = 0.0f; // residual rmse (0 if the tracker doesn't compute one, e.g. identity)
         bool valid = false;
     };
 

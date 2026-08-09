@@ -44,6 +44,8 @@ namespace Engine::Pipeline {
         float voxel = 0.0f; // map base voxel size -> lets trackers scale the ICP correspondence distance
                             // to the map resolution (a fixed maxCorrDist mismatched to a coarse voxel both
                             // finds too few correspondences AND blows up the GPU LocalGrid cell count).
+        float truncationDistance = 0.0f; // TSDF truncation band -> lets a tracker recover a sub-voxel
+                                         // target point via center - tsdf*truncationDistance*normal.
         uint32_t baseTiles = 0, detailTiles = 0, denseBlocks = 0;
         Eigen::Vector3f allocMin = Eigen::Vector3f::Zero(), allocMax = Eigen::Vector3f::Zero();
         bool hasAlloc = false;
@@ -85,6 +87,8 @@ namespace Engine::Pipeline {
         // ICPThread: align one frame to the model (0 for identity; real cost for icp/global).
         double alignMsAvg = 0.0;
         std::uint64_t alignedFrames = 0;
+        // ICPThread: running mean of the tracker's residual rmse over valid tracks (0 if none yet).
+        double trackerRmseAvg = 0.0;
         // IntegrationThread: integrate + download + first-seen tracking for one frame.
         double integrateMsAvg = 0.0;
         std::uint64_t integratedFrames = 0;

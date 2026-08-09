@@ -271,6 +271,7 @@ void VoxelFillRenderStrategy::drawUi(ep::Pipeline &pipe) {
     stageLine("Reconstruction", ps.acquireMsAvg, (unsigned long long) ps.acquiredFrames);
     stageLine("ICP", ps.alignMsAvg, (unsigned long long) ps.alignedFrames);
     stageLine("Integration", ps.integrateMsAvg, (unsigned long long) ps.integratedFrames);
+    ImGui::Text("ICP rmse (avg): %.4f", ps.trackerRmseAvg);
     if (m_snap) {
         ImGui::Text("occupied voxels: %zu", m_snap->entries.size());
         std::size_t below = 0;

@@ -18,6 +18,7 @@ namespace Engine::Pipeline {
 
         double AlignMsAvg() const { return m_trackerMs.Mean(); }
         std::uint64_t AlignedFrames() const { return m_trackerMs.Count(); }
+        double TrackerRmseAvg() const { return m_trackerRmse.Mean(); }
 
     protected:
         void Interrupt() override;
@@ -26,6 +27,7 @@ namespace Engine::Pipeline {
     private:
         std::unique_ptr<Tracker> m_tracker;
         util::RunningMean m_trackerMs;
+        util::RunningMean m_trackerRmse;
     };
 
 } // namespace Engine::Pipeline

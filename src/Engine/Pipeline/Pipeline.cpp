@@ -65,6 +65,7 @@ namespace Engine::Pipeline {
         s.acquiredFrames = m_reconstruction->AcquiredFrames();
         s.alignMsAvg = m_registration->AlignMsAvg();
         s.alignedFrames = m_registration->AlignedFrames();
+        s.trackerRmseAvg = m_registration->TrackerRmseAvg();
         s.integrateMsAvg = m_integration->IntegrateMsAvg();
         s.integratedFrames = m_integration->IntegratedFrames();
         return s;

@@ -304,3 +304,133 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
     }
     printf("\n");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Registration-quality plan, Task 2: deterministic perturbation-recovery harness (DISABLED --
+// gated, not part of the normal suite; this IS the regression gate every later ICP-quality tier
+// must beat/hold). Builds a coarse-voxel-quantized corner ModelSnapshot whose entries carry the
+// sub-voxel `tsdf` (so a later tier's sub-voxel target reconstruction is measurable), perturbs a
+// source frame by a KNOWN transform, drives the real tracker's Track() (not just Solve, so a later
+// tier's target-construction path stays exercisable), and reports recovered-pose error +
+// Engine::Eval::NearestNeighbourRMSE (CPU float, no fixed-point floor) as the PRIMARY signal, plus
+// the residual `rmse` as a SECONDARY one: Task 1 found the GPU accumulator under-reports residuals
+// below ~7mm (fixed-point floor), so this harness does not assert on residual rmse being large.
+#include "Engine/Eval/RmseMetrics.h"
+#include "Engine/Pipeline/Registration/Tracker.h"
+
+#include <cmath>
+
+namespace {
+
+    // Dense 3-plane corner surface through the origin (same construction as SolveMatchesCpuOnCorner /
+    // ResidualRmseMatchesCpu above), spacing finer than the harness's voxel size so QuantizeToModel
+    // below genuinely coarsens it. Each addCornerPlane call's origin is (0,0,0), so every point it
+    // emits has EXACTLY one coordinate == 0 -- the plane's own constant axis -- which is what lets
+    // cornerPlaneNormal() below recover the normal from a point alone, with no separate lookup.
+    constexpr int kCornerHalfExtent = 10;
+    constexpr float kCornerSpacing = 0.03f;
+
+    void addCornerPlane(std::vector<Vector3f> &points, std::vector<Vector3f> &normals, const Vector3f &u,
+                        const Vector3f &v, const Vector3f &n) {
+        for (int i = -kCornerHalfExtent; i <= kCornerHalfExtent; ++i)
+            for (int j = -kCornerHalfExtent; j <= kCornerHalfExtent; ++j) {
+                points.push_back(u * (i * kCornerSpacing) + v * (j * kCornerSpacing));
+                normals.push_back(n);
+            }
+    }
+
+    // Parallel (points[i], normals[i]) corner surface -- shared by MakeCornerSurfacePoints() and
+    // MakeCornerSurfaceNormals() below so the two stay index-aligned by construction.
+    void buildCornerSurface(std::vector<Vector3f> &points, std::vector<Vector3f> &normals) {
+        addCornerPlane(points, normals, {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
+        addCornerPlane(points, normals, {0, 1, 0}, {0, 0, 1}, {1, 0, 0});
+        addCornerPlane(points, normals, {1, 0, 0}, {0, 0, 1}, {0, 1, 0});
+    }
+
+    std::vector<Vector3f> MakeCornerSurfacePoints() {
+        std::vector<Vector3f> points, normals;
+        buildCornerSurface(points, normals);
+        return points;
+    }
+
+    std::vector<Vector3f> MakeCornerSurfaceNormals() {
+        std::vector<Vector3f> points, normals;
+        buildCornerSurface(points, normals);
+        return normals;
+    }
+
+    // The corner's 3 planes all pass through the origin, so for ANY point p on this surface, the axis
+    // of p's SMALLEST |coordinate| is that plane's constant axis, and the unit vector along it is the
+    // plane's normal -- exact for points from addCornerPlane above (the constant axis is exactly
+    // 0.0f there); at shared edges two axes tie at 0 and either plane's normal is correct, since the
+    // point already lies on both.
+    Vector3f cornerPlaneNormal(const Vector3f &p) {
+        const Vector3f a = p.cwiseAbs();
+        if (a.x() <= a.y() && a.x() <= a.z()) return Vector3f(1, 0, 0);
+        if (a.y() <= a.x() && a.y() <= a.z()) return Vector3f(0, 1, 0);
+        return Vector3f(0, 0, 1);
+    }
+
+    // Coarse-voxel-quantize a dense surface into a ModelSnapshot: entry.center is `surfacePoints[i]`
+    // snapped to the voxel grid, entry.normal is the corner's plane normal at that point, and
+    // entry.tsdf is the signed distance from `center` to the (infinite) plane through the origin with
+    // that normal, in truncation units -- so `center - tsdf*truncation*normal` lands back exactly on
+    // the true surface (the plane passes through the origin, so this projection is exact, not an
+    // approximation). That invariant is what a later tier's sub-voxel extraction will exploit.
+    Engine::Pipeline::ModelSnapshot QuantizeToModel(const std::vector<Vector3f> &surfacePoints, float voxel,
+                                                     float truncation) {
+        Engine::Pipeline::ModelSnapshot model;
+        model.entries.reserve(surfacePoints.size());
+        for (const Vector3f &p: surfacePoints) {
+            const Vector3f n = cornerPlaneNormal(p);
+            Vector3f center;
+            for (int axis = 0; axis < 3; ++axis) center[axis] = std::round(p[axis] / voxel) * voxel;
+            const float signedDistance = n.dot(center); // plane through the origin: n.x == 0 on it
+            Engine::Spatial::AdvancedEntry entry;
+            entry.center = center;
+            entry.direction = 0;
+            entry.tsdf = signedDistance / truncation;
+            entry.weight = 1.0f;
+            entry.normal = n;
+            entry.firstFrame = 0;
+            model.entries.push_back(entry);
+        }
+        return model;
+    }
+
+} // namespace
+
+TEST(GpuIcp, DISABLED_RegistrationQualityHarness) {
+    const float voxel = 0.05f, truncation = 0.15f;
+    // true surface points (sub-voxel), + a ModelSnapshot whose entries are the SAME surface snapped to
+    // the voxel grid but carrying tsdf/normal so center - tsdf*truncation*normal recovers the surface.
+    std::vector<Eigen::Vector3f> trueSurface = MakeCornerSurfacePoints(); // dense corner, sub-voxel
+    Engine::Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation); // helper (this task)
+    model.voxel = voxel;
+    model.truncationDistance = truncation;
+
+    Eigen::Isometry3f knownPerturbation = Eigen::Isometry3f::Identity();
+    knownPerturbation.translate(Eigen::Vector3f(0.02f, -0.015f, 0.01f));
+    knownPerturbation.rotate(Eigen::AngleAxisf(0.03f, Eigen::Vector3f::UnitZ()));
+    // trueNormals[i] is the (unit) surface normal at trueSurface[i]; the sensor frame sees both the
+    // points and normals rotated by the perturbation (normals rotate, do not translate).
+    std::vector<Eigen::Vector3f> trueNormals = MakeCornerSurfaceNormals(); // parallel to trueSurface
+    Engine::Pipeline::Frame frame;
+    for (size_t i = 0; i < trueSurface.size(); ++i) {
+        frame.pts.push_back(knownPerturbation * trueSurface[i]);
+        frame.nrm.push_back(knownPerturbation.rotation() * trueNormals[i]);
+    }
+
+    auto tracker = Engine::Pipeline::TrackerRegistry::Default().Create("icp");
+    const auto result = tracker->Track(frame, &model, Eigen::Isometry3f::Identity());
+
+    const Eigen::Isometry3f error = result.pose * knownPerturbation; // should be ~identity
+    const float recoveredTranslationError = error.translation().norm();
+    const float recoveredRotationErrorRadians = Eigen::AngleAxisf(error.rotation()).angle();
+    std::vector<Eigen::Vector3f> alignedSource;
+    for (const auto &p : frame.pts) alignedSource.push_back(result.pose * p);
+    const float reconRmse = Engine::Eval::NearestNeighbourRMSE(alignedSource, trueSurface);
+    std::printf("[harness] transErr %.5f rotErr %.5f reconNnRmse %.5f residualRmse %.5f inliers %zu\n",
+                recoveredTranslationError, recoveredRotationErrorRadians, reconRmse, result.rmse, result.inliers);
+    SUCCEED();
+}
