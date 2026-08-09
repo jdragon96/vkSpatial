@@ -25,7 +25,10 @@ layout(push_constant) uniform PC {
     mat4  g_T;          // current pose (centred frame), column-major
     float g_originX, g_originY, g_originZ, g_cell;  // grid AABB min + cell size
     int   g_dimsX, g_dimsY, g_dimsZ;                // cells per axis
-    float g_maxCorr;
+    float g_maxCorr;    // per-ITERATION distance filter -- may be NARROWER than g_cell (coarse-to-fine
+                        // annealing: the grid is built once, at the WIDEST distance, and only this
+                        // filter shrinks per iteration; the 3x3x3 neighbor scan below still covers any
+                        // radius <= g_cell, so correctness holds for every annealed value)
     float g_huberScale;                 // robust-weight knee (world units)
     float g_normalCompatibilityCosine;  // reject correspondence if sourceN.targetN < this
     uint  g_numSrc, g_numCells;

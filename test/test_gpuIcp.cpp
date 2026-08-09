@@ -584,3 +584,110 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessNoisyRobustness) {
     EXPECT_LT(reconRmseRobust, reconRmseNonRobust)
             << "robust weighting + normal rejection should beat the non-robust baseline on a noisy fixture";
 }
+
+// ---------------------------------------------------------------------------------------------
+// Registration-quality plan, Task 5 (Tier 3): coarse-to-fine correspondence-distance annealing.
+// Same clean corner fixture as the harnesses above, but with a LARGER initial perturbation than any
+// of them -- large enough that a single FIXED correspondence gate at the value the real trackers use
+// (2*voxel) leaves far-from-apex points outside the gate for the whole solve (their misalignment
+// exceeds 2*voxel once the perturbation's rotation lever-arm is included over the corner's ~0.3m
+// extent), so the fixed-gate solve under-converges. Coarse-to-fine instead builds the grid ONCE at a
+// WIDE distance (bootstraps every point, even the worst-case lever-arm ones) and only narrows the
+// per-iteration DISTANCE FILTER down to a sub-voxel value -- same grid, same buffers/bind, only the
+// push constant changes per iteration (the hoist from Solve/prepareCentred stays intact). DISABLED --
+// gated like the harnesses above, not part of the normal suite; this IS the Tier 3 regression gate.
+TEST(GpuIcp, DISABLED_RegistrationQualityHarnessAnnealing) {
+    Engine::Core::Context ctx;
+    const float voxel = 0.05f, truncation = 0.15f;
+    std::vector<Eigen::Vector3f> trueSurface = MakeCornerSurfacePoints(); // dense corner, sub-voxel
+    std::vector<Eigen::Vector3f> trueNormals = MakeCornerSurfaceNormals(); // parallel to trueSurface
+    Engine::Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation);
+    model.voxel = voxel;
+    model.truncationDistance = truncation;
+
+    // Translation norm ~0.217m -- ALREADY bigger than the fixed 2*voxel=0.1m gate the real trackers
+    // use, even for points right at the corner apex (where the rotation's lever-arm contributes
+    // ~nothing); a 0.25 rad rotation additionally adds up to ~0.3*0.25 =~ 0.075m of lever-arm
+    // displacement at the corner's ~0.3m extent for the farthest points. Measured: a FIXED 0.1m gate
+    // still finds >= minInliers correspondences (so `valid` comes back true -- it does NOT fail
+    // outright) but they are the WRONG ones for enough points that the solve confidently converges to
+    // a WRONG pose (transErr ~0.207, close to the full perturbation norm) -- a silent quality bug, not
+    // a loud failure, and exactly the kind of thing coarse-to-fine annealing exists to prevent. Sharper
+    // than the smaller perturbations the Task 2-4 harnesses use (which fixed-gate ICP recovers cleanly).
+    Eigen::Isometry3f knownPerturbation = Eigen::Isometry3f::Identity();
+    knownPerturbation.translate(Eigen::Vector3f(0.15f, -0.12f, 0.10f));
+    knownPerturbation.rotate(Eigen::AngleAxisf(0.25f, Eigen::Vector3f::UnitZ()));
+
+    Engine::Pipeline::Frame frame;
+    for (size_t i = 0; i < trueSurface.size(); ++i) {
+        frame.pts.push_back(knownPerturbation * trueSurface[i]);
+        frame.nrm.push_back(knownPerturbation.rotation() * trueNormals[i]);
+    }
+
+    // Same target construction the real trackers use: sub-voxel surface point per entry.
+    Engine::Registration::PointCloud tgt;
+    tgt.points.reserve(model.entries.size());
+    tgt.normals.reserve(model.entries.size());
+    for (const auto &entry: model.entries) {
+        tgt.points.push_back(entry.center - entry.tsdf * truncation * entry.normal);
+        tgt.normals.push_back(entry.normal);
+    }
+
+    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+
+    // Fixed-gate baseline: a single maxCorrDist for every iteration (minCorrespondenceDistance left at
+    // its default 0 -> annealing OFF), at the value the real trackers use (2*voxel) -- the CURRENT
+    // (pre-Task-5) behaviour this task must beat.
+    Engine::Registration::RegistrationParam fixedParams;
+    fixedParams.maxCorrDist = 2.0f * voxel;
+    fixedParams.maxIters = 30;
+    const auto fixedResult =
+            gpu.Solve(frame.pts, frame.nrm, tgt, Eigen::Isometry3f::Identity().matrix(), fixedParams);
+
+    // Coarse-to-fine: grid built ONCE at maxCorrDist (wide enough to bootstrap correspondences for
+    // every point, including the worst-case lever-arm ones -- displacement up to ~0.29m, so 10*voxel=
+    // 0.5m keeps a comfortable margin), then the per-iteration filter shrinks geometrically to
+    // minCorrespondenceDistance (sub-voxel precision).
+    Engine::Registration::RegistrationParam annealedParams;
+    annealedParams.maxCorrDist = 10.0f * voxel;
+    annealedParams.minCorrespondenceDistance = 0.5f * voxel;
+    annealedParams.maxIters = 30;
+    const auto annealedResultGpu =
+            gpu.Solve(frame.pts, frame.nrm, tgt, Eigen::Isometry3f::Identity().matrix(), annealedParams);
+
+    // GPU/CPU consistency under annealing (not just the default no-annealing path SolveMatchesCpuOnCorner
+    // covers): the CPU AlignPointToPlaneIcp reference, given the SAME annealedParams, must reach the
+    // same pose -- proves both trackers share the identical schedule (AnnealIcpIteration), not just
+    // identical fixed-gate behaviour.
+    const auto annealedResultCpu = Engine::Registration::AlignPointToPlaneIcp(
+            frame.pts, frame.nrm, tgt, Eigen::Isometry3f::Identity().matrix(), annealedParams);
+
+    ASSERT_TRUE(annealedResultGpu.valid);
+    ASSERT_TRUE(annealedResultCpu.valid);
+    EXPECT_TRUE(((annealedResultGpu.T - annealedResultCpu.T).array().abs() < 5e-3f).all())
+            << "GPU and CPU must anneal identically -- gpu:\n"
+            << annealedResultGpu.T << "\ncpu:\n"
+            << annealedResultCpu.T;
+
+    auto transErrOf = [&](const Eigen::Matrix4f &T) {
+        const Eigen::Isometry3f pose(T);
+        const Eigen::Isometry3f error = pose * knownPerturbation; // should be ~identity
+        return error.translation().norm();
+    };
+    const float transErrFixed = transErrOf(fixedResult.T);
+    const float transErrAnnealedGpu = transErrOf(annealedResultGpu.T);
+    const float transErrAnnealedCpu = transErrOf(annealedResultCpu.T);
+
+    std::printf("[harness-annealing] fixed transErr %.5f (valid=%d) | annealed-gpu transErr %.5f "
+                "(valid=%d) | annealed-cpu transErr %.5f (valid=%d)\n",
+                transErrFixed, fixedResult.valid, transErrAnnealedGpu, annealedResultGpu.valid,
+                transErrAnnealedCpu, annealedResultCpu.valid);
+
+    // Registration-quality plan, Task 5 (Tier 3): on a perturbation beyond the fixed-gate basin,
+    // coarse-to-fine annealing must measurably beat the fixed-gate baseline.
+    EXPECT_LT(transErrAnnealedGpu, transErrFixed)
+            << "coarse-to-fine annealing should beat a fixed correspondence gate on a large perturbation";
+    EXPECT_LT(transErrAnnealedCpu, transErrFixed)
+            << "coarse-to-fine annealing should beat a fixed correspondence gate on a large perturbation "
+               "(CPU)";
+}

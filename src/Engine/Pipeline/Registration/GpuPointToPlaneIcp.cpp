@@ -128,7 +128,9 @@ namespace Engine::Pipeline {
         // scale (robustWeight == 1 for any real residual), reproducing the pre-Tier-2 raw (unweighted,
         // unrejected) accumulation exactly.
         if (!prepareCentred(src, {}, tgt, c, maxCorrDist)) return out;
-        return dispatchCentred(T, kNoRobustWeightingHuberScale, kNoNormalRejectionCosine);
+        // No RegistrationParam here (legacy convenience path) -> no annealing schedule; use the same
+        // maxCorrDist the grid was just built at (matches pre-Task-5 behaviour exactly).
+        return dispatchCentred(T, kNoRobustWeightingHuberScale, kNoNormalRejectionCosine, maxCorrDist);
     }
 
     bool GpuPointToPlaneIcp::prepareCentred(const std::vector<Eigen::Vector3f> &src,
@@ -181,7 +183,8 @@ namespace Engine::Pipeline {
     }
 
     GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::dispatchCentred(const Eigen::Matrix4f &T, float huberScale,
-                                                                    float normalCompatibilityCosine) {
+                                                                    float normalCompatibilityCosine,
+                                                                    float currentMaxCorrespondenceDistance) {
         IterOut out;
         out.H.setZero();
         out.b.setZero();
@@ -192,11 +195,13 @@ namespace Engine::Pipeline {
         pc.originX = m_pOrigin.x();
         pc.originY = m_pOrigin.y();
         pc.originZ = m_pOrigin.z();
-        pc.cell = m_pCell;
+        pc.cell = m_pCell; // grid cell width: fixed at prepareCentred's (widest) maxCorrDist -- NOT
+                           // rebuilt here, so this stays constant across iterations even while
+                           // pc.maxCorr below narrows (coarse-to-fine annealing keeps the hoist intact)
         pc.dimsX = m_pDims.x();
         pc.dimsY = m_pDims.y();
         pc.dimsZ = m_pDims.z();
-        pc.maxCorr = m_pMaxCorr;
+        pc.maxCorr = currentMaxCorrespondenceDistance; // per-iteration distance FILTER (<= pc.cell)
         pc.huberScale = huberScale;
         pc.normalCompatibilityCosine = normalCompatibilityCosine;
         pc.numSrc = m_pNumSrc;
@@ -243,6 +248,8 @@ namespace Engine::Pipeline {
         TcInv.block<3, 1>(0, 3) = c;
         Eigen::Matrix4f T = Tc * priorT * TcInv; // work in the centred frame
 
+        // Grid built ONCE per solve, at the WIDEST (coarsest) distance -- params.maxCorrDist (the
+        // existing hoist; prepareCentred/LocalGrid cell = maxCorrDist, unchanged by annealing below).
         if (!prepareCentred(src, sourceNormals, tgt, c, params.maxCorrDist)) return res;
 
         // sourceNormals empty -> sentinel that disables the rejection, mirroring
@@ -252,7 +259,15 @@ namespace Engine::Pipeline {
 
         double lastSumOfSquaredResiduals = 0.0;
         for (int iter = 0; iter < params.maxIters; ++iter) {
-            const IterOut a = dispatchCentred(T, params.huberScale, normalCompatibilityCosine);
+            // Coarse-to-fine: same schedule as the CPU AlignPointToPlaneIcp (Engine::Registration::
+            // AnnealIcpIteration) -- narrows the per-iteration DISTANCE FILTER (dispatchCentred's
+            // pc.maxCorr) from maxCorrDist down to minCorrespondenceDistance; the grid/buffers stay
+            // bound from prepareCentred above (hoist intact, no per-iteration rebuild/rebind). No-op
+            // (fixed params.maxCorrDist/huberScale) when minCorrespondenceDistance is 0 (default).
+            const Engine::Registration::AnnealedIcpIterationParams annealed =
+                    Engine::Registration::AnnealIcpIteration(params, iter);
+            const IterOut a = dispatchCentred(T, annealed.huberScale, normalCompatibilityCosine,
+                                              annealed.maxCorrespondenceDistance);
             if (a.inliers < params.minInliers) break;
             const Eigen::Matrix<double, 6, 1> x = a.H.ldlt().solve(a.b);
             const Eigen::Matrix3d Rd = (Eigen::AngleAxisd(x[2], Eigen::Vector3d::UnitZ()) *

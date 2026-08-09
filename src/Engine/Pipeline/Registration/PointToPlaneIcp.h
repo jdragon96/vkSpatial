@@ -77,10 +77,21 @@ namespace Engine::Registration {
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return res;
         if (!sourceNormals.empty() && sourceNormals.size() != src.size()) return res;
 
+        // Grid built ONCE per solve, at the WIDEST (coarsest) distance -- params.maxCorrDist. This is
+        // the per-solve hoist: coarse-to-fine annealing (below) only narrows the per-iteration QUERY
+        // radius passed to grid.Nearest(); it never rebuilds the grid. Because the grid cell equals
+        // the widest distance and the 3x3x3 neighbor scan covers a full cell width in every
+        // direction, any query radius <= that width (i.e. every annealed value, since
+        // minCorrespondenceDistance < maxCorrDist by construction) is still fully covered.
         const detail::IcpGridNN grid(tgt.points, params.maxCorrDist);
         Eigen::Matrix4f T = priorT;
 
         for (int iter = 0; iter < params.maxIters; ++iter) {
+            // Coarse-to-fine: shrinks geometrically from maxCorrDist (iter 0) to
+            // minCorrespondenceDistance (final iter); huberScale anneals by the same ratio. A no-op
+            // (returns the fixed params.maxCorrDist / params.huberScale) when
+            // minCorrespondenceDistance is 0 (default) -- identical to pre-Task-5 behaviour.
+            const AnnealedIcpIterationParams annealed = AnnealIcpIteration(params, iter);
             Eigen::Matrix<float, 6, 6> H = Eigen::Matrix<float, 6, 6>::Zero();
             Eigen::Matrix<float, 6, 1> b = Eigen::Matrix<float, 6, 1>::Zero();
             const Eigen::Matrix3f R = T.block<3, 3>(0, 0);
@@ -92,7 +103,7 @@ namespace Engine::Registration {
             for (size_t sourceIndex = 0; sourceIndex < src.size(); ++sourceIndex) {
                 const Eigen::Vector3f &s = src[sourceIndex];
                 const Eigen::Vector3f p = R * s + t; // src point in the current frame
-                const int qi = grid.Nearest(p, params.maxCorrDist);
+                const int qi = grid.Nearest(p, annealed.maxCorrespondenceDistance);
                 if (qi < 0) continue;
                 const Eigen::Vector3f &q = tgt.points[qi];
                 const Eigen::Vector3f &n = tgt.normals[qi];
@@ -112,9 +123,9 @@ namespace Engine::Registration {
                 // Huber (robust) weight: full trust inside the knee, down-weighted (not hard-rejected)
                 // beyond it, so a few gross outliers cannot dominate the normal equations.
                 const float absoluteResidual = std::abs(e);
-                const float robustWeight = absoluteResidual <= params.huberScale
+                const float robustWeight = absoluteResidual <= annealed.huberScale
                                                ? 1.0f
-                                               : params.huberScale / absoluteResidual;
+                                               : annealed.huberScale / absoluteResidual;
                 H += robustWeight * (J * J.transpose());
                 b += robustWeight * (-J * e);
                 sumOfSquaredResiduals += e * e; // RMSE stays unweighted (a true fit metric)

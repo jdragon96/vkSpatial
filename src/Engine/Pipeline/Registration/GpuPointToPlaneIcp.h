@@ -84,7 +84,12 @@ namespace Engine::Pipeline {
                             const Engine::Registration::PointCloud &tgt, const Eigen::Vector3f &c,
                             float maxCorrDist);
 
-        IterOut dispatchCentred(const Eigen::Matrix4f &T, float huberScale, float normalCompatibilityCosine);
+        // `currentMaxCorrespondenceDistance` is the per-ITERATION distance filter (pc.maxCorr); it may
+        // be narrower than the grid's build-time cell width (m_pCell, set once in prepareCentred at
+        // the WIDEST annealed distance) -- buffers/grid stay bound from prepareCentred (hoist intact),
+        // only the push constant changes per dispatch. See RegistrationParam::minCorrespondenceDistance.
+        IterOut dispatchCentred(const Eigen::Matrix4f &T, float huberScale, float normalCompatibilityCosine,
+                                float currentMaxCorrespondenceDistance);
 
         Eigen::Vector3f m_pOrigin = Eigen::Vector3f::Zero();
         Eigen::Vector3i m_pDims{1, 1, 1};

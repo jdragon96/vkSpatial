@@ -1,5 +1,7 @@
 #include "Engine/Pipeline/Registration/Tracker.h" // Engine::Pipeline::TrackerRegistry
 #include "Engine/Pipeline/Pipeline.h"  // Engine::Pipeline::Pipeline / Config / EAcquisitionType
+#include "Engine/Pipeline/CommunicationModule.h"       // Engine::Pipeline::CommunicationModule
+#include "Engine/Pipeline/Registration/RegistrationThread.h"
 
 #include "utilities/PointCloudIO.h"
 
@@ -329,4 +331,98 @@ TEST(Pipeline, StopIsCleanMidStream) {
     pipe.Stop();                                                // must return promptly (no hang)
     pipe.CheckErrors();
     SUCCEED();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Registration-quality plan, Task 5 (Tier 3): constant-velocity motion model in
+// RegistrationThread::Run.
+namespace {
+
+    // A Tracker that ALWAYS reports success on a known, pre-scripted pose sequence -- ignoring
+    // whatever prior it's given. This test is about what prior RegistrationThread::Run COMPUTES and
+    // hands to Track (the motion model), not about whether ICP itself converges, so the tracker just
+    // needs to behave like a perfect one: it records every priorPose it receives, in call order, into
+    // a shared vector the test inspects after the thread has been Stop()'d (joined).
+    class RecordingStraightLineTracker : public ep::Tracker {
+    public:
+        RecordingStraightLineTracker(std::vector<Eigen::Isometry3f> truePoses,
+                                     std::shared_ptr<std::vector<Eigen::Isometry3f>> recordedPriors)
+            : m_truePoses(std::move(truePoses)), m_recordedPriors(std::move(recordedPriors)) {}
+
+        const char *Name() const override { return "recording-straight-line"; }
+
+        ep::TrackingResult Track(const ep::Frame &, const ep::ModelSnapshot *,
+                                 const Eigen::Isometry3f &priorPose) override {
+            m_recordedPriors->push_back(priorPose);
+            ep::TrackingResult r;
+            r.valid = m_callIndex < m_truePoses.size();
+            r.pose = r.valid ? m_truePoses[m_callIndex] : priorPose;
+            ++m_callIndex;
+            return r;
+        }
+
+    private:
+        std::vector<Eigen::Isometry3f> m_truePoses;
+        std::shared_ptr<std::vector<Eigen::Isometry3f>> m_recordedPriors;
+        std::size_t m_callIndex = 0;
+    };
+
+} // namespace
+
+// On a straight-line pose sequence, the constant-velocity prior (previousPose advanced by the SAME
+// delta that got from previousPreviousPose to previousPose) should predict the next true pose far
+// better than just re-handing the tracker the previous pose unchanged -- that better starting point is
+// exactly the value the motion model is meant to add (matters most when per-frame motion is large
+// relative to the correspondence gate). Frame 3's prior is the first one built from TWO real (tracked,
+// non-default-Identity) previous poses -- frames 1 and 2's actual results -- so it's the first
+// genuine constant-velocity prediction (frame 2's prior also happens to land correctly, but only
+// because previousPreviousPose was still its Identity initial value -- a degenerate case, not the
+// motion model actually extrapolating two tracked poses).
+TEST(RegistrationThread, ConstantVelocityPriorBeatsPreviousPoseOnStraightLine) {
+    ep::CommunicationModule comm;
+
+    // Straight-line translation along +X, 0.1m/frame -- true poses for frames 1, 2, 3.
+    const float step = 0.1f;
+    auto truePoseAt = [&](int k) {
+        Eigen::Isometry3f p = Eigen::Isometry3f::Identity();
+        p.translate(Vector3f(step * float(k), 0.0f, 0.0f));
+        return p;
+    };
+    const std::vector<Eigen::Isometry3f> truePoses = {truePoseAt(1), truePoseAt(2), truePoseAt(3)};
+
+    auto recordedPriors = std::make_shared<std::vector<Eigen::Isometry3f>>();
+    auto tracker = std::make_unique<RecordingStraightLineTracker>(truePoses, recordedPriors);
+
+    ep::RegistrationThread rt(comm, std::move(tracker));
+    rt.Start();
+
+    for (int i = 0; i < 3; ++i) comm.capturedFrames.Push(ep::Frame{});
+
+    // Drain exactly 3 tracked frames before Stop() -- Stop() sets the cooperative stop flag, which
+    // RegistrationThread::Run only re-checks at the top of its loop, so calling Stop() without first
+    // waiting could abandon already-queued-but-unprocessed frames. Waiting for all 3 to come out the
+    // other end guarantees the tracker's 3rd Track() call (and hence its 3rd recorded prior) happened.
+    ep::TrackedFrame tf;
+    for (int i = 0; i < 3; ++i) ASSERT_TRUE(comm.trackedFrames.Pop(tf)) << "tracked frame " << i;
+
+    rt.Stop();
+    ASSERT_EQ(rt.Error(), nullptr);
+
+    ASSERT_EQ(recordedPriors->size(), 3u);
+    const Eigen::Isometry3f constantVelocityPrior = (*recordedPriors)[2];
+    const Eigen::Isometry3f previousPoseOnlyPrior = truePoses[1]; // frame 3's prior WITHOUT the motion model
+
+    const float constantVelocityError =
+            (constantVelocityPrior.translation() - truePoses[2].translation()).norm();
+    const float previousPoseOnlyError =
+            (previousPoseOnlyPrior.translation() - truePoses[2].translation()).norm();
+
+    std::printf("[motion-model] constant-velocity prior error %.5f | previous-pose-only prior error %.5f\n",
+                constantVelocityError, previousPoseOnlyError);
+
+    EXPECT_LT(constantVelocityError, previousPoseOnlyError)
+            << "constant-velocity prior should predict the next pose on a straight line better than just "
+               "reusing the previous pose";
+    EXPECT_NEAR(constantVelocityError, 0.0f, 1e-5f)
+            << "on an exact straight line, the constant-velocity prediction should be near-exact";
 }
