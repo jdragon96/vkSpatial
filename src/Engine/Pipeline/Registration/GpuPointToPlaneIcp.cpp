@@ -148,10 +148,10 @@ namespace Engine::Pipeline {
 
         m_pNumSrc = uint32_t(src.size());
         m_pNumWG = (m_pNumSrc + kLocal - 1) / kLocal;
-        // No pre-zero needed: every workgroup unconditionally writes all 28 of its slots at the end of the
-        // shader (`if (tid < 28u) g_part[...] = s_acc[tid]`, zero-initialised + reduced in `shared`), so a
+        // No pre-zero needed: every workgroup unconditionally writes all 29 of its slots at the end of the
+        // shader (`if (tid < 29u) g_part[...] = s_acc[tid]`, zero-initialised + reduced in `shared`), so a
         // stale value is never read. Overwritten wholesale on each dispatch -> reusable across iterations.
-        m_partials->AllocateHostVisibleReadback(m_pNumWG * 28u * sizeof(int32_t));
+        m_partials->AllocateHostVisibleReadback(m_pNumWG * 29u * sizeof(int32_t));
 
         m_pOrigin = grid.m_origin;
         m_pDims = grid.m_dims;
@@ -186,11 +186,11 @@ namespace Engine::Pipeline {
         m_kernel->Args(pc);
         m_kernel->DispatchElements(m_pNumSrc); // synchronous; buffers already bound by prepareCentred
 
-        m_partials->InvalidateMapped(m_pNumWG * 28u * sizeof(int32_t));
+        m_partials->InvalidateMapped(m_pNumWG * 29u * sizeof(int32_t));
         const int32_t *part = static_cast<const int32_t *>(m_partials->MappedPtr());
-        double acc[28] = {0};
+        double acc[29] = {0};
         for (uint32_t w = 0; w < m_pNumWG; ++w)
-            for (int k = 0; k < 28; ++k) acc[k] += part[w * 28u + k];
+            for (int k = 0; k < 29; ++k) acc[k] += part[w * 29u + k];
         int k = 0;
         for (int r = 0; r < 6; ++r)
             for (int col = r; col < 6; ++col) {
@@ -200,6 +200,7 @@ namespace Engine::Pipeline {
             }
         for (int r = 0; r < 6; ++r) out.b(r) = acc[21 + r] / double(kScale);
         out.inliers = int(std::llround(acc[27])); // inlier count stored x1 (SCALE not applied to it)
+        out.sumOfSquaredResiduals = acc[28] / double(kScale);
         return out;
     }
 
@@ -223,6 +224,7 @@ namespace Engine::Pipeline {
 
         if (!prepareCentred(src, tgt, c, params.maxCorrDist)) return res;
 
+        double lastSumOfSquaredResiduals = 0.0;
         for (int iter = 0; iter < params.maxIters; ++iter) {
             const IterOut a = dispatchCentred(T);
             if (a.inliers < params.minInliers) break;
@@ -237,9 +239,12 @@ namespace Engine::Pipeline {
             T = delta * T;
             res.numInliers = size_t(a.inliers);
             res.fitness = float(a.inliers) / float(src.size());
+            lastSumOfSquaredResiduals = a.sumOfSquaredResiduals;
             if (x.norm() < params.convEps) break;
         }
         res.T = TcInv * T * Tc;
+        if (res.numInliers > 0)
+            res.rmse = float(std::sqrt(lastSumOfSquaredResiduals / double(res.numInliers)));
         res.valid = res.numInliers >= size_t(params.minInliers);
         return res;
     }

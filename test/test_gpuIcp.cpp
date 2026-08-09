@@ -144,6 +144,53 @@ TEST(GpuIcp, SolveMatchesCpuOnCorner) {
                                                              << cpu.T;
 }
 
+TEST(GpuIcp, ResidualRmseMatchesCpu) {
+    Engine::Core::Context ctx;
+    // Same 3-plane corner fixture as SolveMatchesCpuOnCorner (constrains all 6 DoF).
+    Engine::Registration::PointCloud tgt;
+    std::vector<Vector3f> src;
+    auto addPlane = [&](const Vector3f &o, const Vector3f &u, const Vector3f &v, const Vector3f &n) {
+        for (int i = -10; i <= 10; ++i)
+            for (int j = -10; j <= 10; ++j) {
+                const Vector3f p = o + u * (i * 0.03f) + v * (j * 0.03f);
+                tgt.points.push_back(p);
+                tgt.normals.push_back(n);
+            }
+    };
+    addPlane({0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
+    addPlane({0, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 0});
+    addPlane({0, 0, 0}, {1, 0, 0}, {0, 0, 1}, {0, 1, 0});
+    Eigen::Isometry3f perturb = Eigen::Isometry3f::Identity();
+    perturb.translate(Vector3f(0.02f, -0.015f, 0.01f));
+    perturb.rotate(Eigen::AngleAxisf(0.03f, Vector3f::UnitZ()));
+    // This corner is an EXACT rigid map of tgt (no noise), so ICP's Newton iterations converge the
+    // point-to-plane residual to ~machine epsilon -- far below the GPU accumulator's fixed-point
+    // resolution (SCALE=10000 needs |e| >~ 0.007 to register a nonzero int32; see icp_iterate.comp.glsl).
+    // Add small deterministic per-point jitter so the least-squares optimum has a genuine nonzero
+    // residual floor (comfortably above that resolution, still well inside maxCorrDist below).
+    std::mt19937 jitterRng(7);
+    std::uniform_real_distribution<float> jitter(-0.01f, 0.01f);
+    for (const auto &q: tgt.points) {
+        Vector3f p = perturb * q;
+        p += Vector3f(jitter(jitterRng), jitter(jitterRng), jitter(jitterRng));
+        src.push_back(p); // source is the model, moved + jittered
+    }
+
+    Engine::Registration::RegistrationParam params;
+    params.maxCorrDist = 0.1f;
+
+    const auto cpu = Engine::Registration::AlignPointToPlaneIcp(src, tgt, Eigen::Matrix4f::Identity(), params);
+    ASSERT_TRUE(cpu.valid);
+
+    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+    const auto gpuResult = gpu.Solve(src, tgt, Eigen::Matrix4f::Identity(), params);
+    ASSERT_TRUE(gpuResult.valid);
+
+    EXPECT_GT(cpu.rmse, 0.0f);
+    EXPECT_GT(gpuResult.rmse, 0.0f);
+    EXPECT_NEAR(gpuResult.rmse, cpu.rmse, 1e-3f) << "gpu " << gpuResult.rmse << " cpu " << cpu.rmse;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Task 5: headless, deterministic GPU-vs-CPU timing benchmark (DISABLED -- gated, not part of the
 // normal suite; run explicitly with --gtest_also_run_disabled_tests --gtest_filter=GpuIcp.DISABLED_*).

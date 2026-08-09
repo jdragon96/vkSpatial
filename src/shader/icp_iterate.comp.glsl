@@ -1,7 +1,7 @@
 #version 450
 /// One point-to-plane ICP iteration. Thread = source point. Transforms by push-constant T (centred
 /// frame), grid-NN correspondence, then reduces the 6x6 normal equations H,b per-workgroup into shared
-/// fixed-point ints (no MoltenVK float atomics); thread 0 writes this workgroup's 28-int partial.
+/// fixed-point ints (no MoltenVK float atomics); thread 0 writes this workgroup's 29-int partial.
 ///
 /// Centring: both `src` and `tgt` are pre-shifted by -c (the target centroid) on the CPU before upload,
 /// and `T` is applied in that SAME centred frame: p = T * (src_i - c). A common translation applied to
@@ -33,9 +33,9 @@ layout(std430, binding=1) readonly buffer TgtPts     { vec4 g_tgtPts[]; };     /
 layout(std430, binding=2) readonly buffer TgtNrm     { vec4 g_tgtNrm[]; };
 layout(std430, binding=3) readonly buffer BucketStart{ uint g_bstart[]; };
 layout(std430, binding=4) readonly buffer BucketIdx  { uint g_bidx[]; };
-layout(std430, binding=5) buffer Partials            { int g_part[]; };        // [numWG * 28]
+layout(std430, binding=5) buffer Partials            { int g_part[]; };        // [numWG * 29]
 
-shared int s_acc[28];
+shared int s_acc[29];
 
 int cellIndex(ivec3 c, ivec3 dims) { return (c.z * dims.y + c.y) * dims.x + c.x; }
 
@@ -44,7 +44,7 @@ void main() {
     ivec3 g_dims   = ivec3(g_dimsX, g_dimsY, g_dimsZ);
 
     uint tid = gl_LocalInvocationID.x;
-    if (tid < 28u) s_acc[tid] = 0;
+    if (tid < 29u) s_acc[tid] = 0;
     barrier();
 
     uint i = gl_GlobalInvocationID.x;
@@ -75,8 +75,9 @@ void main() {
             for (int r=0; r<6; ++r)
                 atomicAdd(s_acc[21+r], int(round(-J[r]*e*SCALE)));
             atomicAdd(s_acc[27], 1);                      // inlier count: raw +1, NOT scaled
+            atomicAdd(s_acc[28], int(round(e * e * SCALE))); // sum of squared residuals (fixed-point)
         }
     }
     barrier();
-    if (tid < 28u) g_part[gl_WorkGroupID.x * 28u + tid] = s_acc[tid];
+    if (tid < 29u) g_part[gl_WorkGroupID.x * 29u + tid] = s_acc[tid];
 }

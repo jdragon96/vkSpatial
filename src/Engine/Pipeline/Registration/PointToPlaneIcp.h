@@ -81,6 +81,7 @@ namespace Engine::Registration {
             const Eigen::Matrix3f R = T.block<3, 3>(0, 0);
             const Eigen::Vector3f t = T.block<3, 1>(0, 3);
             int inliers = 0;
+            float sumOfSquaredResiduals = 0.0f;
 
             // 1. Accumulate the point-to-plane normal equations over current correspondences.
             for (const Eigen::Vector3f &s: src) {
@@ -96,6 +97,7 @@ namespace Engine::Registration {
                 H += J * J.transpose();
                 b += -J * e;
                 ++inliers;
+                sumOfSquaredResiduals += e * e;
             }
             if (inliers < params.minInliers) break;
 
@@ -114,6 +116,7 @@ namespace Engine::Registration {
 
             res.numInliers = static_cast<std::size_t>(inliers);
             res.fitness = float(inliers) / float(src.size());
+            res.rmse = inliers > 0 ? std::sqrt(sumOfSquaredResiduals / float(inliers)) : 0.0f;
             if (x.norm() < params.convEps) break;
         }
 

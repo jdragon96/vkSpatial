@@ -43,6 +43,7 @@ namespace Engine::Pipeline {
             Eigen::Matrix<double, 6, 6> H;
             Eigen::Matrix<double, 6, 1> b;
             int inliers;
+            double sumOfSquaredResiduals = 0.0;
         };
         explicit GpuPointToPlaneIcp(Engine::Core::Context &ctx);
 

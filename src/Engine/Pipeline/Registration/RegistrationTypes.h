@@ -32,6 +32,7 @@ namespace Engine::Registration {
         Eigen::Matrix4f T = Eigen::Matrix4f::Identity();
         size_t numInliers = 0;
         float fitness = 0.0f;
+        float rmse = 0.0f; // sqrt(mean squared point-to-plane residual) over inliers, final iteration; 0 if none
     };
 
     struct RegistrationParam {
