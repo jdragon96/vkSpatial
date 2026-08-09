@@ -22,6 +22,7 @@ namespace Engine::Pipeline {
         r.pose = Eigen::Isometry3f(reg.T);
         r.fitness = reg.fitness;
         r.inliers = reg.numInliers;
+        r.rmse = reg.rmse;
         r.valid = reg.valid;
         return r;
     }

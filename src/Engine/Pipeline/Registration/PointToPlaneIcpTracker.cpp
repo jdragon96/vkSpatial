@@ -28,6 +28,7 @@ namespace Engine::Pipeline {
         r.pose = Eigen::Isometry3f(icp.T);
         r.fitness = icp.fitness;
         r.inliers = icp.numInliers;
+        r.rmse = icp.rmse;
         r.valid = icp.valid;
         return r;
     }

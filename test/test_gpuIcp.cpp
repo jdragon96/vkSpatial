@@ -322,19 +322,29 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
 
 namespace {
 
-    // Dense 3-plane corner surface through the origin (same construction as SolveMatchesCpuOnCorner /
-    // ResidualRmseMatchesCpu above), spacing finer than the harness's voxel size so QuantizeToModel
-    // below genuinely coarsens it. Each addCornerPlane call's origin is (0,0,0), so every point it
-    // emits has EXACTLY one coordinate == 0 -- the plane's own constant axis -- which is what lets
-    // cornerPlaneNormal() below recover the normal from a point alone, with no separate lookup.
+    // Dense 3-plane corner surface (same construction as SolveMatchesCpuOnCorner / ResidualRmseMatchesCpu
+    // above), spacing finer than the harness's voxel size so QuantizeToModel below genuinely coarsens it.
+    //
+    // kCornerApex is deliberately OFFSET from a voxel-grid multiple (0.05 below), unlike an
+    // origin-anchored corner. Why this matters (found in review of the first version of this harness):
+    // with the corner anchored at the origin, every plane's constant (normal-axis) coordinate was
+    // EXACTLY 0.0 -- itself an exact multiple of ANY voxel size -- so voxel-snapping left that
+    // coordinate UNCHANGED and only perturbed the two TANGENTIAL (in-plane) coordinates. Point-to-plane
+    // ICP is structurally insensitive to in-plane target error, so entry.tsdf came out exactly 0 for
+    // all 1323 entries and the raw-center baseline sat at the numerical floor (measured: transErr
+    // ~1e-5, residualRmse 0) -- unable to show any improvement for a later sub-voxel-correction tier to
+    // remove, defeating the harness's purpose as a regression gate. Anchoring at an off-grid apex gives
+    // every entry a genuine non-zero OUT-OF-PLANE (normal-axis) quantization error instead, so
+    // entry.tsdf is meaningfully non-zero and the raw-center baseline sits well above the floor.
     constexpr int kCornerHalfExtent = 10;
     constexpr float kCornerSpacing = 0.03f;
+    const Vector3f kCornerApex(0.37f, -0.22f, 0.29f); // NOT a multiple of voxel=0.05 on any axis
 
     void addCornerPlane(std::vector<Vector3f> &points, std::vector<Vector3f> &normals, const Vector3f &u,
                         const Vector3f &v, const Vector3f &n) {
         for (int i = -kCornerHalfExtent; i <= kCornerHalfExtent; ++i)
             for (int j = -kCornerHalfExtent; j <= kCornerHalfExtent; ++j) {
-                points.push_back(u * (i * kCornerSpacing) + v * (j * kCornerSpacing));
+                points.push_back(kCornerApex + u * (i * kCornerSpacing) + v * (j * kCornerSpacing));
                 normals.push_back(n);
             }
     }
@@ -359,13 +369,14 @@ namespace {
         return normals;
     }
 
-    // The corner's 3 planes all pass through the origin, so for ANY point p on this surface, the axis
-    // of p's SMALLEST |coordinate| is that plane's constant axis, and the unit vector along it is the
-    // plane's normal -- exact for points from addCornerPlane above (the constant axis is exactly
-    // 0.0f there); at shared edges two axes tie at 0 and either plane's normal is correct, since the
-    // point already lies on both.
+    // Each of the corner's 3 planes holds ONE coordinate fixed at kCornerApex's value (that plane's own
+    // normal axis) and spans the other two from there, so for ANY point p on this surface, the axis of
+    // p's SMALLEST |coordinate - kCornerApex| is that plane's constant axis, and the unit vector along
+    // it is the plane's normal -- exact for points from addCornerPlane above (that axis's deviation
+    // from kCornerApex is exactly 0.0f there); at shared edges two axes tie at 0 and either plane's
+    // normal is correct, since the point already lies on both.
     Vector3f cornerPlaneNormal(const Vector3f &p) {
-        const Vector3f a = p.cwiseAbs();
+        const Vector3f a = (p - kCornerApex).cwiseAbs();
         if (a.x() <= a.y() && a.x() <= a.z()) return Vector3f(1, 0, 0);
         if (a.y() <= a.x() && a.y() <= a.z()) return Vector3f(0, 1, 0);
         return Vector3f(0, 0, 1);
@@ -373,10 +384,12 @@ namespace {
 
     // Coarse-voxel-quantize a dense surface into a ModelSnapshot: entry.center is `surfacePoints[i]`
     // snapped to the voxel grid, entry.normal is the corner's plane normal at that point, and
-    // entry.tsdf is the signed distance from `center` to the (infinite) plane through the origin with
+    // entry.tsdf is the signed distance from `center` to the (infinite) plane through kCornerApex with
     // that normal, in truncation units -- so `center - tsdf*truncation*normal` lands back exactly on
-    // the true surface (the plane passes through the origin, so this projection is exact, not an
-    // approximation). That invariant is what a later tier's sub-voxel extraction will exploit.
+    // the true surface (the plane is flat, so this projection is exact for any starting `center`, not
+    // an approximation). Because kCornerApex is off the voxel grid (see the block comment above it),
+    // `center`'s normal-axis coordinate is snapped AWAY from the true apex coordinate, so this is a
+    // genuine non-zero correction -- the invariant a later tier's sub-voxel extraction will exploit.
     Engine::Pipeline::ModelSnapshot QuantizeToModel(const std::vector<Vector3f> &surfacePoints, float voxel,
                                                      float truncation) {
         Engine::Pipeline::ModelSnapshot model;
@@ -385,7 +398,7 @@ namespace {
             const Vector3f n = cornerPlaneNormal(p);
             Vector3f center;
             for (int axis = 0; axis < 3; ++axis) center[axis] = std::round(p[axis] / voxel) * voxel;
-            const float signedDistance = n.dot(center); // plane through the origin: n.x == 0 on it
+            const float signedDistance = n.dot(center - kCornerApex); // plane through kCornerApex
             Engine::Spatial::AdvancedEntry entry;
             entry.center = center;
             entry.direction = 0;
