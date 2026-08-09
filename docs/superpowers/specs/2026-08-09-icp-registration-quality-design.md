@@ -29,16 +29,20 @@ Measured by a **deterministic perturbation-recovery harness** (recovered-pose er
 
 ## Tier 0 — Measurement (built first)
 
-The validation instrument must exist before the tiers, so each tier's effect is provable.
+The validation instrument must exist before the tiers, so each tier's effect is provable. **Two complementary RMSE flavors are used** (they measure different things — both are wanted):
 
-**RMSE in `RegistrationResult`.** Add `float rmse = 0.0f`. It is `sqrt(sumOfSquaredResiduals / numberOfInliers)` where each residual is the point-to-plane distance `(transformedSourcePoint − targetPoint) · targetNormal`.
+- **Reconstruction-vs-ground-truth RMSE (primary quality gate).** Reuse the existing `Engine::Eval::RmseMetrics` facility (`src/Engine/Eval/RmseMetrics.h`: `NearestNeighbourRMSE`, `AccuracyRMSE`) — do NOT reinvent it. This measures how accurately the *aligned* source lands on the true surface.
+- **ICP residual RMSE (secondary / live per-frame signal).** Added to `RegistrationResult` — how well the current frame fit the model target inside `Solve`.
+
+**ICP residual RMSE in `RegistrationResult`.** Add `float rmse = 0.0f`. It is `sqrt(sumOfSquaredResiduals / numberOfInliers)` where each residual is the point-to-plane distance `(transformedSourcePoint − targetPoint) · targetNormal`.
 - **GPU** (`icp_iterate.comp.glsl`): the per-workgroup fixed-point reduction currently has 28 slots (21 upper-triangular normal-matrix entries + 6 right-hand-side + 1 inlier count). Add a **29th slot** accumulating `Σ residual²` (same fixed-point scale as the matrix entries; magnitudes are tiny in the centred frame, no overflow). `Solve` reads it back and, after the loop, computes `rmse = sqrt(sumOfSquaredResiduals / numberOfInliers)` from the final iteration.
 - **CPU** (`AlignPointToPlaneIcp`): accumulate `sumOfSquaredResiduals += residual * residual` alongside the existing inlier count; compute the same `rmse`.
 
 **Perturbation-recovery harness.** A gated benchmark test (mirroring the existing `GpuIcp.DISABLED_BenchmarkVsCpu` style, and the `Pipeline.GpuIcpTrackerRecoversMovingCameraPose` pattern that already builds a `ModelSnapshot` + `Frame` + prior and calls `Track`). It:
 - builds a **realistic model**: a multi-plane corner surface as `AdvancedEntry` records whose `center` is **snapped to a coarse voxel grid** but whose `tsdf`/`normal` encode the true sub-voxel surface (+ small additive noise) — so the harness exercises the actual quantization problem *and* the sub-voxel data Tier 1 relies on;
 - makes the source frame = the true surface under a **known** SE(3) perturbation (translation + rotation);
-- **drives the tracker's `Track(frame, &modelSnapshot, prior)`** (not just `Solve`) so the tracker-level tiers — sub-voxel target construction (Tier 1), robust/normal rejection and annealing (Tiers 2–3, via `Solve`) — are all exercised end to end; reports **recovered-pose error** (translation norm, rotation angle vs the known inverse) **+ residual RMSE**.
+- **drives the tracker's `Track(frame, &modelSnapshot, prior)`** (not just `Solve`) so the tracker-level tiers — sub-voxel target construction (Tier 1), robust/normal rejection and annealing (Tiers 2–3, via `Solve`) — are all exercised end to end;
+- reports, as the **primary gate**, **recovered-pose error** (translation norm, rotation angle vs the known inverse) **and `Engine::Eval::NearestNeighbourRMSE(alignedSourcePoints, groundTruthSurfacePoints)`** (source transformed by the recovered pose vs the true, un-perturbed surface); the per-frame **ICP residual RMSE** from `RegistrationResult` is reported as a secondary signal.
 - Each later tier must reduce (or hold) these numbers; the harness is the regression gate for the whole effort. The constant-velocity motion model (Tier 3) lives in `RegistrationThread`, not `Track`, so it is validated by a separate small `RegistrationThread`-level check (a straight-line motion sequence where the predicted prior must beat the previous-pose prior), not this harness.
 
 **Live RMSE** shown in the viewer's stats panel (the tracker already carries per-stage timing there; add the latest tracking RMSE).
