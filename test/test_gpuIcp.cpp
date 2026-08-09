@@ -586,6 +586,87 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessNoisyRobustness) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Final-review fix wave: GPU≡CPU consistency guard on the ROBUST (effectful) path. The always-on
+// gate SolveMatchesCpuOnCorner above runs the Huber + normal-rejection code, but on a CLEAN fixture
+// (an exact rigid map, no noise/outliers) -- Huber's weight is always 1 there and nothing is ever
+// rejected, so the robust mechanisms' GPU≡CPU equality was previously exercised only by the
+// DISABLED_RegistrationQualityHarnessNoisyRobustness measurement test above, which is not part of
+// the normal suite. This test reuses that same contaminated-corner construction (same seed, same
+// contamination loop -- fully deterministic) but ENABLED, so both Huber down-weighting and
+// normal-compatibility rejection genuinely fire on both paths, and a future divergence in either
+// (GPU shader vs CPU reference) is caught by the normal suite instead of a manually-run harness.
+TEST(GpuIcp, RobustPathMatchesCpuOnNoisyFixture) {
+    Engine::Core::Context ctx;
+    const float voxel = 0.05f, truncation = 0.15f;
+    std::vector<Eigen::Vector3f> trueSurface = MakeCornerSurfacePoints(); // dense corner, sub-voxel
+    std::vector<Eigen::Vector3f> trueNormals = MakeCornerSurfaceNormals(); // parallel to trueSurface
+    Engine::Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation);
+    model.voxel = voxel;
+    model.truncationDistance = truncation;
+
+    Eigen::Isometry3f knownPerturbation = Eigen::Isometry3f::Identity();
+    knownPerturbation.translate(Eigen::Vector3f(0.02f, -0.015f, 0.01f));
+    knownPerturbation.rotate(Eigen::AngleAxisf(0.03f, Eigen::Vector3f::UnitZ()));
+
+    // Same contamination as DISABLED_RegistrationQualityHarnessNoisyRobustness above (identical
+    // seed 42, identical loop) so both robust mechanisms genuinely fire: every 15th point gets a
+    // gross outlier offset + negated normal (normal-compatibility rejection's target), every 4th of
+    // the remainder gets 1cm Gaussian sensor noise (Huber down-weighting's target).
+    std::mt19937 noiseRng(42);
+    std::normal_distribution<float> gaussianNoise(0.0f, 0.01f);
+    std::uniform_real_distribution<float> outlierOffsetMag(0.04f, 0.08f);
+    std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+    Engine::Pipeline::Frame frame;
+    for (size_t i = 0; i < trueSurface.size(); ++i) {
+        Eigen::Vector3f p = knownPerturbation * trueSurface[i];
+        Eigen::Vector3f n = knownPerturbation.rotation() * trueNormals[i];
+        if (i % 15 == 0) {
+            const Eigen::Vector3f randomDirection =
+                    Eigen::Vector3f(unit(noiseRng), unit(noiseRng), unit(noiseRng)).normalized();
+            p += randomDirection * outlierOffsetMag(noiseRng);
+            n = -n; // corrupted normal: no longer compatible with the true target normal
+        } else if (i % 4 == 0) {
+            p += Eigen::Vector3f(gaussianNoise(noiseRng), gaussianNoise(noiseRng), gaussianNoise(noiseRng));
+        }
+        frame.pts.push_back(p);
+        frame.nrm.push_back(n);
+    }
+
+    // Same target construction the real trackers use (GpuIcpTracker.cpp / PointToPlaneIcpTracker.cpp):
+    // sub-voxel surface point per entry.
+    Engine::Registration::PointCloud tgt;
+    tgt.points.reserve(model.entries.size());
+    tgt.normals.reserve(model.entries.size());
+    for (const auto &entry: model.entries) {
+        tgt.points.push_back(entry.center - entry.tsdf * truncation * entry.normal);
+        tgt.normals.push_back(entry.normal);
+    }
+
+    // Robust params matching the real trackers: maxCorrDist = 2*voxel, huberScale = voxel;
+    // normalCompatibilityCosine left at its default so normal-rejection is active identically on
+    // both paths. Source normals are passed on both solves, so normal rejection is exercised.
+    Engine::Registration::RegistrationParam params;
+    params.maxCorrDist = 2.0f * voxel;
+    params.huberScale = voxel;
+
+    const auto cpu = Engine::Registration::AlignPointToPlaneIcp(frame.pts, frame.nrm, tgt,
+                                                                 Eigen::Matrix4f::Identity(), params);
+    ASSERT_TRUE(cpu.valid);
+
+    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+    const auto g = gpu.Solve(frame.pts, frame.nrm, tgt, Eigen::Isometry3f::Identity().matrix(), params);
+    ASSERT_TRUE(g.valid);
+
+    // Both should recover the same pose from the same contaminated fixture. Same tolerance as the
+    // clean-fixture gate (SolveMatchesCpuOnCorner) -- the fixed-point H/b reduction (SCALE=10000)
+    // does not need loosening here: measured max abs diff on this contaminated/weighted fixture is
+    // ~5.5e-5, comfortably inside 5e-3 (no formula divergence between the GPU and CPU robust paths).
+    EXPECT_TRUE(((g.T - cpu.T).array().abs() < 5e-3f).all()) << "gpu:\n"
+                                                              << g.T << "\ncpu:\n"
+                                                              << cpu.T;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Registration-quality plan, Task 5 (Tier 3): coarse-to-fine correspondence-distance annealing.
 // Same clean corner fixture as the harnesses above, but with a LARGER initial perturbation than any
 // of them -- large enough that a single FIXED correspondence gate at the value the real trackers use

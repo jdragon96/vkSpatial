@@ -29,6 +29,15 @@ namespace Engine::Pipeline {
         // both too tight to find correspondences AND makes the dense LocalGrid cell (= maxCorrDist)
         // 5x finer than the voxel, exploding nCells = (extent/cell)^3 (a 190m scene at 0.1m ~=
         // 1.6e9 cells -> a multi-GB bucketStart per frame). 2x voxel keeps the grid ~voxel-res.
+        //
+        // minCorrespondenceDistance is deliberately left at its default (0) here, so Tier-3
+        // coarse-to-fine annealing (AnnealIcpIteration, RegistrationTypes.h) is DORMANT -- only
+        // Tiers 1-2 (sub-voxel target + Huber/normal-rejection robustness) are active in production.
+        // To enable annealing, set minCorrespondenceDistance > 0 AND widen maxCorrDist for a large
+        // convergence basin (the annealed schedule narrows the per-iteration filter down FROM
+        // maxCorrDist, so a tight maxCorrDist leaves nothing to anneal). The cost of doing so: a
+        // wider maxCorrDist grows the GPU LocalGrid cell count / memory (see the nCells blow-up
+        // above) -- exactly why the live gate above is kept at 2*voxel instead.
         Engine::Registration::RegistrationParam params = m_params;
         if (model->voxel > 0.0f) {
             params.maxCorrDist = 2.0f * model->voxel;
