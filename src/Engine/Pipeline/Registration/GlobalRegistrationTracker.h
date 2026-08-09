@@ -1,8 +1,8 @@
 #pragma once
 
-#include "Engine/Pipeline/Registration/Tracker.h"
 #include "Engine/Pipeline/Registration/GlobalRegistration.h"
-#include "Engine/Features/RegistrationTypes.h"
+#include "Engine/Pipeline/Registration/RegistrationTypes.h"
+#include "Engine/Pipeline/Registration/Tracker.h"
 #include "Engine/Spatial/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
 
 namespace Engine::Pipeline {

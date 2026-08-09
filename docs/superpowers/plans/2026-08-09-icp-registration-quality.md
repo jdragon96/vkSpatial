@@ -32,7 +32,7 @@
 | `src/Engine/Pipeline/Registration/PointToPlaneIcp.h` | CPU Σ residual² + `res.rmse` (Task 1); Huber + normal rejection (Task 4); per-iteration distance filter (Task 5) |
 | `src/Engine/Pipeline/Types.h` | add `float truncationDistance` to `ModelSnapshot` (Task 3) |
 | `src/Engine/Pipeline/Integration/IntegrationThread.cpp` | populate `snap.truncationDistance` (Task 3) |
-| `src/Engine/Pipeline/Registration/Tracker.cpp` | sub-voxel target in both trackers (Task 3); pass source normals to `Solve` (Task 4) |
+| `src/Engine/Pipeline/Registration/GpuIcpTracker.cpp` + `PointToPlaneIcpTracker.cpp` | sub-voxel target in both trackers (Task 3); pass source normals to `Solve`/`AlignPointToPlaneIcp` (Task 4) — the trackers are split per-strategy files (no monolithic `Tracker.cpp`) |
 | `src/Engine/Pipeline/Registration/RegistrationThread.{h,cpp}` | constant-velocity motion prior + running RMSE accessor (Task 2 accessor, Task 5 motion) |
 | `test/test_gpuIcp.cpp` | RMSE consistency test (Task 1); perturbation-recovery harness (Task 2); per-tier assertions (Tasks 3–5) |
 | `example2/VoxelFillRenderStrategy.cpp` | live tracking RMSE in the stats panel (Task 2) |
@@ -203,7 +203,7 @@ In `example2/VoxelFillRenderStrategy.cpp`, where the pipeline-stage averages are
 
 ## Task 3 — Tier 1: sub-voxel target from stored `tsdf`
 
-**Files:** Modify `Types.h` (`ModelSnapshot`), `IntegrationThread.cpp`, `Tracker.cpp` (both trackers); Test `test/test_gpuIcp.cpp`.
+**Files:** Modify `Types.h` (`ModelSnapshot`), `IntegrationThread.cpp`, `GpuIcpTracker.cpp` + `PointToPlaneIcpTracker.cpp` (both trackers); Test `test/test_gpuIcp.cpp`.
 
 **Interfaces:** consumes `ModelSnapshot.truncationDistance` (added here). Produces sub-voxel target points in both trackers.
 
@@ -215,7 +215,7 @@ The `truncationDistance` field was added to `ModelSnapshot` in Task 2. Here, pop
 
 - [ ] **Step 3: Project centers to the sub-voxel surface in both trackers**
 
-In `Tracker.cpp`, in BOTH `PointToPlaneIcpTracker::Track` and `GpuIcpTracker::Track`, when building the target, replace `target.points.push_back(entry.center);` with the sub-voxel surface point:
+In `PointToPlaneIcpTracker.cpp` and `GpuIcpTracker.cpp`, in each `::Track()` where the target is built, replace `target.points.push_back(entry.center);` with the sub-voxel surface point:
 
 ```cpp
                     const float truncationDistance = model->truncationDistance > 0.0f
@@ -239,7 +239,7 @@ Build the three targets; run the harness (record the improved numbers); `./build
 
 ## Task 4 — Tier 2: robust correspondences (Huber + normal rejection + tighter gate)
 
-**Files:** Modify `icp_iterate.comp.glsl`, `GpuPointToPlaneIcp.{h,cpp}`, `Tracker.cpp` (pass source normals), `PointToPlaneIcp.h`; Test `test/test_gpuIcp.cpp`.
+**Files:** Modify `icp_iterate.comp.glsl`, `GpuPointToPlaneIcp.{h,cpp}`, `GpuIcpTracker.cpp` + `PointToPlaneIcpTracker.cpp` (pass source normals), `PointToPlaneIcp.h`; Test `test/test_gpuIcp.cpp`.
 
 **Interfaces:** `GpuPointToPlaneIcp::Solve` gains a `const std::vector<Eigen::Vector3f> &sourceNormals` parameter; `AlignPointToPlaneIcp` gains the same. A `huberScale` + `normalCompatibilityCosine` on `RegistrationParam`.
 
@@ -295,7 +295,7 @@ In `AlignPointToPlaneIcp`, the signature gains `const std::vector<Eigen::Vector3
 ```
 Keep the exact same weight/rejection math as the CPU so `SolveMatchesCpuOnCorner` holds. `IcpPC` in `dispatchCentred` sets `pc.huberScale`, `pc.normalCompatibilityCosine` from `params`.
 
-- [ ] **Step 5: `Tracker.cpp` passes source normals** — both trackers now call `Solve(frame.pts, frame.nrm, target, prior, params)` / `AlignPointToPlaneIcp(frame.pts, frame.nrm, target, prior, params)`, and set `params.huberScale = model->voxel; params.maxCorrDist = <tighter, per Task 5 default>`.
+- [ ] **Step 5: the trackers pass source normals** — in `GpuIcpTracker.cpp` and `PointToPlaneIcpTracker.cpp`, both now call `Solve(frame.pts, frame.nrm, target, prior, params)` / `AlignPointToPlaneIcp(frame.pts, frame.nrm, target, prior, params)`, and set `params.huberScale = model->voxel; params.maxCorrDist = <tighter, per Task 5 default>`.
 
 - [ ] **Step 6: Build + harness (record) + suite green** (`SolveMatchesCpuOnCorner` must stay within tolerance — GPU/CPU consistency).
 

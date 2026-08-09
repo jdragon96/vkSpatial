@@ -7,6 +7,7 @@
 cmake -S . -B build-rel -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build-rel --target voxel_fill_debugger -j8
 ./build-rel/example2/voxel_fill_debugger --dir scan_out --voxel 0.5
+./build-rel/example2/voxel_fill_debugger --dir scan_out --voxel 0.5 --tracker icp
 ```
 
 ## License

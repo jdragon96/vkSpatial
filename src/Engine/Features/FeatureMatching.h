@@ -1,12 +1,12 @@
 #pragma once
 
-#include "Engine/Features/RegistrationTypes.h"
+#include "Engine/Pipeline/Registration/RegistrationTypes.h"
 
 namespace Engine::Features {
 
-    using Engine::Registration::PointCloud;
-    using Engine::Registration::Fpfh33;
     using Engine::Registration::Correspondence;
+    using Engine::Registration::Fpfh33;
+    using Engine::Registration::PointCloud;
 
     // Nearest-neighbour feature matching in 33-D FPFH descriptor space with Lowe's ratio
     // test, src -> tgt.
@@ -28,6 +28,6 @@ namespace Engine::Features {
     // Eigen/STL only -- does not use Engine::Spatial (GPU BVH, has a documented large-N
     // correctness bug, see docs/KNOWN_ISSUES).
     std::vector<Correspondence> MatchFeatures(const std::vector<Fpfh33> &srcF, const std::vector<Fpfh33> &tgtF,
-                                               float ratioThr = 0.95f, int numMaxCorr = 5000);
+                                              float ratioThr = 0.95f, int numMaxCorr = 5000);
 
 } // namespace Engine::Features

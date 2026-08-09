@@ -204,8 +204,10 @@ namespace Engine::Pipeline {
     }
 
     Engine::Registration::RegistrationResult GpuPointToPlaneIcp::Solve(
-            const std::vector<Eigen::Vector3f> &src, const Engine::Registration::PointCloud &tgt,
-            const Eigen::Matrix4f &priorT, const Engine::Registration::RegistrationParam &params) {
+            const std::vector<Eigen::Vector3f> &src,
+            const Engine::Registration::PointCloud &tgt,
+            const Eigen::Matrix4f &priorT,
+            const Engine::Registration::RegistrationParam &params) {
         Engine::Registration::RegistrationResult res;
         res.T = priorT;
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return res;
@@ -237,7 +239,7 @@ namespace Engine::Pipeline {
             res.fitness = float(a.inliers) / float(src.size());
             if (x.norm() < params.convEps) break;
         }
-        res.T = TcInv * T * Tc; // un-centre back to world
+        res.T = TcInv * T * Tc;
         res.valid = res.numInliers >= size_t(params.minInliers);
         return res;
     }

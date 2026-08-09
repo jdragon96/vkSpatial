@@ -24,10 +24,12 @@
 ## File Structure
 
 **New `src/Engine/Features/`** (lib `Engine::Features`, links Eigen only):
+
 - `RegistrationTypes.h` — `PointCloud`, `RegistrationResult`, `RegistrationParam` (namespace `Engine::Registration`)
 - `Fpfh.h/.cpp`, `FeatureMatching.h/.cpp`, `Downsample.h/.cpp` (namespace `Engine::Features`)
 
 **`src/Engine/Pipeline/Registration/`** (flat, compiled into `EnginePipeline`):
+
 - `PointToPlaneIcp.h` (CPU, from `Icp.h`), `GpuPointToPlaneIcp.h/.cpp` (from `GpuIcp.*`), `GlobalRegistration.h/.cpp`
 - `Tracker.h` (interface + `TrackerRegistry`), `TrackerRegistry.cpp` (central `Default()`)
 - `IdentityTracker.h/.cpp`, `PointToPlaneIcpTracker.h/.cpp`, `GpuIcpTracker.h/.cpp`, `GlobalRegistrationTracker.h/.cpp`
@@ -42,12 +44,14 @@
 Extract the feature algorithms and shared types into a new low-level lib. After this task `src/Engine/Registration/` still holds `Icp.h` + `GlobalRegistration.*` (moved in Task 2).
 
 **Files:**
+
 - Create dir: `src/Engine/Features/`
 - Move: `Engine/Registration/{RegistrationTypes.h,Fpfh.h,Fpfh.cpp,FeatureMatching.h,FeatureMatching.cpp,Downsample.h,Downsample.cpp}` → `Engine/Features/`
 - Modify: `src/Engine/CMakeLists.txt` (add `EngineFeatures`; `EngineRegistration` links it)
 - Modify (includes/namespaces): the moved files + every includer of the moved headers (`GlobalRegistration.*`, `Icp.h`, `Pipeline/Registration/Tracker.cpp`, `Pipeline/Registration/GpuIcp.h`, `test/test_icp.cpp`, `test/test_gpuIcp.cpp`, `test/test_registration.cpp`, `example2/registration_chair_demo.cpp`, `example2/Alignment.h`)
 
 **Interfaces:**
+
 - Produces: `Engine::Features::ComputeFpfh`, `Engine::Features::MatchFeatures`, `Engine::Features::DownsampleVoxel`, `Engine::Features::Fpfh33`, `Engine::Features::Correspondence`; and `Engine::Registration::{PointCloud,RegistrationResult,RegistrationParam}` now at `Engine/Features/RegistrationTypes.h`.
 
 - [ ] **Step 1: Move the files and add RegistrationParam to the types header**
@@ -151,6 +155,7 @@ cd /Users/sjy/Desktop/VulkanProject/VkLBVH
 cmake -S . -B build >/dev/null && cmake --build build --target vkspatial_tests voxel_fill_debugger registration_chair_demo -j8 2>&1 | grep -E "error:|Built target (vkspatial_tests|voxel_fill_debugger|registration_chair_demo)$"
 ./build/test/vkspatial_tests 2>&1 | grep -E '\[  PASSED  \]|\[  FAILED  \]'
 ```
+
 Expected: all three targets built; `[  PASSED  ]` ≈237, no `[  FAILED  ]`. Fix any compile error the requalification/includes missed (the build pinpoints them), then re-run.
 
 - [ ] **Step 7: Commit**
@@ -167,12 +172,14 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ## Task 2: Move CPU ICP + GlobalRegistration into Pipeline/Registration; dissolve `Engine::Registration` lib
 
 **Files:**
+
 - Move: `Engine/Registration/Icp.h` → `Engine/Pipeline/Registration/PointToPlaneIcp.h`
 - Move: `Engine/Registration/GlobalRegistration.{h,cpp}` → `Engine/Pipeline/Registration/`
 - Delete: empty `src/Engine/Registration/`
 - Modify: `src/Engine/CMakeLists.txt` (remove `EngineRegistration`; `EnginePipeline` links `Engine::Features` + `Ceres`), `example2/CMakeLists.txt` (`registration_chair_demo` link), and every includer of the two moved headers.
 
 **Interfaces:**
+
 - Consumes: `Engine::Features` (Task 1).
 - Produces: `Engine::Registration::AlignPointToPlaneIcp` at `Engine/Pipeline/Registration/PointToPlaneIcp.h`; `Engine::Registration::Estimate` at `Engine/Pipeline/Registration/GlobalRegistration.h`.
 
@@ -195,7 +202,7 @@ sed -i '' 's|Engine/Registration/Icp.h|Engine/Pipeline/Registration/PointToPlane
 sed -i '' 's|Engine/Registration/GlobalRegistration.h|Engine/Pipeline/Registration/GlobalRegistration.h|g' $FILES
 ```
 
-(`PointToPlaneIcp.h`'s own `#include "Engine/Features/RegistrationTypes.h"` was already fixed in Task 1 and is unaffected. `GpuIcp.h` still includes `PointToPlaneIcp.h` only for `RegistrationParam`; leave that here — Task 3 drops it.)
+(`PointToPlaneIcp.h`'s own `#include "Engine/Pipeline/Registration/RegistrationTypes.h"` was already fixed in Task 1 and is unaffected. `GpuIcp.h` still includes `PointToPlaneIcp.h` only for `RegistrationParam`; leave that here — Task 3 drops it.)
 
 - [ ] **Step 3: CMake — dissolve `EngineRegistration`, relink `EnginePipeline`**
 
@@ -222,6 +229,7 @@ cd /Users/sjy/Desktop/VulkanProject/VkLBVH
 cmake -S . -B build >/dev/null && cmake --build build --target vkspatial_tests voxel_fill_debugger registration_chair_demo -j8 2>&1 | grep -E "error:|Built target (vkspatial_tests|voxel_fill_debugger|registration_chair_demo)$"
 ./build/test/vkspatial_tests 2>&1 | grep -E '\[  PASSED  \]|\[  FAILED  \]'
 ```
+
 Expected: all built; ≈237 passed, 0 failed. If the linker reports undefined `Engine::Registration::Estimate`/`AlignPointToPlaneIcp` symbols, a consumer still links the deleted `Engine::Registration` — fix its `target_link_libraries` to `Engine::Pipeline`.
 
 - [ ] **Step 5: Commit**
@@ -238,10 +246,12 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ## Task 3: Rename `GpuIcp` → `GpuPointToPlaneIcp`
 
 **Files:**
+
 - Move: `Engine/Pipeline/Registration/GpuIcp.{h,cpp}` → `GpuPointToPlaneIcp.{h,cpp}`
 - Modify: includers of `GpuIcp.h` (`Tracker.cpp`, `test/test_gpuIcp.cpp`), and `GpuPointToPlaneIcp.h` itself (drop the now-unnecessary `PointToPlaneIcp.h` include).
 
 **Interfaces:**
+
 - Consumes: `Engine::Pipeline::GpuPointToPlaneIcp` (class name unchanged), `Engine::Registration::RegistrationParam` (from `RegistrationTypes.h`).
 
 - [ ] **Step 1: Rename + fix the include self-reference**
@@ -272,7 +282,8 @@ cd /Users/sjy/Desktop/VulkanProject/VkLBVH
 cmake -S . -B build >/dev/null && cmake --build build --target vkspatial_tests voxel_fill_debugger registration_chair_demo -j8 2>&1 | grep -E "error:|Built target (vkspatial_tests|voxel_fill_debugger|registration_chair_demo)$"
 ./build/test/vkspatial_tests 2>&1 | grep -E '\[  PASSED  \]|\[  FAILED  \]'
 ```
-Expected: built; ≈237 passed, 0 failed. If `RegistrationParam` is now undefined in the GPU header, re-add `#include "Engine/Features/RegistrationTypes.h"` (it should already be there).
+
+Expected: built; ≈237 passed, 0 failed. If `RegistrationParam` is now undefined in the GPU header, re-add `#include "Engine/Pipeline/Registration/RegistrationTypes.h"` (it should already be there).
 
 - [ ] **Step 4: Commit**
 
@@ -290,11 +301,13 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 Currently `Tracker.cpp` holds all four strategy classes (in an anonymous namespace) plus `TrackerRegistry::Default()`. Split into named per-strategy files + a central registry file.
 
 **Files:**
+
 - Modify: `src/Engine/Pipeline/Registration/Tracker.h` (unchanged interface; verify it still only declares `Tracker`/`TrackingResult`/`TrackerRegistry`)
 - Create: `IdentityTracker.{h,cpp}`, `PointToPlaneIcpTracker.{h,cpp}`, `GpuIcpTracker.{h,cpp}`, `GlobalRegistrationTracker.{h,cpp}`, `TrackerRegistry.cpp`
 - Delete: `src/Engine/Pipeline/Registration/Tracker.cpp`
 
 **Interfaces:**
+
 - Consumes: `Tracker`, `TrackingResult`, `TrackerRegistry` (`Tracker.h`); `AlignPointToPlaneIcp`, `GpuPointToPlaneIcp`, `Estimate`, `AdvancedEntry`.
 - Produces: unchanged registry names `identity`/`icp`/`icp-cpu`/`global` via `TrackerRegistry::Default()` in `TrackerRegistry.cpp`.
 
@@ -321,6 +334,7 @@ namespace Engine::Pipeline {
 ```
 
 `PointToPlaneIcpTracker.cpp` then holds the `Track()` body currently in `Tracker.cpp` (the crop-free full-model target build + voxel-scaled `maxCorrDist` + `AlignPointToPlaneIcp` call). Do the same for:
+
 - `IdentityTracker.{h,cpp}` (`"identity"`, returns identity pose)
 - `GpuIcpTracker.{h,cpp}` (`"icp"`, includes `GpuPointToPlaneIcp.h` + `Engine/Core/Context.h`; holds `m_ctx`/`m_gpu`; the world-frame crop + voxel-scaled `maxCorrDist` + `Solve` body verbatim)
 - `GlobalRegistrationTracker.{h,cpp}` (`"global"`, includes `GlobalRegistration.h`)
@@ -367,6 +381,7 @@ cd /Users/sjy/Desktop/VulkanProject/VkLBVH
 cmake -S . -B build >/dev/null && cmake --build build --target vkspatial_tests voxel_fill_debugger registration_chair_demo -j8 2>&1 | grep -E "error:|Built target (vkspatial_tests|voxel_fill_debugger|registration_chair_demo)$"
 ./build/test/vkspatial_tests 2>&1 | grep -E '\[  PASSED  \]|\[  FAILED  \]'
 ```
+
 Expected: built; ≈237 passed, 0 failed. Registry-driven tests (`Pipeline.GpuIcpTrackerRuns` asserting `Create("icp")`/`Create("icp-cpu")` non-null, `test_pipeline` identity/icp) prove the hub still wires all four names.
 
 - [ ] **Step 5: Commit**
@@ -391,4 +406,5 @@ ls src/Engine/Features src/Engine/Pipeline/Registration
 grep -rl 'Engine/Registration/' src test example2 && echo "STRAGGLER old include remains (fix it)" || echo "no stale Engine/Registration includes"
 ./build/test/vkspatial_tests 2>&1 | tail -3
 ```
+
 Expected: `Engine/Registration removed OK`, no stale includes, suite ≈237 pass / 1 skip.

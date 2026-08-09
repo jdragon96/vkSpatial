@@ -15,7 +15,7 @@
 // (Tasks 1-5) works end-to-end, not just on synthetic fixtures.
 #include "Engine/Core/Context.h"
 #include "Engine/Pipeline/Registration/GlobalRegistration.h"
-#include "Engine/Features/RegistrationTypes.h"
+#include "Engine/Pipeline/Registration/RegistrationTypes.h"
 #include "Engine/Spatial/DirectionalTSDF.h"
 
 #include <Eigen/Core>
@@ -30,45 +30,46 @@
 
 namespace {
 
-struct Frame {
-    std::vector<Eigen::Vector3f> points, normals;
-};
+    struct Frame {
+        std::vector<Eigen::Vector3f> points, normals;
+    };
 
-// Minimal ASCII-PLY reader for the x,y,z,nx,ny,nz layout used by scanData/frame_*.ply
-// (same loader as directional_tsdf_chair_benchmark.cpp).
-bool loadFrame(const std::string &path, Frame &out) {
-    std::ifstream in(path);
-    if (!in) return false;
-    std::string line;
-    bool inData = false;
-    while (std::getline(in, line)) {
-        if (!inData) {
-            if (line.rfind("end_header", 0) == 0) inData = true;
-            continue;
+    // Minimal ASCII-PLY reader for the x,y,z,nx,ny,nz layout used by scanData/frame_*.ply
+    // (same loader as directional_tsdf_chair_benchmark.cpp).
+    bool loadFrame(const std::string &path, Frame &out) {
+        std::ifstream in(path);
+        if (!in) return false;
+        std::string line;
+        bool inData = false;
+        while (std::getline(in, line)) {
+            if (!inData) {
+                if (line.rfind("end_header", 0) == 0) inData = true;
+                continue;
+            }
+            std::istringstream ss(line);
+            float x, y, z, nx, ny, nz;
+            if (!(ss >> x >> y >> z >> nx >> ny >> nz)) continue;
+            out.points.emplace_back(x, y, z);
+            out.normals.emplace_back(nx, ny, nz);
         }
-        std::istringstream ss(line);
-        float x, y, z, nx, ny, nz;
-        if (!(ss >> x >> y >> z >> nx >> ny >> nz)) continue;
-        out.points.emplace_back(x, y, z);
-        out.normals.emplace_back(nx, ny, nz);
+        return !out.points.empty();
     }
-    return !out.points.empty();
-}
 
-Eigen::Vector3f centroidOf(const std::vector<Eigen::Vector3f> &pts) {
-    Eigen::Vector3f c = Eigen::Vector3f::Zero();
-    for (const auto &p : pts) c += p;
-    if (!pts.empty()) c /= float(pts.size());
-    return c;
-}
+    Eigen::Vector3f centroidOf(const std::vector<Eigen::Vector3f> &pts) {
+        Eigen::Vector3f c = Eigen::Vector3f::Zero();
+        for (const auto &p: pts) c += p;
+        if (!pts.empty()) c /= float(pts.size());
+        return c;
+    }
 
-Eigen::Vector3f meanNormalOf(const std::vector<Eigen::Vector3f> &nrms) {
-    Eigen::Vector3f m = Eigen::Vector3f::Zero();
-    for (const auto &n : nrms) m += n;
-    if (m.norm() > 1e-6f) m.normalize();
-    else m = Eigen::Vector3f(0, 0, 1);
-    return m;
-}
+    Eigen::Vector3f meanNormalOf(const std::vector<Eigen::Vector3f> &nrms) {
+        Eigen::Vector3f m = Eigen::Vector3f::Zero();
+        for (const auto &n: nrms) m += n;
+        if (m.norm() > 1e-6f) m.normalize();
+        else
+            m = Eigen::Vector3f(0, 0, 1);
+        return m;
+    }
 
 } // namespace
 
@@ -102,8 +103,8 @@ int main(int argc, char **argv) {
     // recovered world poses stay near-identity, the raw-frame bbox is a fair stand-in for
     // the reconstructed (world-frame) scene extent.
     Eigen::Vector3f bbMin = frames[0].points[0], bbMax = frames[0].points[0];
-    for (const auto &fr : frames)
-        for (const auto &p : fr.points) {
+    for (const auto &fr: frames)
+        for (const auto &p: fr.points) {
             bbMin = bbMin.cwiseMin(p);
             bbMax = bbMax.cwiseMax(p);
         }

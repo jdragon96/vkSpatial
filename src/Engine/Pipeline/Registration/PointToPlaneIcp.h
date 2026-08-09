@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Features/RegistrationTypes.h"
+#include "Engine/Pipeline/Registration/RegistrationTypes.h"
 
 #include <Eigen/Dense>
 #include <Eigen/Geometry>

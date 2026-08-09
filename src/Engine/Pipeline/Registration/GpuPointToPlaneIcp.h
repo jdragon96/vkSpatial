@@ -3,7 +3,7 @@
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
-#include "Engine/Features/RegistrationTypes.h"
+#include "Engine/Pipeline/Registration/RegistrationTypes.h"
 #include <Eigen/Dense>
 #include <cstdint>
 #include <memory>

@@ -1,9 +1,9 @@
 #pragma once
 
-#include "Engine/Pipeline/Registration/Tracker.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Pipeline/Registration/GpuPointToPlaneIcp.h"
-#include "Engine/Features/RegistrationTypes.h"
+#include "Engine/Pipeline/Registration/RegistrationTypes.h"
+#include "Engine/Pipeline/Registration/Tracker.h"
 #include "Engine/Spatial/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
 
 #include <memory>

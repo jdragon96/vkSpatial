@@ -1,11 +1,11 @@
 #pragma once
 
-#include "Engine/Features/RegistrationTypes.h"
+#include "Engine/Pipeline/Registration/RegistrationTypes.h"
 
 namespace Engine::Features {
 
-    using Engine::Registration::PointCloud;
     using Engine::Registration::Fpfh33;
+    using Engine::Registration::PointCloud;
 
     // Fast Point Feature Histogram (FPFH) descriptor, Rusu et al. 2009.
     //

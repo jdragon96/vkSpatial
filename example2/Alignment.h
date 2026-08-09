@@ -4,7 +4,7 @@
 
 #include "Engine/Pipeline/Registration/GlobalRegistration.h"
 #include "Engine/Pipeline/Registration/PointToPlaneIcp.h"
-#include "Engine/Features/RegistrationTypes.h"
+#include "Engine/Pipeline/Registration/RegistrationTypes.h"
 #include "Engine/Spatial/AdvancedTSDF.h" // AdvancedEntry
 
 #include <Eigen/Core>
@@ -68,7 +68,7 @@ namespace pipeline {
             Engine::Registration::PointCloud tgt;
             tgt.points.reserve(model->entries.size());
             tgt.normals.reserve(model->entries.size());
-            for (const Engine::Spatial::AdvancedEntry &e : model->entries) {
+            for (const Engine::Spatial::AdvancedEntry &e: model->entries) {
                 tgt.points.push_back(e.center);
                 tgt.normals.push_back(e.normal);
             }
@@ -103,7 +103,7 @@ namespace pipeline {
             src.normals = frame.nrm;
             tgt.points.reserve(model->entries.size());
             tgt.normals.reserve(model->entries.size());
-            for (const Engine::Spatial::AdvancedEntry &e : model->entries) {
+            for (const Engine::Spatial::AdvancedEntry &e: model->entries) {
                 tgt.points.push_back(e.center);
                 tgt.normals.push_back(e.normal);
             }

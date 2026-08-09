@@ -1,5 +1,5 @@
 #include "Engine/Pipeline/Registration/PointToPlaneIcp.h"
-#include "Engine/Features/RegistrationTypes.h"
+#include "Engine/Pipeline/Registration/RegistrationTypes.h"
 
 #include <gtest/gtest.h>
 
@@ -8,10 +8,10 @@
 #include <cmath>
 #include <vector>
 
-using Engine::Registration::AlignPointToPlaneIcp;
-using Engine::Registration::RegistrationParam;
-using Engine::Registration::PointCloud;
 using Eigen::Vector3f;
+using Engine::Registration::AlignPointToPlaneIcp;
+using Engine::Registration::PointCloud;
+using Engine::Registration::RegistrationParam;
 
 namespace {
 
@@ -23,11 +23,11 @@ namespace {
         for (int i = 0; i <= half; ++i)
             for (int j = 0; j <= half; ++j) {
                 const float a = i * step, b = j * step;
-                c.points.emplace_back(a, b, 0.0f);   // z=0 face, +Z normal
+                c.points.emplace_back(a, b, 0.0f); // z=0 face, +Z normal
                 c.normals.emplace_back(0, 0, 1);
-                c.points.emplace_back(a, 0.0f, b);   // y=0 face, +Y normal
+                c.points.emplace_back(a, 0.0f, b); // y=0 face, +Y normal
                 c.normals.emplace_back(0, 1, 0);
-                c.points.emplace_back(0.0f, a, b);   // x=0 face, +X normal
+                c.points.emplace_back(0.0f, a, b); // x=0 face, +X normal
                 c.normals.emplace_back(1, 0, 0);
             }
         return c;
@@ -47,7 +47,7 @@ TEST(Icp, RecoversKnownTransform) {
     // src = known * tgt (so the recovered T should be ~ known^{-1}).
     std::vector<Vector3f> src;
     src.reserve(tgt.points.size());
-    for (const Vector3f &p : tgt.points)
+    for (const Vector3f &p: tgt.points)
         src.push_back((known * p.homogeneous()).head<3>());
 
     RegistrationParam params;
@@ -61,7 +61,7 @@ TEST(Icp, RecoversKnownTransform) {
     // Applying T to src should land on the target: residual near zero.
     const Eigen::Matrix4f T = res.T;
     double rms = 0.0;
-    for (const Vector3f &s : src) {
+    for (const Vector3f &s: src) {
         const Vector3f p = (T * s.homogeneous()).head<3>();
         const Vector3f orig = (known.inverse() * s.homogeneous()).head<3>();
         rms += (p - orig).squaredNorm();
