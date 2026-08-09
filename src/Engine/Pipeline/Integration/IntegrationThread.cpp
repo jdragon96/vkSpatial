@@ -41,7 +41,8 @@ namespace Engine::Pipeline {
                            const Engine::Spatial::SubmapAdvancedTSDF &submap,
                            util::StageProfiler &prof,
                            int processed,
-                           float baseVoxel) {
+                           float baseVoxel,
+                           float truncationDistance) {
             {
                 util::ScopedStageTimer t(prof, "download");
                 submap.DownloadEntries(snap.entries);
@@ -51,6 +52,8 @@ namespace Engine::Pipeline {
             snap.trackerMs = 0.0;
             snap.processedFrame = processed;
             snap.voxel = baseVoxel; // so the tracker can scale its correspondence distance to the map
+            snap.truncationDistance = truncationDistance; // so the tracker can recover a sub-voxel target
+                                                           // point via center - tsdf*truncationDistance*normal
             snap.baseTiles = submap.BaseTileCount();
             snap.detailTiles = submap.DetailTileCount();
             snap.denseBlocks = submap.DenseBlockCount();
@@ -129,7 +132,7 @@ namespace Engine::Pipeline {
                 submap.SetCurrentFrame(processed); // GPU stamps newly-filled voxels with this frame
                 integrateWorld(submap, tf, prof);
                 std::shared_ptr<ModelSnapshot> snap = acquireSnapshot();
-                buildSnapshot(*snap, submap, prof, processed, m_cfg.baseVoxel);
+                buildSnapshot(*snap, submap, prof, processed, m_cfg.baseVoxel, m_cfg.truncation);
                 m_comm.model.Publish(snap);
             }
             m_processed = processed; // reflected in a published snapshot

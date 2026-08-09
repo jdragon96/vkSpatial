@@ -445,5 +445,15 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarness) {
     const float reconRmse = Engine::Eval::NearestNeighbourRMSE(alignedSource, trueSurface);
     std::printf("[harness] transErr %.5f rotErr %.5f reconNnRmse %.5f residualRmse %.5f inliers %zu\n",
                 recoveredTranslationError, recoveredRotationErrorRadians, reconRmse, result.rmse, result.inliers);
-    SUCCEED();
+
+    // Registration-quality plan, Task 3 (Tier 1): the tracker now targets the sub-voxel surface point
+    // (center - tsdf*truncationDistance*normal) instead of the quantized voxel center, so the recovered
+    // pose should stop absorbing the voxel-quantization offset. Task 2's raw-center baseline measured
+    // transErr 0.03001 / reconNnRmse 0.02237; both thresholds sit safely below that baseline but above
+    // the sub-voxel result actually achieved (~1e-3 or lower), so this fails if the sub-voxel target
+    // construction regresses back toward raw centers.
+    EXPECT_LT(recoveredTranslationError, 0.01f)
+            << "sub-voxel target should beat the Task 2 raw-center baseline (transErr 0.03001)";
+    EXPECT_LT(reconRmse, 0.01f)
+            << "sub-voxel target should beat the Task 2 raw-center baseline (reconNnRmse 0.02237)";
 }

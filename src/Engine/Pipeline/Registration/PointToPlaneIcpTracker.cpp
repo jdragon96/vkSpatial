@@ -9,12 +9,18 @@ namespace Engine::Pipeline {
         r.pose = priorPose;
         if (model == nullptr || model->entries.empty() || frame.pts.empty()) return r;
 
+        // entry.tsdf is a sub-voxel signed distance (normalized to truncation units) from the quantized
+        // voxel center to the true surface; center - tsdf*truncationDistance*normal recovers that
+        // sub-voxel surface point instead of handing the tracker the quantized voxel center, which would
+        // otherwise leave a truncationDistance/2-scale offset for the solved pose to absorb.
+        const float truncationDistance = model->truncationDistance > 0.0f ? model->truncationDistance : 0.0f;
         Engine::Registration::PointCloud tgt;
         tgt.points.reserve(model->entries.size());
         tgt.normals.reserve(model->entries.size());
-        for (const Engine::Spatial::AdvancedEntry &e: model->entries) {
-            tgt.points.push_back(e.center);
-            tgt.normals.push_back(e.normal);
+        for (const Engine::Spatial::AdvancedEntry &entry: model->entries) {
+            const Eigen::Vector3f surfacePoint = entry.center - entry.tsdf * truncationDistance * entry.normal;
+            tgt.points.push_back(surfacePoint);
+            tgt.normals.push_back(entry.normal);
         }
 
         Engine::Registration::RegistrationParam params = m_params;
