@@ -1,14 +1,11 @@
 #pragma once
+#include "Engine/Spatial/Extraction/SurfaceMesh.h"
 #include "Engine/Spatial/SimpleTSDF.h"
 #include <Eigen/Core>
 #include <vector>
 namespace Engine::Spatial {
     struct MixedVoxel { Eigen::Vector3f center; float tsdf; float weight; float size; uint8_t level; };
-    struct AdaptiveMesh {
-        std::vector<Eigen::Vector3f> vertices;
-        std::vector<Eigen::Vector3i> triangles;
-        std::vector<Eigen::Vector3f> normals;
-    };
+    using AdaptiveMesh = Engine::Spatial::Extraction::SurfaceMesh;
     class AdaptiveVoxelGrid {
     public:
         void Build(Engine::Core::Context& ctx, float fineVoxelSize, float truncation,

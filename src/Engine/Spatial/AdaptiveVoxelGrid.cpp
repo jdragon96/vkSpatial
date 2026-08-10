@@ -1,4 +1,5 @@
 #include "Engine/Spatial/AdaptiveVoxelGrid.h"
+#include "Engine/Spatial/Extraction/MarchingCubesCore.h"
 #include "Engine/Spatial/MarchingCubesTables.h"
 
 #include <Eigen/Geometry> // Vector3f::cross
@@ -14,17 +15,8 @@ namespace Engine::Spatial {
 
     namespace {
 
-        // Hashes an integer voxel coordinate for the CPU Marching Cubes value map.
-        struct IVec3Hash {
-            size_t operator()(const std::array<int, 3> &v) const noexcept {
-                size_t h = std::hash<int>()(v[0]);
-                h = h * 31u + std::hash<int>()(v[1]);
-                h = h * 31u + std::hash<int>()(v[2]);
-                return h;
-            }
-        };
-
-        using VoxelValueMap = std::unordered_map<std::array<int, 3>, float, IVec3Hash>;
+        using Engine::Spatial::Extraction::core::IVec3Hash;
+        using VoxelValueMap = Engine::Spatial::Extraction::core::VoxelValueMap;
 
         // Recovers the integer voxel coordinate (in units of `cellSize`) from a world-space
         // centre; identical to buildMixed()'s vcoord lambda (v = lround(center/cellSize - 0.5)
@@ -50,23 +42,6 @@ namespace Engine::Spatial {
         std::array<int, 3> floorDiv2(const std::array<int, 3> &v) {
             return {floorDiv(v[0], 2), floorDiv(v[1], 2), floorDiv(v[2], 2)};
         }
-
-        // Mirrors voxel_common.glsl's vertInterp: linear interpolation to the TSDF zero-crossing.
-        Eigen::Vector3f vertInterp(const Eigen::Vector3f &p1, const Eigen::Vector3f &p2, float v1, float v2) {
-            const float dv = v2 - v1;
-            if (std::abs(dv) < 1e-6f) return (p1 + p2) * 0.5f;
-            const float t = -v1 / dv;
-            return p1 + t * (p2 - p1);
-        }
-
-        // MC edge index -> corner-index pair (edge e connects CORNER[a] and CORNER[b]); matches
-        // voxel_tsdf_mc.comp's explicit ev[0..11] = vertInterp(p[a],p[b],...) list.
-        constexpr int kEdgeCorners[12][2] = {
-                {0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
-
-        struct RawTri {
-            Eigen::Vector3f a, b, c;
-        };
 
         // Cross-resolution, finer-favoring corner sampler (spec Sec.5 / plan Task 4 Step 3):
         // `sampleAtFine(v)` looks up a corner expressed in FINE-lattice integer units, trying
@@ -97,145 +72,14 @@ namespace Engine::Spatial {
             }
         };
 
-        // Generates raw (unwelded) MC triangles for every candidate cube in `bases` (own-level
-        // integer coordinates) whose 8 corners all resolve via `sampleAt`. `cellSize` is the
-        // world-space size of one voxel at this level (h for fine, 2h for coarse); world corner
-        // positions are `(base+CORNER[c]) * cellSize`, so both levels share one world frame.
-        // Mirrors voxel_tsdf_mc.comp's processCube/edgeTable/triTable logic (tables transcribed
-        // in MarchingCubesTables.h); appends to `out` rather than returning, so fine-pass and
-        // coarse-pass triangles can be combined before a single, coarser weld (Task 4 Step 3).
-        template<typename SampleFn>
-        void generateRawTriangles(const std::unordered_set<std::array<int, 3>, IVec3Hash> &bases,
-                                   SampleFn &&sampleAt, float cellSize, std::vector<RawTri> &out) {
-            for (const auto &base : bases) {
-                float sdf[8];
-                bool complete = true;
-                for (int c = 0; c < 8 && complete; ++c) {
-                    const std::array<int, 3> k{base[0] + mc::CORNER[c][0], base[1] + mc::CORNER[c][1],
-                                                base[2] + mc::CORNER[c][2]};
-                    if (!sampleAt(k, sdf[c])) {
-                        complete = false;
-                        break;
-                    }
-                }
-                if (!complete) continue; // an unresolvable corner: skip this cell
-
-                int cubeIndex = 0;
-                for (int c = 0; c < 8; ++c)
-                    if (sdf[c] < 0.0f) cubeIndex |= (1 << c);
-
-                const int et = mc::edgeTable[cubeIndex];
-                if (et == 0) continue;
-
-                Eigen::Vector3f p[8];
-                for (int c = 0; c < 8; ++c)
-                    p[c] = Eigen::Vector3f(float(base[0] + mc::CORNER[c][0]), float(base[1] + mc::CORNER[c][1]),
-                                           float(base[2] + mc::CORNER[c][2])) *
-                           cellSize;
-
-                Eigen::Vector3f ev[12];
-                for (int e = 0; e < 12; ++e)
-                    if (et & (1 << e)) {
-                        const int a = kEdgeCorners[e][0], b = kEdgeCorners[e][1];
-                        ev[e] = vertInterp(p[a], p[b], sdf[a], sdf[b]);
-                    }
-
-                const int triBase = cubeIndex * 16;
-                for (int i = 0; i < 15; i += 3) {
-                    const int ei0 = mc::triTable[triBase + i];
-                    if (ei0 == -1) break;
-                    const int ei1 = mc::triTable[triBase + i + 1];
-                    const int ei2 = mc::triTable[triBase + i + 2];
-                    // Swap ei1/ei2 for outward-facing winding (mirrors voxel_tsdf_mc.comp).
-                    out.push_back({ev[ei0], ev[ei2], ev[ei1]});
-                }
-            }
-        }
-
-        // Builds the 8-neighbour-sweep candidate cube bases for a value map (mirrors
-        // voxel_tsdf_mc.comp main()'s dx,dy,dz in {-1,0} sweep over each occupied voxel): for
-        // each occupied coordinate, the 8 cubes that could have it as one of their corners.
-        std::unordered_set<std::array<int, 3>, IVec3Hash> candidateBases(const VoxelValueMap &values) {
-            std::unordered_set<std::array<int, 3>, IVec3Hash> bases;
-            bases.reserve(values.size() * 8u);
-            for (const auto &kv : values) {
-                const auto &coord = kv.first;
-                for (int dx = -1; dx <= 0; ++dx)
-                    for (int dy = -1; dy <= 0; ++dy)
-                        for (int dz = -1; dz <= 0; ++dz)
-                            bases.insert({coord[0] + dx, coord[1] + dy, coord[2] + dz});
-            }
-            return bases;
-        }
-
-        // Welds raw MC triangles onto a `weld`-spaced grid (Task 4 Step 3's vertex collapse:
-        // 0.25*h) and accumulates area-weighted per-vertex normals from the WELDED positions.
-        // Unlike a naive exact-bin lookup, this checks the full 3x3x3 neighbourhood of a
-        // vertex's own bin for an existing vertex within `weld` -- for bin size == weld, that is
-        // sufficient to guarantee any two points closer than `weld` are found and merged
-        // regardless of where they fall relative to a bin boundary (the classic edge-of-cell
-        // failure mode of single-bin grid hashing). Triangles that become degenerate after
-        // welding (two corners collapse to the same vertex, or the three welded positions are
-        // collinear) are dropped, satisfying the "no zero-area triangles" requirement.
-        AdaptiveMesh weldAndNormal(const std::vector<RawTri> &tris, float weld) {
-            AdaptiveMesh mesh;
-            if (tris.empty()) return mesh;
-            weld = std::max(weld, 1e-6f);
-
-            struct BinHash {
-                size_t operator()(const std::array<int64_t, 3> &b) const noexcept {
-                    size_t h = std::hash<int64_t>()(b[0]);
-                    h = h * 31u + std::hash<int64_t>()(b[1]);
-                    h = h * 31u + std::hash<int64_t>()(b[2]);
-                    return h;
-                }
-            };
-            auto binOf = [weld](const Eigen::Vector3f &p) {
-                return std::array<int64_t, 3>{static_cast<int64_t>(std::floor(p.x() / weld)),
-                                               static_cast<int64_t>(std::floor(p.y() / weld)),
-                                               static_cast<int64_t>(std::floor(p.z() / weld))};
-            };
-            std::unordered_map<std::array<int64_t, 3>, std::vector<uint32_t>, BinHash> grid;
-            std::vector<Eigen::Vector3f> nAccum;
-
-            auto weldVertex = [&](const Eigen::Vector3f &p) -> uint32_t {
-                const auto b = binOf(p);
-                for (int dx = -1; dx <= 1; ++dx)
-                    for (int dy = -1; dy <= 1; ++dy)
-                        for (int dz = -1; dz <= 1; ++dz) {
-                            const std::array<int64_t, 3> nb{b[0] + dx, b[1] + dy, b[2] + dz};
-                            const auto it = grid.find(nb);
-                            if (it == grid.end()) continue;
-                            for (uint32_t vi : it->second)
-                                if ((mesh.vertices[vi] - p).norm() < weld) return vi;
-                        }
-                const auto vi = static_cast<uint32_t>(mesh.vertices.size());
-                mesh.vertices.push_back(p);
-                nAccum.push_back(Eigen::Vector3f::Zero());
-                grid[b].push_back(vi);
-                return vi;
-            };
-
-            for (const auto &t : tris) {
-                const uint32_t ia = weldVertex(t.a), ib = weldVertex(t.b), ic = weldVertex(t.c);
-                if (ia == ib || ib == ic || ia == ic) continue; // collapsed to <3 verts: drop
-                const Eigen::Vector3f &A = mesh.vertices[ia];
-                const Eigen::Vector3f &B = mesh.vertices[ib];
-                const Eigen::Vector3f &C = mesh.vertices[ic];
-                const Eigen::Vector3f fn = (B - A).cross(C - A); // area-weighted (|fn|=2*area)
-                if (fn.norm() <= 1e-9f) continue;                // zero-area after welding: drop
-                nAccum[ia] += fn;
-                nAccum[ib] += fn;
-                nAccum[ic] += fn;
-                mesh.triangles.emplace_back(int(ia), int(ib), int(ic));
-            }
-
-            mesh.normals.resize(mesh.vertices.size());
-            for (size_t i = 0; i < mesh.vertices.size(); ++i) {
-                const float len = nAccum[i].norm();
-                mesh.normals[i] = len > 1e-12f ? Eigen::Vector3f(nAccum[i] / len) : Eigen::Vector3f(0, 0, 1);
-            }
-            return mesh;
+        // Collects a VoxelValueMap's keys into a vector, the input core::CandidateBases expects
+        // (raw triangle generation and welding themselves now live in the shared core --
+        // MarchingCubesCore.h/.cpp -- reused verbatim here).
+        std::vector<std::array<int, 3>> occupiedCoordsOf(const VoxelValueMap &values) {
+            std::vector<std::array<int, 3>> coords;
+            coords.reserve(values.size());
+            for (const auto &kv : values) coords.push_back(kv.first);
+            return coords;
         }
 
     } // namespace
@@ -370,16 +214,16 @@ namespace Engine::Spatial {
 
         const CornerSampler sampler{&workFine, &workCoarse};
 
-        std::vector<RawTri> tris;
-        generateRawTriangles(
-                candidateBases(workFine), [&](const std::array<int, 3> &v, float &out) { return sampler.sampleAtFine(v, out); },
-                m_h, tris);
-        generateRawTriangles(
-                candidateBases(workCoarse),
-                [&](const std::array<int, 3> &ck, float &out) { return sampler.sampleAtCoarse(ck, out); }, 2.0f * m_h,
-                tris);
+        std::vector<Extraction::core::RawTriangle> tris;
+        Extraction::core::GenerateRawTriangles(
+                Extraction::core::CandidateBases(occupiedCoordsOf(workFine)),
+                [&](const std::array<int, 3> &v, float &out) { return sampler.sampleAtFine(v, out); }, m_h, tris);
+        Extraction::core::GenerateRawTriangles(
+                Extraction::core::CandidateBases(occupiedCoordsOf(workCoarse)),
+                [&](const std::array<int, 3> &ck, float &out) { return sampler.sampleAtCoarse(ck, out); },
+                2.0f * m_h, tris);
 
-        return weldAndNormal(tris, 0.25f * m_h);
+        return Extraction::core::WeldAndComputeNormals(tris, 0.25f * m_h);
     }
 
     // Recovers each fine voxel's integer coordinate from its world-space centre, buckets
