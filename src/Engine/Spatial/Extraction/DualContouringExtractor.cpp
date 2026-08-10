@@ -101,20 +101,20 @@ namespace Engine::Spatial::Extraction {
 
         // The 4 cube bases sharing the grid edge (lowerCoord -> lowerCoord+step(axis)): fixed at
         // lowerCoord along `axis` itself, and ranging over {lowerCoord-1, lowerCoord} along the
-        // other two axes (taken in cyclic order u=axis+1, v=axis+2). The 4 are listed walking the
-        // shared edge's actual perimeter -- each consecutive pair differs by one unit step along
-        // u or v, never both at once -- so consecutive entries are always the two cube bases of a
-        // real shared FACE, not a diagonal pair, which is what makes the quad built from them (in
-        // Extract, below) a simple non-self-intersecting polygon. The listed direction is
-        // otherwise arbitrary: EmitOutwardTriangle independently corrects each triangle's winding
-        // from the edge's own sign direction, so walking this loop the other way would still
-        // produce a correct mesh.
+        // other two axes (taken in cyclic order otherAxisU=axis+1, otherAxisV=axis+2). The 4 are
+        // listed walking the shared edge's actual perimeter -- each consecutive pair differs by
+        // one unit step along otherAxisU or otherAxisV, never both at once -- so consecutive
+        // entries are always the two cube bases of a real shared FACE, not a diagonal pair, which
+        // is what makes the quad built from them (in Extract, below) a simple non-self-
+        // intersecting polygon. The listed direction is otherwise arbitrary: EmitOutwardTriangle
+        // independently corrects each triangle's winding from the edge's own sign direction, so
+        // walking this loop the other way would still produce a correct mesh.
         std::array<std::array<int, 3>, 4> QuadCellBasesAroundEdge(const std::array<int, 3> &lowerCoord, int axis) {
-            const int u = (axis + 1) % 3, v = (axis + 2) % 3;
+            const int otherAxisU = (axis + 1) % 3, otherAxisV = (axis + 2) % 3;
             const auto offsetBase = [&](int deltaU, int deltaV) {
                 std::array<int, 3> base = lowerCoord;
-                base[u] += deltaU;
-                base[v] += deltaV;
+                base[otherAxisU] += deltaU;
+                base[otherAxisV] += deltaV;
                 return base;
             };
             return {offsetBase(0, 0), offsetBase(-1, 0), offsetBase(-1, -1), offsetBase(0, -1)};
@@ -213,6 +213,32 @@ namespace Engine::Spatial::Extraction {
                 // Pass 2 (file header step 2): for every sign-changing GRID edge, connect its 4
                 // sharing cells' dual vertices into a quad, oriented outward from the edge's own
                 // sign direction.
+                //
+                // KNOWN LIMITATION (accepted, spec-documented -- intentionally NOT fixed here):
+                // on an "ambiguous"/checkerboard shared FACE -- all 4 corners of some face
+                // alternate sign, e.g. (0,0,0) and (0,1,1) negative, (0,1,0) and (0,0,1) positive
+                // on the face shared by cell bases (0,0,0) and (-1,0,0) -- all 4 of that face's
+                // boundary grid edges are simultaneously sign-changing. Every one of those 4
+                // edges' 4-sharing-cell sets includes BOTH cells adjacent to the face (the other
+                // 2 cells differ per edge), and in each of those 4 quads the two face-adjacent
+                // cells' dual vertices end up cyclically adjacent -- so the SAME mesh edge
+                // (dualVertex(0,0,0) -- dualVertex(-1,0,0)) is emitted once per boundary edge:
+                // 4 times, not the usual 2, i.e. triangle incidence 4 -- non-manifold. This is
+                // the DC analogue of the face ambiguity plain "mc" resolves via "mc33"'s
+                // asymptotic decider; basic (non-Manifold) DC has no equivalent per-face
+                // tie-break and does not resolve it. The spec's Risk section anticipates and
+                // accepts exactly this failure mode: "Dual-method manifoldness -- DC can produce
+                // non-manifold edges at sharp configs. Mitigation: assert edge-manifoldness on
+                // smooth fixtures; document the caveat (Manifold DC is a noted future
+                // refinement, not in scope)" (docs/superpowers/specs/2026-08-10-isosurface-
+                // extraction-strategies-design.md, Risks). test_isosurface_dc.cpp's
+                // DISABLED_DualContouringAmbiguousFaceIsManifold_ManifoldDcFuture reproduces this
+                // exact configuration as a regression target: a future Manifold Dual Contouring
+                // implementation (Schaefer, Ju, Warren, "Manifold Dual Contouring", IEEE TVCG
+                // 2007 -- adds a face-level asymptotic-decider-style tie-break that splits a
+                // checkerboard face's dual connectivity into two separate edges, one per diagonal
+                // pair, instead of connecting all 4 surrounding cells through it) should make
+                // that test pass, not delete it.
                 std::vector<core::RawTriangle> raw;
                 for (const auto &lowerCoord: field.OccupiedCoords()) {
                     float lowerValueRaw;
@@ -231,13 +257,13 @@ namespace Engine::Spatial::Extraction {
                         const auto quadCellBase = QuadCellBasesAroundEdge(lowerCoord, axis);
                         uint32_t quadVertexIndex[4];
                         bool allCellsResolved = true;
-                        for (int i = 0; i < 4; ++i) {
-                            const auto it = cellDualVertexIndex.find(quadCellBase[i]);
+                        for (int quadCornerIndex = 0; quadCornerIndex < 4; ++quadCornerIndex) {
+                            const auto it = cellDualVertexIndex.find(quadCellBase[quadCornerIndex]);
                             if (it == cellDualVertexIndex.end()) {
                                 allCellsResolved = false;
                                 break;
                             }
-                            quadVertexIndex[i] = it->second;
+                            quadVertexIndex[quadCornerIndex] = it->second;
                         }
                         if (!allCellsResolved) continue; // a sharing cell is outside the resolvable field: leave a gap
 
