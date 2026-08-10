@@ -8,10 +8,12 @@ namespace Engine::Spatial::Extraction {
     // (e.g. MarchingCubesExtractor.cpp). Later tasks add one forward declaration + one
     // Register() call each to Default() below.
     std::unique_ptr<IsoSurfaceExtractor> CreateMarchingCubesExtractor();
+    std::unique_ptr<IsoSurfaceExtractor> CreateMarchingCubes33Extractor();
 
     ExtractorRegistry ExtractorRegistry::Default() {
         ExtractorRegistry reg;
         reg.Register("mc", CreateMarchingCubesExtractor);
+        reg.Register("mc33", CreateMarchingCubes33Extractor);
         return reg;
     }
 
