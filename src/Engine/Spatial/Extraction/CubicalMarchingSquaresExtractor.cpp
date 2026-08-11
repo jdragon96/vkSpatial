@@ -177,12 +177,14 @@ namespace Engine::Spatial::Extraction {
             // activeEdgeCount == 4: the checkerboard ambiguity (corners 0,2 share a sign
             // bucket, corners 1,3 share the other) -- resolved with the 2-D asymptotic
             // decider. bilinearTwist is provably nonzero here: with corners 0,2 strictly in
-            // one sign bucket and 1,3 strictly in the other, (v0+v2) and (v1+v3) fall on
-            // opposite sides of zero, so their difference can never be exactly zero.
-            const float v0 = cornerValue[0], v1 = cornerValue[1], v2 = cornerValue[2], v3 = cornerValue[3];
-            const float bilinearTwist = v0 - v1 + v2 - v3;
-            const float saddleValue = (v0 * v2 - v1 * v3) / bilinearTwist;
-            const bool diagonalZeroTwoConnected = (saddleValue < 0.0f) == (v0 < 0.0f);
+            // one sign bucket and 1,3 strictly in the other, (corner0Value+corner2Value) and
+            // (corner1Value+corner3Value) fall on opposite sides of zero, so their difference
+            // can never be exactly zero.
+            const float corner0Value = cornerValue[0], corner1Value = cornerValue[1], corner2Value = cornerValue[2],
+                        corner3Value = cornerValue[3];
+            const float bilinearTwist = corner0Value - corner1Value + corner2Value - corner3Value;
+            const float saddleValue = (corner0Value * corner2Value - corner1Value * corner3Value) / bilinearTwist;
+            const bool diagonalZeroTwoConnected = (saddleValue < 0.0f) == (corner0Value < 0.0f);
             if (diagonalZeroTwoConnected) {
                 outSegments.push_back({0, 1}); // corner 1 isolated
                 outSegments.push_back({2, 3}); // corner 3 isolated
@@ -334,18 +336,18 @@ namespace Engine::Spatial::Extraction {
 
                         Eigen::Vector3f rawFanNormal = Eigen::Vector3f::Zero();
                         for (int i = 0; i < loopSize; ++i) {
-                            const Eigen::Vector3f &a = edgeCrossingPosition[loop[i]];
-                            const Eigen::Vector3f &b = edgeCrossingPosition[loop[(i + 1) % loopSize]];
-                            rawFanNormal += (a - apex).cross(b - apex);
+                            const Eigen::Vector3f &loopVertexA = edgeCrossingPosition[loop[i]];
+                            const Eigen::Vector3f &loopVertexB = edgeCrossingPosition[loop[(i + 1) % loopSize]];
+                            rawFanNormal += (loopVertexA - apex).cross(loopVertexB - apex);
                         }
                         const bool flipWinding =
                                 referenceOutward.squaredNorm() > 1e-12f && rawFanNormal.dot(referenceOutward) < 0.0f;
 
                         for (int i = 0; i < loopSize; ++i) {
-                            const Eigen::Vector3f &a = edgeCrossingPosition[loop[i]];
-                            const Eigen::Vector3f &b = edgeCrossingPosition[loop[(i + 1) % loopSize]];
-                            if (!flipWinding) raw.push_back({apex, a, b});
-                            else raw.push_back({apex, b, a});
+                            const Eigen::Vector3f &loopVertexA = edgeCrossingPosition[loop[i]];
+                            const Eigen::Vector3f &loopVertexB = edgeCrossingPosition[loop[(i + 1) % loopSize]];
+                            if (!flipWinding) raw.push_back({apex, loopVertexA, loopVertexB});
+                            else raw.push_back({apex, loopVertexB, loopVertexA});
                         }
                     }
                 }

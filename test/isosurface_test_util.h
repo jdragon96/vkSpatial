@@ -50,4 +50,17 @@ namespace isotest {
     inline bool IsEdgeManifold(const SurfaceMesh& m){ for (auto& kv:EdgeCounts(m)) if (kv.second>2) return false; return true; }
     inline bool IsWatertight(const SurfaceMesh& m){ auto c=EdgeCounts(m); if(c.empty()) return false; for(auto& kv:c) if(kv.second!=2) return false; return true; }
     inline int EulerCharacteristic(const SurfaceMesh& m){ return int(m.vertices.size()) - int(EdgeCounts(m).size()) + int(m.triangles.size()); }
+
+    // Mean alignment of per-vertex normals with the outward radial direction from `center`.
+    // > 0 means normals point outward on average; a globally winding-inverted mesh gives < 0.
+    inline double MeanOutwardNormalAlignment(const SurfaceMesh& mesh, const Eigen::Vector3f& center) {
+        if (mesh.vertices.empty()) return 0.0;
+        double sum = 0.0;
+        for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+            Eigen::Vector3f radial = mesh.vertices[i] - center;
+            double n = radial.norm();
+            if (n > 1e-6) sum += double(mesh.normals[i].dot(radial / float(n)));
+        }
+        return sum / double(mesh.vertices.size());
+    }
 }

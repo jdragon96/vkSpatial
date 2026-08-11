@@ -17,6 +17,9 @@ TEST(Isosurface, DualMarchingCubesRegisteredAndSphereManifold) {
     SurfaceMesh mesh = reg.Create("dmc")->Extract(field, ExtractParams{});
     ASSERT_GT(mesh.triangles.size(), 100u);
     EXPECT_TRUE(isotest::IsEdgeManifold(mesh));
+    // Winding regression guard: IsEdgeManifold/IsWatertight are combinatorial and would pass a
+    // globally winding-inverted mesh -- assert normals actually point outward.
+    EXPECT_GT(isotest::MeanOutwardNormalAlignment(mesh, Eigen::Vector3f::Zero()), 0.5);
 }
 
 TEST(Isosurface, DualMarchingCubesResolvesThinSlabAsTwoSheets) {

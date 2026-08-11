@@ -1,5 +1,7 @@
-// The "dmc" strategy: Dual Marching Cubes over a VoxelField (G. Nielson, "Dual Marching Cubes",
-// IEEE Visualization 2004) -- primal contouring of the grid DUAL to the primal voxel grid. Where
+// The "dmc" strategy: Dual Marching Cubes over a VoxelField (Schaefer & Warren, "Dual Marching
+// Cubes: Primal Contouring of Dual Grids", Pacific Graphics 2004 / CGF -- the "Dual Marching
+// Cubes" name itself traces to G. Nielson, IEEE Visualization 2004) -- primal contouring of the
+// grid DUAL to the primal voxel grid. Where
 // "dc" (DualContouringExtractor.cpp) connects its per-cell dual vertices directly into quads (one
 // per sign-changing primal grid edge), "dmc" instead builds an actual cubical DUAL GRID out of
 // those same per-cell dual vertices and runs the exact same table-driven case lookup plain "mc"

@@ -25,4 +25,7 @@ TEST(Isosurface, MarchingCubesSphereIsAccurateAndManifold) {
     std::vector<Eigen::Vector3f> onSphere;
     for (const auto& v : mesh.vertices) onSphere.push_back(v.normalized() * radius);
     EXPECT_LT(Engine::Eval::NearestNeighbourRMSE(mesh.vertices, onSphere), cellSize);
+    // Winding regression guard: IsEdgeManifold/IsWatertight are combinatorial and would pass a
+    // globally winding-inverted mesh -- assert normals actually point outward.
+    EXPECT_GT(isotest::MeanOutwardNormalAlignment(mesh, Eigen::Vector3f::Zero()), 0.5);
 }

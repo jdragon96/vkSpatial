@@ -15,4 +15,7 @@ TEST(Isosurface, MarchingTetrahedraSphereClosedManifold) {
     EXPECT_EQ(isotest::EulerCharacteristic(mesh), 2); // topological sphere
     std::vector<Eigen::Vector3f> on; for (auto& v:mesh.vertices) on.push_back(v.normalized()*0.7f);
     EXPECT_LT(Engine::Eval::NearestNeighbourRMSE(mesh.vertices, on), 0.1f);
+    // Winding regression guard: IsEdgeManifold/IsWatertight are combinatorial and would pass a
+    // globally winding-inverted mesh -- assert normals actually point outward.
+    EXPECT_GT(isotest::MeanOutwardNormalAlignment(mesh, Eigen::Vector3f::Zero()), 0.5);
 }

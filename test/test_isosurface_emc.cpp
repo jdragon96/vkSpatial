@@ -30,3 +30,16 @@ TEST(Isosurface, ExtendedMcPreservesBoxEdgesBetterThanMc) {
     // emc should land a vertex closer to the true crease than mc does
     EXPECT_LT(MinVertexToBoxEdgeGap(emcMesh, he), MinVertexToBoxEdgeGap(mcMesh, he));
 }
+
+// emc's only other committed test uses BoxField (a crease fixture); it has no smooth-field
+// manifold check and no winding-regression guard. Cover both with a sphere: IsEdgeManifold/
+// IsWatertight are combinatorial and would pass a globally winding-inverted mesh, so also assert
+// normals actually point outward.
+TEST(Isosurface, ExtendedMcSphereOutwardWinding) {
+    auto reg = ExtractorRegistry::Default();
+    ASSERT_TRUE(reg.Has("emc"));
+    VoxelField field = isotest::SphereField(0.7f, 0.1f, 12);
+    SurfaceMesh mesh = reg.Create("emc")->Extract(field, ExtractParams{});
+    EXPECT_TRUE(isotest::IsEdgeManifold(mesh));
+    EXPECT_GT(isotest::MeanOutwardNormalAlignment(mesh, Eigen::Vector3f::Zero()), 0.5);
+}

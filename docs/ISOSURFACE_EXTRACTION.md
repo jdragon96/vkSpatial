@@ -150,7 +150,7 @@ public:
 
 ### 2.1 `"mc"` — Marching Cubes (원조)
 
-- **파일:** `MarchingCubesExtractor.cpp` (46줄 — 프레임워크 조합만, 로직은 전부 공유 코어)
+- **파일:** `MarchingCubesExtractor.cpp` (프레임워크 조합만, 로직은 전부 공유 코어)
 - **원리:** Lorensen & Cline 1987. 큐브 8코너 부호 → 256(→15 unique)-case 룩업 테이블로
   삼각형 토폴로지 결정, 엣지 교점은 선형 보간.
 - **Primal / Dual:** **Primal** — 정점은 항상 큐브 **엣지** 위(격자 자체의 교점).
@@ -166,7 +166,7 @@ public:
 
 ### 2.2 `"mc33"` — Marching Cubes 33
 
-- **파일:** `MarchingCubes33Extractor.cpp` (655줄), 테이블
+- **파일:** `MarchingCubes33Extractor.cpp`, 테이블
   `MarchingCubes33Tables.h`(130.7K, Lewiner 참조 구현에서 전사)
 - **원리:** Chernyaev(1995)/Lewiner et al.(2003). trilinear 보간이 큐브 안에서 취할 수
   있는 모든 위상 케이스를 33가지로 완전 열거하고, **면 모호성**은 2-D 점근 판정자
@@ -189,7 +189,7 @@ public:
 
 ### 2.3 `"mtet"` — Marching Tetrahedra
 
-- **파일:** `MarchingTetrahedraExtractor.cpp` (221줄)
+- **파일:** `MarchingTetrahedraExtractor.cpp`
 - **원리:** Doi & Koide 1991. 각 큐브를 주대각선(코너0–코너6)을 공유하는 6개 사면체로
   분할, 사면체는 코너가 4개뿐이라 내부 보간이 **어핀(affine)** — trilinear이 아니므로
   모호성이 **구조적으로 존재하지 않는다**(표로 해소하는 게 아니라 애초에 발생 불가).
@@ -211,7 +211,7 @@ public:
 
 ### 2.4 `"emc"` — Extended Marching Cubes
 
-- **파일:** `ExtendedMarchingCubesExtractor.cpp` (235줄)
+- **파일:** `ExtendedMarchingCubesExtractor.cpp`
 - **원리:** Kobbelt, Botsch, Schwanecke, Seidel 2001. `mc`의 케이스/연결성을 그대로 두고,
   **특징 셀**(활성 엣지 교점들의 법선 쌍 중 최소 내적이 `featureAngleCosineThreshold`
   미만 — 즉 어떤 두 교점의 법선이 그 각도보다 더 벌어짐)에서만 `QuadraticErrorFunction`
@@ -237,7 +237,7 @@ public:
 
 ### 2.5 `"dc"` — Dual Contouring (of Hermite Data)
 
-- **파일:** `DualContouringExtractor.cpp` (299줄)
+- **파일:** `DualContouringExtractor.cpp`
 - **원리:** Ju, Losasso, Schaefer, Warren 2002. **완전한 dual** 재구성 — 셀(큐브)마다
   **정확히 1개**의 정점을, 그 셀의 부호가 바뀌는 모든 엣지의 Hermite 데이터(교점+법선)로
   QEF를 풀어 배치(`emc`와 달리 "표 삼각형 + 특징 정점 추가"가 아니라 애초에 mc 케이스
@@ -265,7 +265,7 @@ public:
 
 ### 2.6 `"dmc"` — Dual Marching Cubes
 
-- **파일:** `DualMarchingCubesExtractor.cpp` (269줄)
+- **파일:** `DualMarchingCubesExtractor.cpp`
 - **원리:** Schaefer & Warren 2004/05 ("Primal Contouring of Dual Grids"). `dc`의 셀당
   dual 정점 배치(패스 1 — `dc`의 QEF 구성을 그대로 재사용)를 먼저 만든 다음, 그 dual
   정점들을 코너로 갖는 **진짜 dual 그리드**를 만들고 그 위에서 `mc`가 쓰는 바로 그
