@@ -13,6 +13,7 @@ namespace Engine::Spatial::Extraction {
     std::unique_ptr<IsoSurfaceExtractor> CreateExtendedMarchingCubesExtractor();
     std::unique_ptr<IsoSurfaceExtractor> CreateDualContouringExtractor();
     std::unique_ptr<IsoSurfaceExtractor> CreateDualMarchingCubesExtractor();
+    std::unique_ptr<IsoSurfaceExtractor> CreateCubicalMarchingSquaresExtractor();
 
     ExtractorRegistry ExtractorRegistry::Default() {
         ExtractorRegistry reg;
@@ -22,6 +23,7 @@ namespace Engine::Spatial::Extraction {
         reg.Register("emc", CreateExtendedMarchingCubesExtractor);
         reg.Register("dc", CreateDualContouringExtractor);
         reg.Register("dmc", CreateDualMarchingCubesExtractor);
+        reg.Register("cms", CreateCubicalMarchingSquaresExtractor);
         return reg;
     }
 
