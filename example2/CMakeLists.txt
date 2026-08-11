@@ -157,10 +157,13 @@ if (GLSLC_EXECUTABLE)
     # analytic shape (sphere/box/torus) or, with --dir, a folder of frame_*.ply scans integrated
     # into an AdvancedTSDF -- and renders the resulting triangle mesh so the differences between
     # algorithms (sharp-feature preservation, cracks, topology, rounding) are visible.
-    add_executable(isosurface_viewer isosurface_viewer.cpp IsosurfaceMeshPass.cpp ImGuiPass.cpp)
+    # EdgeOverlayPass draws a toggleable connectivity overlay on top (non-manifold edges red,
+    # boundary edges yellow, from Engine::Spatial::Extraction::AnalyzeConnectivity).
+    add_executable(isosurface_viewer isosurface_viewer.cpp IsosurfaceMeshPass.cpp EdgeOverlayPass.cpp ImGuiPass.cpp)
     target_link_libraries(isosurface_viewer PRIVATE Engine::Render Engine::Spatial Engine::Core Engine::Pipeline imgui)
     add_compiled_shaders(isosurface_viewer ISOSURFACE_VIEWER_SHADER_DIR
-            Shaders/IsosurfaceMesh.vert.glsl Shaders/IsosurfaceMesh.frag.glsl)
+            Shaders/IsosurfaceMesh.vert.glsl Shaders/IsosurfaceMesh.frag.glsl
+            Shaders/EdgeOverlay.vert.glsl Shaders/EdgeOverlay.frag.glsl)
 else ()
     message(WARNING "cube_render2/shadow_map/blinn_phong examples skipped because glslc was not found")
 endif ()

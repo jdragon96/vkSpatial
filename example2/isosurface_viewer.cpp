@@ -6,7 +6,11 @@
 // an Engine::Spatial::AdvancedTSDF -- and renders the resulting triangle mesh so the differences
 // between algorithms (sharp-feature preservation, cracks, topology, rounding) are visible.
 // Switching the extractor / shape / cellSize / featureAngle live re-extracts and re-renders;
-// wireframe toggles instantly with no re-extraction.
+// wireframe toggles instantly with no re-extraction. A connectivity overlay (EdgeOverlayPass,
+// toggleable, on by default) draws Engine::Spatial::Extraction::AnalyzeConnectivity's flagged
+// edges directly on top of the mesh -- non-manifold edges in red, boundary edges in yellow -- so
+// a crack or a bowtie vertex is something you SEE, not something you have to infer from the
+// wireframe.
 //
 // Run:
 //   ./build/example2/isosurface_viewer                              analytic sphere/box/torus
@@ -23,8 +27,14 @@
 //
 // What to look for: at a coarse cellSize, box/torus should visibly show emc/dc/cms preserving
 // sharp edges while mc rounds them off, and dc's ambiguous-face cracks should appear as gaps in
-// the wireframe view.
+// the wireframe view. With the connectivity overlay on (default), that same dc/box crack lights
+// up RED (non-manifold edges): switch shape=box, then Tab/Combo the extractor to dc, and the
+// stats block's "non-manifold edges" count jumps from 0 to non-zero exactly where the wireframe
+// gap is. mc/mc33/mtet stay at 0 non-manifold / 0 boundary / 0 bowtie-vertex on every analytic
+// shape (closed, edge-manifold output), so the overlay draws nothing for them -- no red/yellow at
+// all.
 
+#include "EdgeOverlayPass.h"
 #include "IsosurfaceMeshPass.h"
 #include "ImGuiPass.h"
 
@@ -36,6 +46,7 @@
 #include "Engine/Render/Scene.h"
 #include "Engine/Spatial/AdvancedTSDF.h"
 #include "Engine/Spatial/Extraction/ExtractorRegistry.h"
+#include "Engine/Spatial/Extraction/MeshConnectivity.h"
 #include "Engine/Spatial/Extraction/VoxelField.h"
 
 #include "utilities/Math.h"
@@ -66,6 +77,8 @@
 namespace fs = std::filesystem;
 namespace ep = Engine::Pipeline;
 using Eigen::Vector3f;
+using Engine::Spatial::Extraction::AnalyzeConnectivity;
+using Engine::Spatial::Extraction::ConnectivityReport;
 using Engine::Spatial::Extraction::ExtractorRegistry;
 using Engine::Spatial::Extraction::ExtractParams;
 using Engine::Spatial::Extraction::IsoSurfaceExtractor;
@@ -308,6 +321,7 @@ namespace {
         float cellSize = 0.05f;
         float featureAngleCosine = 0.9f;
         bool wireframe = false;
+        bool showEdges = true; // connectivity overlay (EdgeOverlayPass) visibility
         bool dirty = true; // starts true so the first loop iteration performs the initial build
 
         // Stats filled by RebuildMesh(), shown read-only in the panel.
@@ -315,7 +329,25 @@ namespace {
         std::size_t triangleCount = 0;
         bool edgeManifold = false;
         bool watertight = false;
+        std::size_t nonManifoldEdgeCount = 0;
+        std::size_t boundaryEdgeCount = 0;
+        std::size_t nonManifoldVertexCount = 0; // bowtie vertices
     };
+
+    // Converts one ConnectivityReport edge category -- a list of (vertexIndex0, vertexIndex1)
+    // pairs into mesh.vertices -- into an EdgeOverlayGroup of world-space line segments sharing
+    // `color`. Shared by RebuildMesh for both the nonManifoldEdges (red) and boundaryEdges
+    // (yellow) groups; see EdgeOverlayPass.h.
+    EdgeOverlayGroup BuildEdgeOverlayGroup(const SurfaceMesh &mesh,
+                                           const std::vector<std::pair<int, int>> &edges,
+                                           const Eigen::Vector3f &color) {
+        EdgeOverlayGroup group;
+        group.color = color;
+        group.segments.reserve(edges.size());
+        for (const std::pair<int, int> &edge : edges)
+            group.segments.emplace_back(mesh.vertices[edge.first], mesh.vertices[edge.second]);
+        return group;
+    }
 
     // Builds the selected input VoxelField, runs the selected extractor over it, uploads the
     // result into meshPass, and refreshes the stats block. Called from the render loop whenever
@@ -330,6 +362,7 @@ namespace {
                      const ScanInput &scanInput,
                      bool shapeChanged,
                      IsosurfaceMeshPass &meshPass,
+                     EdgeOverlayPass &overlayPass,
                      Engine::Render::Camera &camera) {
         const Shape shape = static_cast<Shape>(state.shapeIndex);
         VoxelField field;
@@ -361,6 +394,20 @@ namespace {
         const float *tint = kExtractorTints[state.extractorIndex];
         meshPass.SetMesh(mesh, Eigen::Vector3f(tint[0], tint[1], tint[2]));
 
+        // Connectivity overlay: non-manifold edges (red) and boundary edges (yellow) drawn on top
+        // of the mesh just uploaded above -- see EdgeOverlayPass.h. This upload always runs (every
+        // rebuild changes the extracted mesh's topology); state.showEdges / overlayPass.SetVisible
+        // independently controls whether Execute() actually DRAWS the uploaded geometry, so
+        // re-enabling the checkbox shows the current mesh's edges immediately with no re-extract.
+        const ConnectivityReport report = AnalyzeConnectivity(mesh);
+        state.nonManifoldEdgeCount = report.nonManifoldEdges.size();
+        state.boundaryEdgeCount = report.boundaryEdges.size();
+        state.nonManifoldVertexCount = report.nonManifoldVertices.size();
+        overlayPass.SetEdges({
+                BuildEdgeOverlayGroup(mesh, report.nonManifoldEdges, Eigen::Vector3f(1.0f, 0.0f, 0.0f)),
+                BuildEdgeOverlayGroup(mesh, report.boundaryEdges, Eigen::Vector3f(1.0f, 1.0f, 0.0f)),
+        });
+
         if (shapeChanged && !mesh.vertices.empty()) {
             Eigen::Vector3f boundsMin = mesh.vertices.front(), boundsMax = mesh.vertices.front();
             for (const Eigen::Vector3f &vertex : mesh.vertices) {
@@ -376,10 +423,12 @@ namespace {
         state.dirty = false;
 
         std::printf("[rebuild] extractor=%s shape=%d cellSize=%.4f featureAngleCosine=%.3f | "
-                    "vertices=%zu triangles=%zu edgeManifold=%s watertight=%s\n",
+                    "vertices=%zu triangles=%zu edgeManifold=%s watertight=%s | "
+                    "nonManifoldEdges=%zu boundaryEdges=%zu nonManifoldVertices=%zu\n",
                     extractorName.c_str(), state.shapeIndex, state.cellSize, state.featureAngleCosine,
                     state.vertexCount, state.triangleCount, state.edgeManifold ? "Y" : "N",
-                    state.watertight ? "Y" : "N");
+                    state.watertight ? "Y" : "N", state.nonManifoldEdgeCount, state.boundaryEdgeCount,
+                    state.nonManifoldVertexCount);
     }
 
 } // namespace
@@ -447,6 +496,16 @@ int main(int argc, char **argv) {
         IsosurfaceMeshPass *meshPass = meshPassOwned.get();
         graph.AddPass(std::move(meshPassOwned));
 
+        // Added right after meshPass: EdgeOverlayPass's RenderingScope also LOADS (does not
+        // clear) the swapchain image (see its Execute()), so it must run after IsosurfaceMeshPass
+        // to draw the connectivity overlay on top of the mesh instead of wiping it out, and before
+        // ImGuiPass so the panel composites over the overlay rather than under it.
+        auto edgeOverlayPassOwned = std::make_unique<EdgeOverlayPass>(
+                app.GetContext(), app.GetSwapChain().Format(), shaderDirectory);
+        EdgeOverlayPass *edgeOverlayPass = edgeOverlayPassOwned.get();
+        edgeOverlayPass->SetVisible(state.showEdges);
+        graph.AddPass(std::move(edgeOverlayPassOwned));
+
         // Window backend is fixed to GLFW (ApplicationDescriptor default, not overridden above),
         // so the base Window& is always actually a GlfwWindow -- safe to downcast to reach
         // Handle(), which ImGui's GLFW backend needs (same cast tsdf_feature_compare.cpp makes).
@@ -455,8 +514,8 @@ int main(int argc, char **argv) {
                 app.GetContext(), glfwWindow.Handle(), app.GetSwapChain().Format(), app.GetSwapChain().ImageCount());
         ImGuiPass *imGuiPass = imGuiPassOwned.get();
         // Added last: ImGuiPass's RenderingScope LOADS (does not clear) the swapchain image, so
-        // it must run after IsosurfaceMeshPass within the same frame to draw the panel over the
-        // mesh instead of wiping it out.
+        // it must run after IsosurfaceMeshPass and EdgeOverlayPass within the same frame to draw
+        // the panel over the mesh + overlay instead of wiping either out.
         graph.AddPass(std::move(imGuiPassOwned));
 
         int previousShapeIndex = -1; // forces the very first rebuild to also frame the camera
@@ -482,12 +541,17 @@ int main(int argc, char **argv) {
             ImGui::SeparatorText("Display");
             if (ImGui::Checkbox("wireframe", &state.wireframe))
                 meshPass->SetWireframe(state.wireframe); // display-only flag flip, no rebuild
+            if (ImGui::Checkbox("show non-manifold / boundary edges", &state.showEdges))
+                edgeOverlayPass->SetVisible(state.showEdges); // display-only flag flip, no rebuild
 
             ImGui::SeparatorText("Stats (read-only)");
             ImGui::Text("vertices      : %zu", state.vertexCount);
             ImGui::Text("triangles     : %zu", state.triangleCount);
             ImGui::Text("edge-manifold : %s", state.edgeManifold ? "Y" : "N");
             ImGui::Text("watertight    : %s", state.watertight ? "Y" : "N");
+            ImGui::Text("non-manifold edges             : %zu", state.nonManifoldEdgeCount);
+            ImGui::Text("boundary edges                 : %zu", state.boundaryEdgeCount);
+            ImGui::Text("non-manifold (bowtie) vertices : %zu", state.nonManifoldVertexCount);
 
             ImGui::Spacing();
             if (ImGui::Button("Re-run"))
@@ -554,7 +618,8 @@ int main(int argc, char **argv) {
                 if (state.dirty) {
                     vkDeviceWaitIdle(context.device);
                     const bool shapeChanged = state.shapeIndex != previousShapeIndex;
-                    RebuildMesh(state, context, registry, scanInput, shapeChanged, *meshPass, camera);
+                    RebuildMesh(state, context, registry, scanInput, shapeChanged, *meshPass,
+                               *edgeOverlayPass, camera);
                     previousShapeIndex = state.shapeIndex;
                 }
 
