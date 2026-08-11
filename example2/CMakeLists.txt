@@ -57,6 +57,11 @@ add_spatial_example(registration_chair_demo registration_chair_demo.cpp)
 add_spatial_example(tsdf_slice_debug tsdf_slice_debug.cpp)
 target_link_libraries(registration_chair_demo PRIVATE Engine::Pipeline)
 
+# Headless ICP-quality diagnostic: runs the reconstruction Pipeline over a frame folder with a chosen
+# tracker and reports reconstruction drift vs identity + tracker residual RMSE (no window).
+add_spatial_example(icp_quality_diag icp_quality_diag.cpp)
+target_link_libraries(icp_quality_diag PRIVATE Engine::Pipeline Engine::Core)
+
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
 if (GLSLC_EXECUTABLE)
     function(add_compiled_shaders target define)
