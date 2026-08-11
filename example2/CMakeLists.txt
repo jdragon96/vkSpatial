@@ -151,6 +151,16 @@ if (GLSLC_EXECUTABLE)
     add_spatial_example(voxel_fill_debugger voxel_fill_debugger.cpp VoxelFillRenderStrategy.cpp PointCloudPass.cpp ImGuiPass.cpp)
     target_link_libraries(voxel_fill_debugger PRIVATE Engine::Render imgui Engine::Core Engine::Pipeline)
     add_compiled_shaders(voxel_fill_debugger VOXDBG_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
+
+    # Isosurface (Marching-Cubes family) debug viewer: extracts a surface with a SELECTABLE
+    # extractor (mc/mc33/mtet/emc/dc/dmc/cms, see Engine::Spatial::Extraction) over a selectable
+    # analytic shape (sphere/box/torus) or, with --dir, a folder of frame_*.ply scans integrated
+    # into an AdvancedTSDF -- and renders the resulting triangle mesh so the differences between
+    # algorithms (sharp-feature preservation, cracks, topology, rounding) are visible.
+    add_executable(isosurface_viewer isosurface_viewer.cpp IsosurfaceMeshPass.cpp ImGuiPass.cpp)
+    target_link_libraries(isosurface_viewer PRIVATE Engine::Render Engine::Spatial Engine::Core Engine::Pipeline imgui)
+    add_compiled_shaders(isosurface_viewer ISOSURFACE_VIEWER_SHADER_DIR
+            Shaders/IsosurfaceMesh.vert.glsl Shaders/IsosurfaceMesh.frag.glsl)
 else ()
     message(WARNING "cube_render2/shadow_map/blinn_phong examples skipped because glslc was not found")
 endif ()
