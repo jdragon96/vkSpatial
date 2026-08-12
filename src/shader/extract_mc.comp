@@ -1,0 +1,195 @@
+#version 460
+
+/// *********************************************************************************************
+/// extract_mc.comp
+///
+/// GPU compute twin of the CPU "mc" strategy (MarchingCubesExtractor.cpp / MarchingCubesCore.h):
+/// one invocation per candidate cube -- the SAME 8-neighbour-sweep candidate set
+/// core::CandidateBases() builds on the CPU -- reusing voxel_common.glsl's edgeTable/triTable/
+/// CORNER/vertInterp, the SAME tables and per-cube walk voxel_tsdf_mc.comp uses over its GPU hash
+/// table. This shader instead samples a DENSE value grid uploaded by
+/// GpuIsoSurfaceExtractorCommon::UploadField() (see that header's file-level doc comment for why a
+/// dense grid, not a hash, is this task's deliberate "simplest first cut").
+///
+/// Field representation: the dense grid spans the candidate bases' integer bounding box (+1 cell
+/// so every candidate's 8 corners stay in-bounds); origin/dims arrive as individual scalar push
+/// constants, not an ivec3 -- a push-constant vec3/ivec3 pads to 16 bytes in GLSL and would desync
+/// from the tightly-packed upload-side C++ struct (see icp_iterate.comp.glsl's doc comment for the
+/// same reasoning). A cell the VoxelField never observed was written as UNRESOLVED_FIELD_VALUE by
+/// UploadField(); sampleFieldValue() below treats that as "absent", exactly mirroring
+/// VoxelField::Sample()'s bool return on the CPU (an unresolved corner skips the whole cube, same
+/// as MarchingCubesCore.h's GenerateRawTriangles `complete` flag).
+///
+/// Emit contract (GpuIsoSurfaceExtractorCommon::AllocateTriangleOutput/ReadbackRawTriangles, and
+/// the contract every future Gpu*Extractor kernel shares): binding 0 is a single `int`, atomically
+/// incremented once per emitted triangle -- MoltenVK has no float atomics, so this integer slot
+/// reservation is the ONLY atomic op in the shader; nothing is ever atomically accumulated.
+/// Binding 1 is the vec4 vertex-slot buffer those reserved slots index into (world-space
+/// positions, 1.0 in .w). Winding is ev[ei0], ev[ei2], ev[ei1] -- the SAME swap
+/// MarchingCubesCore.h's GenerateRawTriangles and voxel_tsdf_mc.comp both apply, so GPU and CPU
+/// triangles wind identically before the CPU-side core::WeldAndComputeNormals weld.
+///
+/// Order key: core::WeldAndComputeNormals's tie-break keeps the FIRST raw vertex it sees within
+/// weldDistance of any later one, so its output positions depend on RAW TRIANGLE ORDER, not just
+/// the raw triangle SET -- the CPU "mc" extractor feeds it triangles in a fixed sequential order
+/// (candidate-base iteration order, then triTable order within a cube), but this shader's
+/// invocations race on the atomicAdd slot counter, so g_vertexSlots fills in whatever order GPU
+/// threads happen to finish. To reach the SAME welded positions, every vertex of a triangle also
+/// carries candidateIndex*8+within-cube-triangle-index, bit-cast into .w via uintBitsToFloat();
+/// GpuIsoSurfaceExtractorCommon::ReadbackRawTriangles() sorts by that key before welding, which
+/// reconstructs the CPU's exact emission order (candidateIndex enumerates g_candidateBases in the
+/// SAME order core::CandidateBases() gives the CPU, since both call that same deterministic
+/// function over the same field).
+/// *********************************************************************************************
+
+layout(local_size_x = 64) in;
+
+#include "voxel_common.glsl" // CORNER, edgeTable, triTable, vertInterp
+
+// Keep in sync with kGpuUnresolvedFieldValue (GpuIsoSurfaceExtractorCommon.h).
+#define UNRESOLVED_FIELD_VALUE 1e37
+
+layout(push_constant) uniform PushConstants
+{
+	int   g_originX, g_originY, g_originZ; // dense value grid's [0,0,0] cell, in field integer coords
+	int   g_dimsX, g_dimsY, g_dimsZ;       // dense value grid extents
+	float g_cellSize;                      // world-space size of one voxel (VoxelField::CellSize())
+	float g_isoLevel;                      // ExtractParams::isoLevel, subtracted from sampled values
+	uint  g_candidateCount;                // number of entries in g_candidateBases
+	uint  g_maxTriangles;                  // output buffer capacity (candidateCount * 5, see .cpp)
+};
+
+layout(std430, set = 0, binding = 0)          buffer Counter        { int   g_triangleCount; };
+layout(std430, set = 0, binding = 1)          buffer VertexSlots    { vec4  g_vertexSlots[]; };
+layout(std430, set = 0, binding = 2) readonly buffer CandidateBases { ivec4 g_candidateBases[]; };
+layout(std430, set = 0, binding = 3) readonly buffer ValueGrid      { float g_valueGrid[]; };
+
+/// *********************************************************************************************
+/// Dense value-grid lookup
+/// *********************************************************************************************
+
+// Mirrors VoxelField::Sample(): returns false (leaving `value` untouched) for a coordinate outside
+// the uploaded dense grid, or one the field never observed (UNRESOLVED_FIELD_VALUE sentinel).
+bool sampleFieldValue(ivec3 coordinate, out float value)
+{
+	ivec3 origin = ivec3(g_originX, g_originY, g_originZ);
+	ivec3 dims   = ivec3(g_dimsX, g_dimsY, g_dimsZ);
+	ivec3 local  = coordinate - origin;
+	if (any(lessThan(local, ivec3(0))) || any(greaterThanEqual(local, dims)))
+	{
+		return false;
+	}
+
+	int flatIndex = (local.z * dims.y + local.y) * dims.x + local.x;
+	float rawValue = g_valueGrid[flatIndex];
+	if (rawValue >= UNRESOLVED_FIELD_VALUE)
+	{
+		return false;
+	}
+
+	value = rawValue - g_isoLevel;
+	return true;
+}
+
+/// *********************************************************************************************
+/// Per-cube Marching Cubes -- mirrors voxel_tsdf_mc.comp's processCube() / MarchingCubesCore.h's
+/// GenerateRawTriangles(), corner-for-corner and edge-for-edge.
+/// *********************************************************************************************
+
+void processCube(ivec3 cubeBase, uint candidateIndex)
+{
+	// 1. Sample all 8 corners; an unresolved corner means "skip this cube" (mirrors the CPU core's
+	//    `complete` flag).
+	float sdf[8];
+	for (int corner = 0; corner < 8; corner++)
+	{
+		if (!sampleFieldValue(cubeBase + CORNER[corner], sdf[corner]))
+		{
+			return;
+		}
+	}
+
+	// 2. Cube index (bit set where sdf < 0 -- behind the surface) + early-out on a cube that is
+	//    entirely inside or entirely outside.
+	int cubeIndex = 0;
+	for (int corner = 0; corner < 8; corner++)
+	{
+		if (sdf[corner] < 0.0)
+		{
+			cubeIndex |= (1 << corner);
+		}
+	}
+	if (edgeTable[cubeIndex] == 0)
+	{
+		return;
+	}
+
+	// 3. World-space corner positions.
+	vec3 p[8];
+	for (int corner = 0; corner < 8; corner++)
+	{
+		p[corner] = vec3(cubeBase + CORNER[corner]) * g_cellSize;
+	}
+
+	// 4. Interpolate every edge this cube's isosurface crosses.
+	int et = edgeTable[cubeIndex];
+	vec3 ev[12];
+	if ((et &    1) != 0) ev[ 0] = vertInterp(p[0], p[1], sdf[0], sdf[1]);
+	if ((et &    2) != 0) ev[ 1] = vertInterp(p[1], p[2], sdf[1], sdf[2]);
+	if ((et &    4) != 0) ev[ 2] = vertInterp(p[2], p[3], sdf[2], sdf[3]);
+	if ((et &    8) != 0) ev[ 3] = vertInterp(p[3], p[0], sdf[3], sdf[0]);
+	if ((et &   16) != 0) ev[ 4] = vertInterp(p[4], p[5], sdf[4], sdf[5]);
+	if ((et &   32) != 0) ev[ 5] = vertInterp(p[5], p[6], sdf[5], sdf[6]);
+	if ((et &   64) != 0) ev[ 6] = vertInterp(p[6], p[7], sdf[6], sdf[7]);
+	if ((et &  128) != 0) ev[ 7] = vertInterp(p[7], p[4], sdf[7], sdf[4]);
+	if ((et &  256) != 0) ev[ 8] = vertInterp(p[0], p[4], sdf[0], sdf[4]);
+	if ((et &  512) != 0) ev[ 9] = vertInterp(p[1], p[5], sdf[1], sdf[5]);
+	if ((et & 1024) != 0) ev[10] = vertInterp(p[2], p[6], sdf[2], sdf[6]);
+	if ((et & 2048) != 0) ev[11] = vertInterp(p[3], p[7], sdf[3], sdf[7]);
+
+	// 5. Emit each triangle: reserve 3 vertex slots with an int atomicAdd (see file header -- the
+	//    int-atomic-counter contract every Gpu*Extractor shader uses), then write world positions
+	//    with the SAME winding swap the CPU core applies. Every vertex also carries this
+	//    triangle's deterministic emission-order key in .w (see file header's "Order key" section)
+	//    so the CPU-side weld can restore the CPU extractor's exact raw-triangle order.
+	int triBase = cubeIndex * 16;
+	for (int i = 0; i < 15; i += 3)
+	{
+		int ei0 = triTable[triBase + i];
+		if (ei0 == -1)
+		{
+			break;
+		}
+		int ei1 = triTable[triBase + i + 1];
+		int ei2 = triTable[triBase + i + 2];
+
+		int slot = atomicAdd(g_triangleCount, 1);
+		if (uint(slot) >= g_maxTriangles)
+		{
+			return;
+		}
+
+		float orderKey = uintBitsToFloat(candidateIndex * 8u + uint(i / 3));
+		g_vertexSlots[slot * 3 + 0] = vec4(ev[ei0], orderKey);
+		g_vertexSlots[slot * 3 + 1] = vec4(ev[ei2], orderKey);
+		g_vertexSlots[slot * 3 + 2] = vec4(ev[ei1], orderKey);
+	}
+}
+
+/// *********************************************************************************************
+/// Entry point -- one invocation per candidate cube.
+/// *********************************************************************************************
+
+void main()
+{
+	// 1. One invocation per candidate cube; extra invocations from the work-group rounding up
+	//    past g_candidateCount do nothing.
+	uint candidateIndex = gl_GlobalInvocationID.x;
+	if (candidateIndex >= g_candidateCount)
+	{
+		return;
+	}
+
+	// 2. Process this invocation's candidate cube.
+	processCube(g_candidateBases[candidateIndex].xyz, candidateIndex);
+}
