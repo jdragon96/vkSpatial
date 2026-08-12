@@ -27,3 +27,15 @@ TEST(GpuExtractors, McGpuMatchesCpuOnSphere) {
     EXPECT_TRUE(r.IsEdgeManifold());
     EXPECT_TRUE(r.IsClosed());
 }
+
+TEST(GpuExtractors, Mc33GpuMatchesCpuOnSphere) {
+    Engine::Core::Context ctx;
+    ASSERT_TRUE(GpuExtractorRegistry::Default().Has("mc33-gpu"));
+    VoxelField field = isotest::SphereField(0.7f, 0.1f, 12);
+    SurfaceMesh cpu = ExtractorRegistry::Default().Create("mc33")->Extract(field, ExtractParams{});
+    SurfaceMesh gpu = GpuExtractorRegistry::Default().Create("mc33-gpu", ctx)->Extract(field, ExtractParams{});
+    ASSERT_GT(gpu.triangles.size(), 100u);
+    EXPECT_LT(Engine::Eval::NearestNeighbourRMSE(gpu.vertices, cpu.vertices), 1e-4f);
+    EXPECT_LT(Engine::Eval::NearestNeighbourRMSE(cpu.vertices, gpu.vertices), 1e-4f);
+    EXPECT_TRUE(AnalyzeConnectivity(gpu).IsEdgeManifold());
+}
