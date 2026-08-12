@@ -19,6 +19,17 @@ namespace Engine::Spatial::Extraction {
         // anything the synthetic test fixtures or a single TiledAdvancedTSDF tile produce.
         constexpr uint64_t kMaxDenseValueGridCells = 128ull * 1024 * 1024;
 
+        // Above this many triangles, AllocateTriangleOutput() refuses. The vertex-slot buffer it
+        // sizes is 3 vertices/triangle * 16 bytes/vertex (std430 vec4) = 48 bytes/triangle, and
+        // Engine::Core::Buffer's Allocate*() calls take that byte size as a uint32_t -- so a
+        // maxTriangles beyond UINT32_MAX/48 (~89.5M) would wrap the byte-size computation and
+        // silently under-allocate. 16M triangles = 768 MB, comfortably below that wraparound point
+        // (~5.3x headroom) and comfortably above anything a synthetic test fixture or single
+        // candidate-cube dispatch (candidateCount * kMaxTrianglesPerCube, see each
+        // Gpu*Extractor.cpp) produces today -- same "dense-first-cut" budget philosophy as
+        // kMaxDenseValueGridCells above.
+        constexpr uint64_t kMaxTrianglesPerExtraction = 16ull * 1024 * 1024;
+
         // std430 array stride for ivec4 is 16 bytes; padding the 4th component keeps the CPU-side
         // upload byte-identical to what extract_mc.comp's `ivec4 g_candidateBases[]` expects.
         struct PaddedCoordinate {
@@ -94,6 +105,13 @@ namespace Engine::Spatial::Extraction {
     }
 
     GpuTriangleOutput AllocateTriangleOutput(Engine::Core::Context &context, uint32_t maxTriangles) {
+        if (uint64_t(maxTriangles) > kMaxTrianglesPerExtraction)
+            throw std::runtime_error(
+                    "GpuIsoSurfaceExtractorCommon::AllocateTriangleOutput: maxTriangles of " +
+                    std::to_string(maxTriangles) + " exceeds the dense-first-cut triangle budget of " +
+                    std::to_string(kMaxTrianglesPerExtraction) +
+                    " (see GpuIsoSurfaceExtractorCommon.cpp's kMaxTrianglesPerExtraction comment)");
+
         GpuTriangleOutput output;
         output.maxTriangles = maxTriangles;
         output.counter = std::make_unique<Engine::Core::Buffer>(context);
@@ -107,9 +125,16 @@ namespace Engine::Spatial::Extraction {
         *static_cast<int32_t *>(output.counter->MappedPtr()) = 0;
         output.counter->MakeVisibleToGPU(sizeof(int32_t));
 
-        constexpr uint32_t kBytesPerVertex = 4u * sizeof(float); // vec4 per vertex, std430
-        const uint32_t vertexBytes = std::max(1u, maxTriangles) * 3u * kBytesPerVertex;
-        output.vertices->AllocateHostVisibleReadback(vertexBytes);
+        // Computed in uint64_t: maxTriangles * 3 vertices/triangle * 16 bytes/vertex can exceed
+        // UINT32_MAX for maxTriangles beyond ~89.5M (see kMaxTrianglesPerExtraction's comment above).
+        // Narrowing this multiplication to uint32_t BEFORE the budget check above would silently
+        // wrap and under-allocate `vertices`, and extract_*.comp's atomicAdd-reserved slots would
+        // then write past the end of the (too-small) buffer. The narrowing static_cast below is
+        // safe only because the throw above already bounds maxTriangles well under that wraparound
+        // point.
+        constexpr uint64_t kBytesPerVertex = 4ull * sizeof(float); // vec4 per vertex, std430
+        const uint64_t vertexBytes = std::max<uint64_t>(1, maxTriangles) * 3ull * kBytesPerVertex;
+        output.vertices->AllocateHostVisibleReadback(static_cast<uint32_t>(vertexBytes));
 
         return output;
     }

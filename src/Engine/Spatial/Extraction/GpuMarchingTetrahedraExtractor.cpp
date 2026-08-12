@@ -32,6 +32,18 @@ namespace Engine::Spatial::Extraction {
         // max" contract).
         constexpr uint32_t kMaxTrianglesPerCubeMtet = 12u;
 
+        // MUST match extract_mtet.comp's #define ORDER_KEY_STRIDE (16u, reused from mc33's) EXACTLY
+        // -- see that file's own "ORDER-KEY STRIDE" header section for the full contract. See
+        // GpuIsoSurfaceExtractorCommon.h's "Order key" doc for why: the stride must strictly exceed
+        // a cube's maximum triangle count, or ReadbackRawTriangles' order-key sort silently
+        // reconstructs the WRONG per-cube emission order instead of failing loudly. The
+        // static_assert below enforces that contract at compile time.
+        constexpr uint32_t kOrderKeyStrideMtet = 16u;
+        static_assert(kMaxTrianglesPerCubeMtet < kOrderKeyStrideMtet,
+                      "extract_mtet.comp's ORDER_KEY_STRIDE must strictly exceed "
+                      "kMaxTrianglesPerCubeMtet, or ReadbackRawTriangles' order-key sort silently "
+                      "reconstructs the wrong per-cube emission order");
+
         // MUST match MarchingTetrahedraExtractor.cpp's kWeldDistanceDivisor EXACTLY (currently 32 --
         // see that file's extensive comment on why "mtet"'s denser diagonal-cut vertices need a
         // reduced weld distance vs "mc"/"mc33"'s plain weldFraction*cellSize). A mismatch here would

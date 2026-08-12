@@ -142,8 +142,7 @@ const int kInteriorTestCornerIndices[96] = int[96](
 int ComputeCornerSignBitmask(inout float sdf[8])
 {
 	int bitmask = 0;
-	for (int corner = 0; corner < 8; corner++)
-	{
+	for (int corner = 0; corner < 8; corner++) {
 		if (abs(sdf[corner]) < FLOAT_EPSILON)
 		{
 			sdf[corner] = FLOAT_EPSILON;
@@ -481,8 +480,7 @@ void EmitOneTriangle(vec3 v0, vec3 v1, vec3 v2, uint candidateIndex, uint triang
 // case/subcase below invokes this exactly ONCE per cube (just like the CPU's EmitCubeTriangles
 // calls its `emit` lambda exactly once per cube), so table row order == emission order.
 #define EMIT_TRIANGLES(TABLE, BASE, COUNT)                                                  \
-	for (int t = 0; t < (COUNT); t++)                                                        \
-	{                                                                                         \
+	for (int t = 0; t < (COUNT); t++) {                                                     \
 		vec3 v0 = VertexForEdgeCode(TABLE[(BASE) + t * 3 + 0], edgeVertex, centerVertex);      \
 		vec3 v1 = VertexForEdgeCode(TABLE[(BASE) + t * 3 + 1], edgeVertex, centerVertex);      \
 		vec3 v2 = VertexForEdgeCode(TABLE[(BASE) + t * 3 + 2], edgeVertex, centerVertex);      \
@@ -502,8 +500,7 @@ void processCube(ivec3 cubeBase, uint candidateIndex)
 	// 1. Sample all 8 corners; an unresolved corner means "skip this cube" (mirrors the CPU
 	//    core's `complete` flag / extract_mc.comp's processCube step 1).
 	float sdf[8];
-	for (int corner = 0; corner < 8; corner++)
-	{
+	for (int corner = 0; corner < 8; corner++) {
 		if (!sampleFieldValue(cubeBase + CORNER[corner], sdf[corner]))
 		{
 			return;
@@ -512,8 +509,7 @@ void processCube(ivec3 cubeBase, uint candidateIndex)
 
 	// 2. World-space corner positions.
 	vec3 cornerPosition[8];
-	for (int corner = 0; corner < 8; corner++)
-	{
+	for (int corner = 0; corner < 8; corner++) {
 		cornerPosition[corner] = vec3(cubeBase + CORNER[corner]) * g_cellSize;
 	}
 
@@ -546,8 +542,7 @@ void processCube(ivec3 cubeBase, uint candidateIndex)
 	//    edge's interpolated point (mirrors EmitCubeTriangles' add_c_vertex / centerVertex).
 	vec3 centerVertex = vec3(0.0);
 	int cutEdgeCount = 0;
-	for (int edge = 0; edge < 12; edge++)
-	{
+	for (int edge = 0; edge < 12; edge++) {
 		if (edgeIsCut[edge])
 		{
 			centerVertex += edgeVertex[edge];

@@ -25,6 +25,24 @@ namespace Engine::Spatial::Extraction {
             uint32_t maxTriangles;
         };
 
+        // A cube emits at most 5 triangles (the longest triTable row), so this bound is tight and
+        // exact -- unlike voxel_tsdf_mc.comp's fixed MC_MAX_TRIS budget, it is never clamped away
+        // real geometry.
+        constexpr uint32_t kMaxTrianglesPerCube = 5u;
+
+        // MUST match extract_mc.comp's order-key stride EXACTLY -- that shader has no
+        // ORDER_KEY_STRIDE #define (unlike mc33/mtet's macro-shared emit path); its
+        // processCube() hardcodes `candidateIndex * 8u + uint(i / 3)` inline. See
+        // GpuIsoSurfaceExtractorCommon.h's "Order key" doc for the full contract: the stride must
+        // strictly exceed a cube's maximum triangle count, or ReadbackRawTriangles' order-key sort
+        // silently reconstructs the WRONG per-cube emission order instead of failing loudly. The
+        // static_assert below enforces that contract at compile time.
+        constexpr uint32_t kOrderKeyStride = 8u;
+        static_assert(kMaxTrianglesPerCube < kOrderKeyStride,
+                      "extract_mc.comp's order-key stride must strictly exceed kMaxTrianglesPerCube, "
+                      "or ReadbackRawTriangles' order-key sort silently reconstructs the wrong "
+                      "per-cube emission order");
+
     } // namespace
 
     SurfaceMesh GpuMarchingCubesExtractor::Extract(const VoxelField &field, const ExtractParams &params) const {
@@ -34,10 +52,10 @@ namespace Engine::Spatial::Extraction {
         const GpuVoxelFieldUpload upload = UploadField(*m_context, field);
         if (upload.candidateCount == 0) return core::WeldAndComputeNormals({}, weldDistance);
 
-        // A cube emits at most 5 triangles (the longest triTable row), so this bound is tight and
-        // exact -- unlike voxel_tsdf_mc.comp's fixed MC_MAX_TRIS budget, it is never clamped away
-        // real geometry.
-        const uint32_t maxTriangles = upload.candidateCount * 5u;
+        // A cube emits at most kMaxTrianglesPerCube triangles (the longest triTable row), so this
+        // bound is tight and exact -- unlike voxel_tsdf_mc.comp's fixed MC_MAX_TRIS budget, it is
+        // never clamped away real geometry.
+        const uint32_t maxTriangles = upload.candidateCount * kMaxTrianglesPerCube;
         GpuTriangleOutput output = AllocateTriangleOutput(*m_context, maxTriangles);
 
         // (b) Dispatch extract_mc.comp: one invocation per candidate cube.

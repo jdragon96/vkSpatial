@@ -22,6 +22,8 @@
 // a SINGLE counter (MoltenVK has no float atomics, so nothing is ever atomically accumulated --
 // only this one integer slot-reservation), then writes 3 world-space vertices per triangle into
 // the reserved slots. AllocateTriangleOutput()/ReadbackRawTriangles() below own that buffer pair.
+// AllocateTriangleOutput() guards its vertex-buffer size against a fixed triangle budget the same
+// way UploadField() guards the dense grid above -- see GpuIsoSurfaceExtractorCommon.cpp.
 
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/Context.h"
@@ -78,6 +80,9 @@ namespace Engine::Spatial::Extraction {
     // Allocates (host-visible, zero-copy readback) a zeroed triangle counter + a vertex-slot buffer
     // sized for up to `maxTriangles` triangles (3 world-space vec4 vertices each). Ready to Bind()
     // at binding 0/1 immediately; the counter is already zeroed and flushed to the GPU.
+    // Throws std::runtime_error if maxTriangles exceeds a sane output-buffer budget (see
+    // GpuIsoSurfaceExtractorCommon.cpp's kMaxTrianglesPerExtraction comment) instead of silently
+    // wrapping the vertex-buffer byte-size computation and under-allocating.
     GpuTriangleOutput AllocateTriangleOutput(Engine::Core::Context &context, uint32_t maxTriangles);
 
     // Reads back whatever a compute dispatch wrote under the AllocateTriangleOutput() contract:

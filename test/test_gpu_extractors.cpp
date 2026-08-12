@@ -22,6 +22,9 @@ TEST(GpuExtractors, McGpuMatchesCpuOnSphere) {
     // Same tables + same weld -> vertex sets coincide to fp tolerance, both directions.
     EXPECT_LT(Engine::Eval::NearestNeighbourRMSE(gpu.vertices, cpu.vertices), 1e-4f);
     EXPECT_LT(Engine::Eval::NearestNeighbourRMSE(cpu.vertices, gpu.vertices), 1e-4f);
+    // Winding must produce OUTWARD-facing normals on a sphere (a flipped winding would still pass
+    // the position-only RMSE checks above while silently inverting every normal).
+    EXPECT_GT(isotest::MeanOutwardNormalAlignment(gpu, Eigen::Vector3f::Zero()), 0.5);
     // And the GPU mesh is itself closed+manifold like the CPU one.
     ConnectivityReport r = AnalyzeConnectivity(gpu);
     EXPECT_TRUE(r.IsEdgeManifold());
@@ -37,7 +40,14 @@ TEST(GpuExtractors, Mc33GpuMatchesCpuOnSphere) {
     ASSERT_GT(gpu.triangles.size(), 100u);
     EXPECT_LT(Engine::Eval::NearestNeighbourRMSE(gpu.vertices, cpu.vertices), 1e-4f);
     EXPECT_LT(Engine::Eval::NearestNeighbourRMSE(cpu.vertices, gpu.vertices), 1e-4f);
-    EXPECT_TRUE(AnalyzeConnectivity(gpu).IsEdgeManifold());
+    // Winding must produce OUTWARD-facing normals on a sphere (a flipped winding would still pass
+    // the position-only RMSE checks above while silently inverting every normal).
+    EXPECT_GT(isotest::MeanOutwardNormalAlignment(gpu, Eigen::Vector3f::Zero()), 0.5);
+    // Symmetric with Mc/MtetGpuMatchesCpuOnSphere: the sphere is closed, so the GPU mesh must be
+    // too (not just edge-manifold).
+    ConnectivityReport r = AnalyzeConnectivity(gpu);
+    EXPECT_TRUE(r.IsEdgeManifold());
+    EXPECT_TRUE(r.IsClosed());
 }
 
 TEST(GpuExtractors, MtetGpuMatchesCpuOnSphere) {
@@ -49,6 +59,9 @@ TEST(GpuExtractors, MtetGpuMatchesCpuOnSphere) {
     ASSERT_GT(gpu.triangles.size(), 100u);
     EXPECT_LT(Engine::Eval::NearestNeighbourRMSE(gpu.vertices, cpu.vertices), 1e-4f);
     EXPECT_LT(Engine::Eval::NearestNeighbourRMSE(cpu.vertices, gpu.vertices), 1e-4f);
+    // Winding must produce OUTWARD-facing normals on a sphere (a flipped winding would still pass
+    // the position-only RMSE checks above while silently inverting every normal).
+    EXPECT_GT(isotest::MeanOutwardNormalAlignment(gpu, Eigen::Vector3f::Zero()), 0.5);
     ConnectivityReport r = AnalyzeConnectivity(gpu);
     EXPECT_TRUE(r.IsEdgeManifold());
     EXPECT_TRUE(r.IsClosed());
