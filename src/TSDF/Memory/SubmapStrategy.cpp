@@ -4,6 +4,9 @@ namespace TSDF {
 
     void SubmapStrategy::Build(Engine::Core::Context &context, const VolumeParams &params) {
         m_context = &context;
+        // windowMinCorner is deliberately unused: like TiledAdvancedTSDF, SubmapAdvancedTSDF is
+        // tiled internally (both its base and detail levels), so there is no single window corner
+        // to place -- each tile derives its own origin from the tile grid.
         m_tsdf.Build(context, params.voxelSize, params.truncation, kBlockVoxels,
                      kDetailPointsPerVoxel, params.hashCapacity, params.maxPointsPerFrame);
     }
@@ -14,9 +17,14 @@ namespace TSDF {
     }
 
     void SubmapStrategy::Configure(const IntegrationOptions &options) {
-        // Only the options this backend exposes; the interface allows a strategy to ignore the
-        // rest rather than fail, so one parameter set can drive every strategy in a sweep.
+        // Forward every option, exactly as the sibling strategies do -- SubmapAdvancedTSDF fans
+        // each setter out to both its base and detail levels. A strategy that quietly dropped
+        // sweep-relevant options would make an A/B run lie: the same parameter set would mean
+        // something different for `submap` than for `flat`/`tile`.
         m_tsdf.SetIntegrationQuality(options.quality);
+        m_tsdf.SetPointToPlane(options.pointToPlane);
+        m_tsdf.SetConfidenceWeight(options.confidenceWeight);
+        m_tsdf.SetHermitePosition(options.hermitePosition);
         m_tsdf.SetCurrentFrame(options.currentFrame);
     }
 
