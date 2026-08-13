@@ -4,6 +4,7 @@
 #include "Engine/Spatial/SubmapAdvancedTSDF.h"
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
 #include "TSDF/Memory/FlatStrategy.h"
+#include "TSDF/Memory/SubmapStrategy.h"
 #include "TSDF/Memory/TileStrategy.h"
 #include "TSDF/Volume.h"
 
@@ -148,4 +149,28 @@ TEST(TsdfTileStrategy, TableCountFollowsTiles) {
     std::vector<Engine::Spatial::AdvancedEntry> entries;
     strategy.Download(entries);
     EXPECT_GT(entries.size(), 0u);
+}
+
+TEST(TsdfSubmapStrategy, IntegratesDespiteSelfSubmittingBackend) {
+    Engine::Core::Context context;
+    TSDF::SubmapStrategy strategy;
+    TSDF::VolumeParams params;
+    params.voxelSize = 0.05f;
+    params.truncation = 0.15f;
+    params.hashCapacity = 1u << 16;
+    strategy.Build(context, params);
+
+    EXPECT_STREQ(strategy.Name(), "submap");
+
+    std::vector<Vector3f> points, normals;
+    MakePlane(points, normals, 0.6f, 8);
+    // 일부러 Submit하지 않는다: 이 전략은 batch에 아무것도 기록하지 않으므로 제출할 것이
+    // 없고, 빈 batch 제출이 안전한지는 이 태스크가 검증할 대상이 아니다.
+    Engine::Compute::CommandBatch batch(context);
+    strategy.Record(points, normals, Vector3f(0.0f, 0.0f, 1.0f), batch);
+
+    const TSDF::VolumeStats stats = strategy.Stats();
+    EXPECT_GT(stats.occupiedEntryCount, 0u) << "batch를 제출하지 않아도 적분은 끝나 있어야 한다";
+    EXPECT_GE(stats.tableCount, 1u);
+    EXPECT_EQ(stats.deviceMemoryBytes, stats.slotCapacity * TSDF::kBytesPerHashSlot);
 }
