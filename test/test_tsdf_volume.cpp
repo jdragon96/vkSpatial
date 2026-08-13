@@ -3,6 +3,7 @@
 #include "Engine/Spatial/AdvancedTSDF.h"
 #include "Engine/Spatial/SubmapAdvancedTSDF.h"
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
+#include "TSDF/ComposedVolume.h"
 #include "TSDF/Memory/FlatStrategy.h"
 #include "TSDF/Memory/SubmapStrategy.h"
 #include "TSDF/Memory/TileStrategy.h"
@@ -173,4 +174,63 @@ TEST(TsdfSubmapStrategy, IntegratesDespiteSelfSubmittingBackend) {
     EXPECT_GT(stats.occupiedEntryCount, 0u) << "batch를 제출하지 않아도 적분은 끝나 있어야 한다";
     EXPECT_GE(stats.tableCount, 1u);
     EXPECT_EQ(stats.deviceMemoryBytes, stats.slotCapacity * TSDF::kBytesPerHashSlot);
+}
+
+TEST(TsdfRegistry, DefaultRegistersAllMemoryStrategies) {
+    const TSDF::VolumeRegistry registry = TSDF::VolumeRegistry::Default();
+    EXPECT_EQ(registry.Names(), (std::vector<std::string>{"flat", "submap", "tile"}));
+}
+
+// 이름만 바꿔가며 같은 스캔을 적분하고 통계를 비교한다. 이것이 이 계획의 최종 산출물 --
+// 메모리가 점유율(load factor)에 묶여 있는지 타일 개수에 묶여 있는지 판정하는 도구.
+TEST(TsdfVolumeSwitching, EveryStrategyIntegratesTheSameScan) {
+    const TSDF::VolumeRegistry registry = TSDF::VolumeRegistry::Default();
+
+    std::vector<Vector3f> points, normals;
+    MakePlane(points, normals, 0.6f, 8);
+
+    for (const std::string &name: registry.Names()) {
+        Engine::Core::Context context;
+        std::unique_ptr<TSDF::Volume> volume = registry.Create(name);
+        ASSERT_NE(volume, nullptr) << name;
+        EXPECT_EQ(std::string(volume->Name()), name);
+
+        TSDF::VolumeParams params;
+        params.voxelSize = 0.05f;
+        params.truncation = 0.15f;
+        params.hashCapacity = 1u << 16;
+        volume->Build(context, params);
+        volume->Integrate(points, normals, Vector3f(0.0f, 0.0f, 1.0f));
+
+        const TSDF::VolumeStats stats = volume->Stats();
+        EXPECT_GT(stats.occupiedEntryCount, 0u) << name;
+        EXPECT_GT(stats.slotCapacity, 0u) << name;
+        EXPECT_GE(stats.tableCount, 1u) << name;
+        EXPECT_EQ(stats.insertFailureCount, 0u) << name << ": 복셀이 조용히 드롭되면 안 된다";
+
+        std::vector<Engine::Spatial::AdvancedEntry> entries;
+        volume->Download(entries);
+        EXPECT_GT(entries.size(), 0u) << name;
+    }
+}
+
+TEST(TsdfVolumeSwitching, ResetEmptiesTheVolume) {
+    const TSDF::VolumeRegistry registry = TSDF::VolumeRegistry::Default();
+    Engine::Core::Context context;
+    std::unique_ptr<TSDF::Volume> volume = registry.Create("flat");
+    ASSERT_NE(volume, nullptr);
+
+    TSDF::VolumeParams params;
+    params.voxelSize = 0.05f;
+    params.truncation = 0.15f;
+    params.hashCapacity = 1u << 16;
+    volume->Build(context, params);
+
+    std::vector<Vector3f> points, normals;
+    MakePlane(points, normals, 0.6f, 8);
+    volume->Integrate(points, normals, Vector3f(0.0f, 0.0f, 1.0f));
+    ASSERT_GT(volume->Stats().occupiedEntryCount, 0u);
+
+    volume->Reset();
+    EXPECT_EQ(volume->Stats().occupiedEntryCount, 0u);
 }

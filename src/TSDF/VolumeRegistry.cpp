@@ -1,5 +1,10 @@
 #include "TSDF/Volume.h"
 
+#include "TSDF/ComposedVolume.h"
+#include "TSDF/Memory/FlatStrategy.h"
+#include "TSDF/Memory/SubmapStrategy.h"
+#include "TSDF/Memory/TileStrategy.h"
+
 #include <algorithm>
 
 namespace TSDF {
@@ -12,9 +17,17 @@ namespace TSDF {
         return names;
     }
 
-    // Task 6에서 flat/tile/submap이 여기에 등록된다.
     VolumeRegistry VolumeRegistry::Default() {
         VolumeRegistry registry;
+        registry.Register("flat", [] {
+            return std::make_unique<ComposedVolume>(std::make_unique<FlatStrategy>());
+        });
+        registry.Register("tile", [] {
+            return std::make_unique<ComposedVolume>(std::make_unique<TileStrategy>());
+        });
+        registry.Register("submap", [] {
+            return std::make_unique<ComposedVolume>(std::make_unique<SubmapStrategy>());
+        });
         return registry;
     }
 
