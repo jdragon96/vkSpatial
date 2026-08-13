@@ -31,6 +31,11 @@ namespace TSDF {
             m_memory->Record(points, normals, cameraPosition, batch);
         }
 
+        // Declaring the one-argument override would otherwise HIDE Volume's zero-argument
+        // Download() convenience for anyone holding a ComposedVolume& -- the exact name-hiding
+        // hazard Volume.h reasons about when it keeps Record and Integrate separately named.
+        using Volume::Download;
+
         void Download(std::vector<Engine::Spatial::AdvancedEntry> &out) const override {
             m_memory->Download(out);
         }

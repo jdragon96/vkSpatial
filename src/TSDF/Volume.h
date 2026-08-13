@@ -53,7 +53,12 @@ namespace TSDF {
         uint64_t occupiedEntryCount = 0; // n -- distinct keys currently stored
         uint64_t slotCapacity = 0;       // m -- total slots across every table the volume owns
         uint64_t insertFailureCount = 0; // observations dropped because probing gave up
-        uint64_t deviceMemoryBytes = 0;  // GPU bytes held (tables + payload + scratch)
+        // Hash tables and their parallel first-fill stamps ONLY: slotCapacity * kBytesPerHashSlot.
+        // Upload buffers and compaction/readback scratch are EXCLUDED, and that excluded scratch
+        // differs wildly by strategy (a tiled level allocates ~8 M readback entries on its first
+        // download, and submap owns two such levels, while flat's scratch tracks its hash size).
+        // So compare this only as table cost -- it is not the strategy's total GPU footprint.
+        uint64_t deviceMemoryBytes = 0;
         uint32_t tableCount = 1;         // 1 for a single window; tile count for tiled strategies
         uint32_t growCount = 0;          // rehashes performed since Build
 
@@ -73,10 +78,10 @@ namespace TSDF {
     // organisation (flat / tiled / submap), slot addressing (linear probe / bucketed), the
     // integration kernel, and the extraction kernel.
     //
-    // The batched RecordIntegrate is the primitive: a tiled strategy fuses many tiles into one
-    // submit, so self-submitting per call would make tiling impossible to express. Integrate is a
-    // non-virtual convenience that wraps it in a CommandBatch, mirroring how SpatialIndex::Build
-    // funnels every caller into the single virtual entry point.
+    // The batched Record is the primitive: a tiled strategy fuses many tiles into one submit, so
+    // self-submitting per call would make tiling impossible to express. Integrate is a non-virtual
+    // convenience that wraps it in a CommandBatch, mirroring how SpatialIndex::Build funnels every
+    // caller into the single virtual entry point.
     class Volume {
     public:
         virtual ~Volume() = default;
@@ -87,10 +92,21 @@ namespace TSDF {
         // Allocate GPU state and compile kernels. Must be called before anything else.
         virtual void Build(Engine::Core::Context &context, const VolumeParams &params) = 0;
 
-        // Empty the volume without reallocating. Stats reset to zero except deviceMemoryBytes.
+        // Empty the volume. What survives differs by strategy and the difference is visible in
+        // Stats: a single-window strategy keeps its (possibly grown) table, so slotCapacity and
+        // deviceMemoryBytes are unchanged and only occupiedEntryCount returns to zero. A lazily
+        // tiled strategy drops its tiles, so slotCapacity, tableCount AND deviceMemoryBytes all
+        // fall to zero and the tables are reallocated on the next integration. Only
+        // occupiedEntryCount == 0 afterwards is common to all of them.
         virtual void Reset() = 0;
 
         // Applies from the next integration onward; strategies ignore options they do not support.
+        // Set options BEFORE the first integration. Lazily tiled strategies (tile, submap) copy the
+        // current options into a tile when that tile is CREATED and do not retro-apply to tiles
+        // that already exist, so a mid-run Configure leaves the volume running two different
+        // configurations at once -- old tiles on the old options, new tiles on the new ones.
+        // Deliberately unguarded against a missing Build: every implementation only writes plain
+        // fields that a later Build preserves, so Configure-then-Build is a supported order.
         virtual void Configure(const IntegrationOptions &options) = 0;
 
         // Record upload + integrate dispatches into `batch` WITHOUT submitting. `normals` drives

@@ -15,6 +15,10 @@ namespace TSDF {
         m_tsdf.Reset();
     }
 
+    // The one method that deliberately carries no `m_context == nullptr` guard: every wrapped
+    // setter is a plain field write that a later Build preserves, so Configure-before-Build is a
+    // working, useful sequence. A guard would silently discard those settings instead.
+    // NOTE: set options BEFORE the first integration -- see the warning in TileStrategy.h.
     void TileStrategy::Configure(const IntegrationOptions &options) {
         m_tsdf.SetIntegrationQuality(options.quality);
         m_tsdf.SetPointToPlane(options.pointToPlane);
@@ -28,9 +32,13 @@ namespace TSDF {
                               const Eigen::Vector3f &cameraPosition,
                               Engine::Compute::CommandBatch &batch) {
         if (m_context == nullptr) return;
-        // The 4-argument form routes points to tiles and records every tile's dispatch into the
-        // one batch -- that fusion is the whole reason Record is the interface primitive.
-        m_tsdf.Integrate(points, normals, cameraPosition, batch);
+        // Routes points to tiles and records every tile's dispatch into the one batch -- that
+        // fusion is the whole reason Record is the interface primitive. The GPU form, not the
+        // batched Integrate: Integrate reaches AdvancedTSDF::RecordIntegrate, which CLAMPS each
+        // tile's cloud to maxPointsPerFrame and silently drops the rest. A truncated cloud
+        // under-reports occupiedEntryCount in exactly the direction that flatters tiling, so the
+        // measurement this class exists for would be biased. RecordIntegrateGPU grows instead.
+        m_tsdf.RecordIntegrateGPU(points, normals, cameraPosition, batch);
     }
 
     void TileStrategy::Download(std::vector<Engine::Spatial::AdvancedEntry> &out) const {

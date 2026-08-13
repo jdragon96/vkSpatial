@@ -8,6 +8,15 @@ namespace TSDF {
     // Lazily created 448^3-core tiles, so the scene is not capped by one 512^3 window. Every tile
     // owns its own hash of VolumeParams::hashCapacity slots, which is why tableCount matters:
     // a scene spread over many sparse tiles is memory-bound by tile COUNT, not by load factor.
+    //
+    // Record routes the cloud to tiles first and uploads only each tile's share, so its GPU work
+    // is O(points) regardless of tile count. (SubmapStrategy takes the opposite trade -- see
+    // SubmapStrategy.h.)
+    //
+    // CONFIGURE ORDER: call Configure BEFORE the first integration. Tiles are created lazily and
+    // copy the current settings at creation time, and only currentFrame is pushed to tiles that
+    // already exist -- so a mid-run Configure leaves older tiles on the OLD options while newer
+    // tiles get the new ones, silently mixing two configurations inside one volume's numbers.
     class TileStrategy final : public MemoryStrategy {
     public:
         void Build(Engine::Core::Context &context, const VolumeParams &params) override;

@@ -86,6 +86,21 @@ namespace Engine::Spatial {
             }
         }
 
+        // Same per-tile routing as the batched Integrate, but each tile grows its upload buffers
+        // to the cloud it was routed instead of clamping to maxPointsPerFrame. Use this wherever
+        // dropping points would corrupt a measurement -- the clamping form truncates silently.
+        // Like SlotCapacity(), this is instantiated lazily: a Backend without RecordIntegrateGPU
+        // only fails if this is actually called on that instantiation.
+        void RecordIntegrateGPU(const std::vector<Eigen::Vector3f> &points,
+                                const std::vector<Eigen::Vector3f> &normals,
+                                const Eigen::Vector3f &cameraPosition,
+                                Engine::Compute::CommandBatch &batch) {
+            for (auto &kv: splitPointsToTiles(points, normals)) {
+                Backend *tile = GetTSDF(kv.first);
+                tile->RecordIntegrateGPU(kv.second.pts, kv.second.nrm, cameraPosition, batch);
+            }
+        }
+
         void IntegrateGPU(const std::vector<Eigen::Vector3f> &points,
                           const std::vector<Eigen::Vector3f> &normals,
                           const Eigen::Vector3f &cameraPos = Eigen::Vector3f::Zero()) {

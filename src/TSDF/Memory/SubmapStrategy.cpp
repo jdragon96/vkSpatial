@@ -34,7 +34,12 @@ namespace TSDF {
                                 Engine::Compute::CommandBatch & /*batch*/) {
         if (m_context == nullptr) return;
         // Deviation documented in the header: this call opens and submits its own batch.
-        m_tsdf.Integrate(points, normals, cameraPosition);
+        // IntegrateGPU, not Integrate: Integrate reaches AdvancedTSDF::RecordIntegrate per tile,
+        // which CLAMPS to maxPointsPerFrame and silently drops the overflow -- a truncated cloud
+        // would under-report occupiedEntryCount and bias the comparison toward submap. IntegrateGPU
+        // self-submits exactly as Integrate did, so the disclosed deviation is unchanged; only the
+        // clamp is gone. Its cost trade-off is documented in the header.
+        m_tsdf.IntegrateGPU(points, normals, cameraPosition);
     }
 
     void SubmapStrategy::Download(std::vector<Engine::Spatial::AdvancedEntry> &out) const {
