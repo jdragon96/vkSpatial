@@ -146,6 +146,13 @@ namespace Engine::Spatial {
         }
 
         uint32_t DenseBlockCount() const { return static_cast<uint32_t>(m_dense.size()); }
+
+        // Base + detail combined. Both levels are real storage, so a memory comparison must see
+        // the sum rather than either level alone.
+        uint32_t FilledCount() const { return m_base.FilledCount() + m_detail.FilledCount(); }
+
+        uint64_t SlotCapacity() const { return m_base.SlotCapacity() + m_detail.SlotCapacity(); }
+
         uint32_t BaseTileCount() const { return m_base.TileCount(); }
         uint32_t DetailTileCount() const { return m_detail.TileCount(); }
 

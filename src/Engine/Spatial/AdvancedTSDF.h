@@ -134,6 +134,10 @@ namespace Engine::Spatial {
 
         uint32_t FilledCount() const;
 
+        // Current slot count. Doubles on every growHash, so a caller that cached the Build-time
+        // capacity would report a stale load factor -- read it here instead.
+        uint32_t HashCapacity() const { return m_hashCapacity; }
+
         // Unpack every occupied, sufficiently-observed entry (world centre, direction, tsdf,
         // weight, stored-gradient normal). GPU-compacts the hash so only filled entries cross back.
         std::vector<AdvancedEntry> DownloadEntries() const;

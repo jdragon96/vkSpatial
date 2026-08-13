@@ -144,6 +144,15 @@ namespace Engine::Spatial {
             return total;
         }
 
+        // Total slots across every live tile. Mirrors FilledCount(); the two together give the
+        // load factor. Instantiated lazily, so a Backend without HashCapacity() only fails if
+        // this is actually called on that instantiation.
+        uint64_t SlotCapacity() const {
+            uint64_t total = 0;
+            for (const auto &kv: m_tiles) total += kv.second->HashCapacity();
+            return total;
+        }
+
         uint32_t TileCount() const { return static_cast<uint32_t>(m_tiles.size()); }
 
         void Reset() { m_tiles.clear(); }
