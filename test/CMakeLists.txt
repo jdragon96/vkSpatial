@@ -15,6 +15,7 @@ target_link_libraries(vkspatial_tests
         Engine::Render
         Engine::Backend
         Engine::Pipeline
+        TSDF::TSDF
         GTest::gtest
         GTest::gtest_main)
 

@@ -10,3 +10,4 @@ set(VKBVH_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shader"
         CACHE PATH "Engine GLSL shader directory" FORCE)
 
 add_subdirectory(Engine)
+add_subdirectory(TSDF)

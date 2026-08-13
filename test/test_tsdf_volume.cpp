@@ -3,6 +3,7 @@
 #include "Engine/Spatial/AdvancedTSDF.h"
 #include "Engine/Spatial/SubmapAdvancedTSDF.h"
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
+#include "TSDF/Volume.h"
 
 #include <gtest/gtest.h>
 
@@ -61,4 +62,20 @@ TEST(TsdfAccessors, SubmapSumsBaseAndDetail) {
             uint64_t(tsdf.BaseTileCount() + tsdf.DetailTileCount()) * (1u << 16);
     EXPECT_EQ(tsdf.SlotCapacity(), expected);
     EXPECT_GT(tsdf.FilledCount(), 0u);
+}
+
+TEST(TsdfRegistry, UnknownNameReturnsNull) {
+    const TSDF::VolumeRegistry registry = TSDF::VolumeRegistry::Default();
+    EXPECT_FALSE(registry.Has("no-such-volume"));
+    EXPECT_EQ(registry.Create("no-such-volume"), nullptr);
+}
+
+TEST(TsdfRegistry, NamesAreSorted) {
+    TSDF::VolumeRegistry registry;
+    registry.Register("zulu", [] { return std::unique_ptr<TSDF::Volume>(); });
+    registry.Register("alpha", [] { return std::unique_ptr<TSDF::Volume>(); });
+    const std::vector<std::string> names = registry.Names();
+    ASSERT_EQ(names.size(), 2u);
+    EXPECT_EQ(names[0], "alpha");
+    EXPECT_EQ(names[1], "zulu");
 }
