@@ -4,6 +4,7 @@
 #include "Engine/Spatial/SubmapAdvancedTSDF.h"
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
 #include "TSDF/Memory/FlatStrategy.h"
+#include "TSDF/Memory/TileStrategy.h"
 #include "TSDF/Volume.h"
 
 #include <gtest/gtest.h>
@@ -118,4 +119,33 @@ TEST(TsdfFlatStrategy, StatsAreZeroBeforeBuild) {
     EXPECT_EQ(stats.slotCapacity, 0u);
     EXPECT_EQ(stats.LoadFactor(), 0.0);
     EXPECT_EQ(strategy.Device(), nullptr);
+}
+
+TEST(TsdfTileStrategy, TableCountFollowsTiles) {
+    Engine::Core::Context context;
+    TSDF::TileStrategy strategy;
+    TSDF::VolumeParams params;
+    params.voxelSize = 0.05f;
+    params.truncation = 0.15f;
+    params.hashCapacity = 1u << 16;
+    strategy.Build(context, params);
+
+    EXPECT_STREQ(strategy.Name(), "tile");
+    EXPECT_EQ(strategy.Stats().tableCount, 0u) << "타일은 스캔이 닿을 때 생긴다";
+
+    std::vector<Vector3f> points, normals;
+    MakePlane(points, normals, 0.6f, 8);
+    Engine::Compute::CommandBatch batch(context);
+    strategy.Record(points, normals, Vector3f(0.0f, 0.0f, 1.0f), batch);
+    batch.Submit();
+
+    const TSDF::VolumeStats stats = strategy.Stats();
+    EXPECT_GE(stats.tableCount, 1u);
+    EXPECT_EQ(stats.slotCapacity, uint64_t(stats.tableCount) * (1u << 16));
+    EXPECT_GT(stats.occupiedEntryCount, 0u);
+    EXPECT_EQ(stats.deviceMemoryBytes, stats.slotCapacity * TSDF::kBytesPerHashSlot);
+
+    std::vector<Engine::Spatial::AdvancedEntry> entries;
+    strategy.Download(entries);
+    EXPECT_GT(entries.size(), 0u);
 }
