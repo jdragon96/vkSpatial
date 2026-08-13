@@ -3,6 +3,7 @@
 #include "Engine/Spatial/AdvancedTSDF.h"
 #include "Engine/Spatial/SubmapAdvancedTSDF.h"
 #include "Engine/Spatial/TiledAdvancedTSDF.h"
+#include "TSDF/Memory/FlatStrategy.h"
 #include "TSDF/Volume.h"
 
 #include <gtest/gtest.h>
@@ -78,4 +79,43 @@ TEST(TsdfRegistry, NamesAreSorted) {
     ASSERT_EQ(names.size(), 2u);
     EXPECT_EQ(names[0], "alpha");
     EXPECT_EQ(names[1], "zulu");
+}
+
+TEST(TsdfFlatStrategy, StatsTrackFillAndCapacity) {
+    Engine::Core::Context context;
+    TSDF::FlatStrategy strategy;
+    TSDF::VolumeParams params;
+    params.voxelSize = 0.05f;
+    params.truncation = 0.15f;
+    params.hashCapacity = 1u << 16;
+    strategy.Build(context, params);
+
+    EXPECT_STREQ(strategy.Name(), "flat");
+    EXPECT_EQ(strategy.Stats().occupiedEntryCount, 0u);
+    EXPECT_EQ(strategy.Stats().slotCapacity, 1u << 16);
+    EXPECT_EQ(strategy.Stats().tableCount, 1u);
+
+    std::vector<Vector3f> points, normals;
+    MakePlane(points, normals, 0.6f, 8);
+    Engine::Compute::CommandBatch batch(context);
+    strategy.Record(points, normals, Vector3f(0.0f, 0.0f, 1.0f), batch);
+    batch.Submit();
+
+    const TSDF::VolumeStats stats = strategy.Stats();
+    EXPECT_GT(stats.occupiedEntryCount, 0u);
+    EXPECT_GT(stats.LoadFactor(), 0.0);
+    EXPECT_LT(stats.LoadFactor(), 1.0);
+    EXPECT_EQ(stats.deviceMemoryBytes, stats.slotCapacity * TSDF::kBytesPerHashSlot);
+
+    std::vector<Engine::Spatial::AdvancedEntry> entries;
+    strategy.Download(entries);
+    EXPECT_EQ(entries.size(), stats.occupiedEntryCount);
+}
+
+TEST(TsdfFlatStrategy, StatsAreZeroBeforeBuild) {
+    TSDF::FlatStrategy strategy;
+    const TSDF::VolumeStats stats = strategy.Stats();
+    EXPECT_EQ(stats.slotCapacity, 0u);
+    EXPECT_EQ(stats.LoadFactor(), 0.0);
+    EXPECT_EQ(strategy.Device(), nullptr);
 }
