@@ -41,13 +41,13 @@ MacBook 같은 **통합 메모리(UMA)** 환경에서는 CPU/GPU가 같은 물�
 
 `2026-07-17` 스펙이 정의한 자료구조·커널·invariant는 대부분 그대로 유효하다. 이 스펙이 바꾸는 것은 **"group 데이터가 어디에 살고 어떻게 device-addressable해지는가"** 딱 한 축이다. 구체적으로:
 
-| `2026-07-17`에서 | 이 스펙에서 |
-| --- | --- |
+| `2026-07-17`에서                                                                                              | 이 스펙에서                                                               |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | `DirectionalHostStore` + active pool + `Buffer::Upload/Download` staging이 `DirectionalTSDF`에 직접 박혀 있음 | 그 전부가 `StreamingResidencyBackend` 안으로 이동. 코어는 인터페이스만 봄 |
-| `HostTsdfVoxel`(float) ↔ `GpuTsdfVoxel`(fixed-point) 변환 | 단일 fixed-point 8B로 통일, 변환 소멸(§2) |
-| single-direction `dominantAxis` integration | multi-direction soft(K≤2) 기본, single은 K=1 특수케이스(§7) |
-| candidate 무조건 append | position+normal merge/split(§7) |
-| 단일(discrete) 경로 | UMA/discrete 자동 선택 + cross-backend 테스트 |
+| `HostTsdfVoxel`(float) ↔ `GpuTsdfVoxel`(fixed-point) 변환                                                     | 단일 fixed-point 8B로 통일, 변환 소멸(§2)                                 |
+| single-direction `dominantAxis` integration                                                                   | multi-direction soft(K≤2) 기본, single은 K=1 특수케이스(§7)               |
+| candidate 무조건 append                                                                                       | position+normal merge/split(§7)                                           |
+| 단일(discrete) 경로                                                                                           | UMA/discrete 자동 선택 + cross-backend 테스트                             |
 
 ### 1. 레이어 구조
 
@@ -161,13 +161,16 @@ config(env/flag)로 강제 override 가능 (UMA에서 Streaming 강제 → cross
 ### 7. 품질 코어 업그레이드 (양 플랫폼 공통 baseline)
 
 **7.1 Multi-direction soft integration** (원문 §13의 "향후" 항목을 baseline으로)
+
 - 각 sample normal을 가장 가까운 **K≤2 canonical 방향**에 `w_d = max(0, dot(n, axis_d))^p`(p≈2~4) 가중으로 분배. 방향 경계(예: normal이 45°)에서 한 layer만 갱신되어 생기는 seam을 제거 → 얇은 벽/인접면 매끄러움 향상.
 - `K=1`(dominant만)이 `2026-07-17`의 기존 동작 = 특수케이스. push constant `maxDirections`로 전환.
 
 **7.2 Confidence-weighted running average** (원문 §13 공식 승격)
+
 - `weight = frontendConfidence · viewAngleWeight · directionConfidence` (`viewAngleWeight = max(0, dot(n, viewDir))`, `directionConfidence = w_d` from 7.1). `sampleWeight=1` 상수 대신 이 값을 `kTsdfFixedScale` 곱해 `atomicAdd`. 관측각이 나쁜 샘플의 기여를 자연히 줄여 경계 왜곡(원문 §2) 완화.
 
 **7.3 Directional extraction merge/split** (원문 §15 정착)
+
 - center-voxel 3×3×3, **같은 direction layer끼리만 sign crossing**(invariant 유지). 한 spatial voxel의 최대 6 candidate를 position+normal로 클러스터:
   - position 가깝 + normal angle < `normalMergeThreshold`(30°) → weighted merge
   - normal angle > `strongSplitThreshold`(60°) → 별도 surface
@@ -179,23 +182,25 @@ config(env/flag)로 강제 override 가능 (UMA에서 Streaming 강제 → cross
 `backend.SupportsZeroCopyCpuAccess()` / `backend.IsUnified()`로 분기. discrete에서는 자동으로 대체 경로.
 
 **8.1 전역 재추출 (UMA)**: 전체 모델이 상주하므로 touched 영역을 ghosting 없이 전역 재추출 가능.
+
 - discrete 대체: recomputeMask 기반 부분 재추출 + kept old points(원문 §14).
 
 **8.2 CPU/GPU zero-copy co-refinement (UMA 전용)**: CPU 스레드가 coherent pool 버퍼를 **복사 없이** 직접 읽어, GPU integration과 오버랩하여 cold group에 edge-aware TSDF regularization / outlier 제거를 수행. GPU 파이프라인을 막지 않는 백그라운드 품질 향상.
+
 - discrete 대체: skip 또는 옵션 GPU 패스(복사 비용 때문에 기본 off).
 
 ### 9. Invariant
 
 원문 §21 + `2026-07-17`의 invariant 유지. 백엔드별 성립 양상:
 
-| Invariant | Streaming | Unified |
-| --- | --- | --- |
-| 키당 pool slot 중복 금지 | classify/register로 강제 | pool 하나·키당 슬롯 하나 → 자명 |
-| indexGrid는 local base 종속(변경 시 reset+재등록) | 매 프레임 reset+classify+register | 매 프레임 relabel(값싼) |
-| dirty group은 write-back 완료 전 free 재사용 금지 | 유지(PendingWriteBack) | write-back 없음 → 무해 |
-| MissingGroupList는 reusable 재등록 이후 생성 | 유지 | missing 개념 없음 |
-| integration은 IntegrationWriteSet에만 write | 양쪽 공통(코어 로직) | 동일 |
-| directional extraction은 같은 layer끼리만 sign crossing | 양쪽 공통 | 동일 |
+| Invariant                                               | Streaming                         | Unified                         |
+| ------------------------------------------------------- | --------------------------------- | ------------------------------- |
+| 키당 pool slot 중복 금지                                | classify/register로 강제          | pool 하나·키당 슬롯 하나 → 자명 |
+| indexGrid는 local base 종속(변경 시 reset+재등록)       | 매 프레임 reset+classify+register | 매 프레임 relabel(값싼)         |
+| dirty group은 write-back 완료 전 free 재사용 금지       | 유지(PendingWriteBack)            | write-back 없음 → 무해          |
+| MissingGroupList는 reusable 재등록 이후 생성            | 유지                              | missing 개념 없음               |
+| integration은 IntegrationWriteSet에만 write             | 양쪽 공통(코어 로직)              | 동일                            |
+| directional extraction은 같은 layer끼리만 sign crossing | 양쪽 공통                         | 동일                            |
 
 **추가 invariant(이 스펙)**: 동일 입력·동일 파라미터에서 두 백엔드는 ε 이내 동일한 extraction 결과를 낸다(cross-backend 결정성). 이게 추상화 건전성의 계약이다.
 
@@ -225,14 +230,14 @@ config(env/flag)로 강제 override 가능 (UMA에서 Streaming 강제 → cross
 
 ## 리스크
 
-| 리스크 | 대응 |
-| --- | --- |
+| 리스크                                       | 대응                                                                                      |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | 인터페이스가 UMA에 불필요한 추상화 비용 전가 | `EnsureResident`/`EndFrame`를 UMA에서 near-no-op으로; 슬롯 접근은 인라인 가능한 얇은 경로 |
-| coherent 힙 write가 UMA에서 캐시 일관성 함정 | `HOST_COHERENT` 강제 + 필요 시 명시적 `vkFlush/InvalidateMappedMemoryRanges` 경로 준비 |
-| MoltenVK가 `DEVICE_LOCAL|HOST_VISIBLE` 큰 힙을 기대대로 노출 안 함 | init probe에서 실패 시 StreamingBackend로 폴백(자동 선택이 이미 이 폴백을 포함) |
-| cross-backend ε 불일치(부동소수·atomic 순서) | fixed-point 누적으로 순서 무관성 확보, ε는 정량 threshold로 명문화 |
-| Engine::Core large-N 버그 | 임계 이하에서 먼저 검증, 별도 이슈로 추적(`docs/KNOWN_ISSUES_engine_core_large_n.md`) |
-| **Unified 시딩 경로 미구현** (아래 참고) | 현재 `Build` 기본값 Streaming으로 완전히 gated. `Auto` 기본값 전환 전 반드시 해소 |
+| coherent 힙 write가 UMA에서 캐시 일관성 함정 | `HOST_COHERENT` 강제 + 필요 시 명시적 `vkFlush/MakeVisibleToCPUMemoryRanges` 경로 준비    |
+| MoltenVK가 `DEVICE_LOCAL                     | HOST_VISIBLE` 큰 힙을 기대대로 노출 안 함                                                 | init probe에서 실패 시 StreamingBackend로 폴백(자동 선택이 이미 이 폴백을 포함) |
+| cross-backend ε 불일치(부동소수·atomic 순서) | fixed-point 누적으로 순서 무관성 확보, ε는 정량 threshold로 명문화                        |
+| Engine::Core large-N 버그                    | 임계 이하에서 먼저 검증, 별도 이슈로 추적(`docs/KNOWN_ISSUES_engine_core_large_n.md`)     |
+| **Unified 시딩 경로 미구현** (아래 참고)     | 현재 `Build` 기본값 Streaming으로 완전히 gated. `Auto` 기본값 전환 전 반드시 해소         |
 
 ## 알려진 제약 (Phase 1~3 구현 후 최종 리뷰에서 확인)
 

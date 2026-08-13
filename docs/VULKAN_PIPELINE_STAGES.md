@@ -76,21 +76,21 @@ HOST
 
 ## 자주 쓰는 Stage
 
-| Stage | 의미 | 흔한 access mask |
-| --- | --- | --- |
-| `TOP_OF_PIPE` | 명령이 아직 어떤 실질 작업도 시작하기 전 | 보통 `0` |
-| `VERTEX_INPUT` | vertex/index buffer를 읽고 vertex fetch를 수행 | `VERTEX_ATTRIBUTE_READ`, `INDEX_READ` |
-| `VERTEX_SHADER` | vertex shader 실행 | `SHADER_READ`, `SHADER_WRITE`, `UNIFORM_READ` |
-| `FRAGMENT_SHADER` | fragment shader 실행, texture/sampler 읽기 포함 | `SHADER_READ`, `SHADER_WRITE`, `UNIFORM_READ` |
-| `EARLY_FRAGMENT_TESTS` | fragment shader 전 depth/stencil test | `DEPTH_STENCIL_ATTACHMENT_READ/WRITE` |
-| `LATE_FRAGMENT_TESTS` | fragment shader 후 depth/stencil test/write | `DEPTH_STENCIL_ATTACHMENT_READ/WRITE` |
-| `COLOR_ATTACHMENT_OUTPUT` | color attachment blend/write, resolve | `COLOR_ATTACHMENT_READ/WRITE` |
-| `COMPUTE_SHADER` | compute shader dispatch | `SHADER_READ/WRITE`, `UNIFORM_READ` |
-| `TRANSFER` | copy, blit, clear, resolve 같은 transfer 명령 | `TRANSFER_READ/WRITE` |
-| `HOST` | CPU 쪽 host read/write | `HOST_READ/WRITE` |
-| `BOTTOM_OF_PIPE` | 명령이 모든 실질 pipeline 작업을 끝낸 뒤 | 보통 `0` |
-| `ALL_GRAPHICS` | 모든 graphics pipeline stage | 상황별 |
-| `ALL_COMMANDS` | 모든 queue command stage | 상황별 |
+| Stage                     | 의미                                            | 흔한 access mask                              |
+| ------------------------- | ----------------------------------------------- | --------------------------------------------- |
+| `TOP_OF_PIPE`             | 명령이 아직 어떤 실질 작업도 시작하기 전        | 보통 `0`                                      |
+| `VERTEX_INPUT`            | vertex/index buffer를 읽고 vertex fetch를 수행  | `VERTEX_ATTRIBUTE_READ`, `INDEX_READ`         |
+| `VERTEX_SHADER`           | vertex shader 실행                              | `SHADER_READ`, `SHADER_WRITE`, `UNIFORM_READ` |
+| `FRAGMENT_SHADER`         | fragment shader 실행, texture/sampler 읽기 포함 | `SHADER_READ`, `SHADER_WRITE`, `UNIFORM_READ` |
+| `EARLY_FRAGMENT_TESTS`    | fragment shader 전 depth/stencil test           | `DEPTH_STENCIL_ATTACHMENT_READ/WRITE`         |
+| `LATE_FRAGMENT_TESTS`     | fragment shader 후 depth/stencil test/write     | `DEPTH_STENCIL_ATTACHMENT_READ/WRITE`         |
+| `COLOR_ATTACHMENT_OUTPUT` | color attachment blend/write, resolve           | `COLOR_ATTACHMENT_READ/WRITE`                 |
+| `COMPUTE_SHADER`          | compute shader dispatch                         | `SHADER_READ/WRITE`, `UNIFORM_READ`           |
+| `TRANSFER`                | copy, blit, clear, resolve 같은 transfer 명령   | `TRANSFER_READ/WRITE`                         |
+| `HOST`                    | CPU 쪽 host read/write                          | `HOST_READ/WRITE`                             |
+| `BOTTOM_OF_PIPE`          | 명령이 모든 실질 pipeline 작업을 끝낸 뒤        | 보통 `0`                                      |
+| `ALL_GRAPHICS`            | 모든 graphics pipeline stage                    | 상황별                                        |
+| `ALL_COMMANDS`            | 모든 queue command stage                        | 상황별                                        |
 
 ## 각 Flag 설명
 
@@ -286,7 +286,7 @@ dstStage = VK_PIPELINE_STAGE_HOST_BIT;
 dstAccess = VK_ACCESS_HOST_READ_BIT;
 ```
 
-host coherent memory 여부에 따라 `vkInvalidateMappedMemoryRanges`, `vkFlushMappedMemoryRanges` 같은 cache 관리가 별도로 필요할 수 있다.
+host coherent memory 여부에 따라 `vkMakeVisibleToCPUMemoryRanges`, `vkMakeVisibleToGPUMemoryRanges` 같은 cache 관리가 별도로 필요할 수 있다.
 
 ### `VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT`
 
@@ -488,13 +488,13 @@ dstAccess = VK_ACCESS_SHADER_READ_BIT;
 
 ## 빠른 매핑표
 
-| 하고 싶은 일 | src stage/access | dst stage/access |
-| --- | --- | --- |
-| transfer upload -> vertex buffer read | `TRANSFER` / `TRANSFER_WRITE` | `VERTEX_INPUT` / `VERTEX_ATTRIBUTE_READ` |
-| transfer upload -> index buffer read | `TRANSFER` / `TRANSFER_WRITE` | `VERTEX_INPUT` / `INDEX_READ` |
-| transfer upload -> texture sampling | `TRANSFER` / `TRANSFER_WRITE` | `FRAGMENT_SHADER` / `SHADER_READ` |
-| depth attachment write -> shadow map sampling | `LATE_FRAGMENT_TESTS` / `DEPTH_STENCIL_ATTACHMENT_WRITE` | `FRAGMENT_SHADER` / `SHADER_READ` |
-| color attachment write -> transfer copy screenshot | `COLOR_ATTACHMENT_OUTPUT` / `COLOR_ATTACHMENT_WRITE` | `TRANSFER` / `TRANSFER_READ` |
-| compute write -> compute read | `COMPUTE_SHADER` / `SHADER_WRITE` | `COMPUTE_SHADER` / `SHADER_READ` |
-| compute write -> transfer copy | `COMPUTE_SHADER` / `SHADER_WRITE` | `TRANSFER` / `TRANSFER_READ` |
-| transfer write -> CPU read | `TRANSFER` / `TRANSFER_WRITE` | `HOST` / `HOST_READ` |
+| 하고 싶은 일                                       | src stage/access                                         | dst stage/access                         |
+| -------------------------------------------------- | -------------------------------------------------------- | ---------------------------------------- |
+| transfer upload -> vertex buffer read              | `TRANSFER` / `TRANSFER_WRITE`                            | `VERTEX_INPUT` / `VERTEX_ATTRIBUTE_READ` |
+| transfer upload -> index buffer read               | `TRANSFER` / `TRANSFER_WRITE`                            | `VERTEX_INPUT` / `INDEX_READ`            |
+| transfer upload -> texture sampling                | `TRANSFER` / `TRANSFER_WRITE`                            | `FRAGMENT_SHADER` / `SHADER_READ`        |
+| depth attachment write -> shadow map sampling      | `LATE_FRAGMENT_TESTS` / `DEPTH_STENCIL_ATTACHMENT_WRITE` | `FRAGMENT_SHADER` / `SHADER_READ`        |
+| color attachment write -> transfer copy screenshot | `COLOR_ATTACHMENT_OUTPUT` / `COLOR_ATTACHMENT_WRITE`     | `TRANSFER` / `TRANSFER_READ`             |
+| compute write -> compute read                      | `COMPUTE_SHADER` / `SHADER_WRITE`                        | `COMPUTE_SHADER` / `SHADER_READ`         |
+| compute write -> transfer copy                     | `COMPUTE_SHADER` / `SHADER_WRITE`                        | `TRANSFER` / `TRANSFER_READ`             |
+| transfer write -> CPU read                         | `TRANSFER` / `TRANSFER_WRITE`                            | `HOST` / `HOST_READ`                     |

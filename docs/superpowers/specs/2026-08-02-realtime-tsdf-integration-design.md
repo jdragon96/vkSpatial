@@ -8,13 +8,13 @@
 
 `voxel_fill_debugger` play is far below 30 FPS. Instrumentation (`util::StageProfiler`, commit b95682c) on 15 dragon frames @ voxel 0.5 measured the per-frame TSDF pipeline:
 
-| stage | avg ms/frame | share |
-|---|---|---|
-| integrate | 148 | 6.9% |
-| download | 1667 | 77.6% |
-| tracker | 333 | 15.5% |
+| stage     | avg ms/frame | share |
+| --------- | ------------ | ----- |
+| integrate | 148          | 6.9%  |
+| download  | 1667         | 77.6% |
+| tracker   | 333          | 15.5% |
 
-This design targets **integrate first** (the user's directive). Root cause of the ~148 ms integrate (which is *overhead-bound*, not compute-bound — integrate time is ~equal at voxel 0.5 vs 2.0 despite very different point/voxel counts):
+This design targets **integrate first** (the user's directive). Root cause of the ~148 ms integrate (which is _overhead-bound_, not compute-bound — integrate time is ~equal at voxel 0.5 vs 2.0 despite very different point/voxel counts):
 
 - `Buffer::Upload` (`src/Engine/Core/Buffer.cpp`) allocates a **fresh staging buffer every call** (`vmaCreateBuffer`/`vmaDestroyBuffer`) and does a **one-shot submit + `vkQueueWaitIdle`**.
 - `ComputePipeline::Dispatch` (`src/Engine/Core/ComputePipeline.cpp:252`) also **submits + `vkQueueWaitIdle`** every call.
@@ -50,14 +50,14 @@ New members on `Engine::Core::Buffer`, existing API untouched:
 
 - `void AllocateHostVisible(uint32_t bytes);` — (re)allocates with VMA flags `VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT`, usage `VMA_MEMORY_USAGE_AUTO`, plus the buffer's `m_extraUsage` (so it can still be a storage buffer). Stores the persistent `VmaAllocationInfo::pMappedData`.
 - `void *MappedPtr() const;` — the persistent mapped pointer, or `nullptr` if the buffer was allocated with plain `Allocate`.
-- `void FlushMapped(uint32_t bytes) const;` — `vmaFlushAllocation(0, bytes)` (no-op if the memory is `HOST_COHERENT`; safe to always call).
+- `void MakeVisibleToGPU(uint32_t bytes) const;` — `vmaFlushAllocation(0, bytes)` (no-op if the memory is `HOST_COHERENT`; safe to always call).
 
 `free()` clears the mapped pointer. On UMA the allocation is host-visible **and** device-local, so the shader reads it directly — no staging, no copy, no submit.
 
 ### 1.2 `AdvancedTSDF` mapped uploads + batched dispatch
 
 - **Buffers:** allocate `m_pointBuffer` / `m_normalBuffer` with `AllocateHostVisible` (they are written every frame, read by the shader). `m_hashBuffer` / `m_statBuffer` stay device-local (`Allocate`; cleared via existing paths).
-- **Upload becomes memcpy:** in `Integrate`, `std::memcpy(m_pointBuffer->MappedPtr(), points, N*3*sizeof(float))` + same for normals + `FlushMapped` — **no staging, no submit, no wait**.
+- **Upload becomes memcpy:** in `Integrate`, `std::memcpy(m_pointBuffer->MappedPtr(), points, N*3*sizeof(float))` + same for normals + `MakeVisibleToGPU` — **no staging, no submit, no wait**.
 - **Batched dispatch API (additive):**
   ```cpp
   // Records upload(memcpy) + dispatch into `batch`, no submit. Caller submits the batch.
@@ -99,6 +99,7 @@ struct MapSnapshot {
     double integrateMs = 0, downloadMs = 0, trackerMs = 0; // worker stage times for THIS snapshot
 };
 ```
+
 Produced by the worker, consumed read-only by the render thread. Color-mode / weight-threshold coloring is applied on the render thread from `entries` (cheap vs download), so those interactions stay instant without re-integrating.
 
 ### 2.2 `AsyncTsdfMapper` (reusable component)

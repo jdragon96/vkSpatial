@@ -18,30 +18,32 @@
 - **Reuse existing types**: `PointCloud{points,normals}` and `RegistrationResult{T(Matrix4f),fitness,numInliers,valid}` from `Engine/Registration/RegistrationTypes.h`; `RegistrationParam{maxIters,maxCorrDist,minInliers,convEps}` from `Engine/Registration/Icp.h`.
 - **Everything is uncommitted** on branch `feature/dlp-structured-light`; commit each task locally (do not push to origin).
 - **ComputePipeline API** (see `AdvancedTSDF.cpp`): `pipe.Build("x.comp.glsl").Bind(slot, buffer)…;` then per dispatch `pipe.Args(pcStruct); pipe.DispatchElements(numThreads);` (self-submits + `vkQueueWaitIdle`, synchronous). `Bind` is re-callable to rebind grown buffers.
-- **Buffer API** (see `AdvancedTSDF.cpp` / `Buffer.h`): `Allocate(bytes)` (device-local), `AllocateHostVisible(bytes)`, `AllocateHostVisibleReadback(bytes)`, `MappedPtr()`, `FlushMapped(bytes)`, `InvalidateMapped(bytes)`, `Upload(ptr,bytes)`, `Download(ptr,bytes)`.
+- **Buffer API** (see `AdvancedTSDF.cpp` / `Buffer.h`): `Allocate(bytes)` (device-local), `AllocateHostVisible(bytes)`, `AllocateHostVisibleReadback(bytes)`, `MappedPtr()`, `MakeVisibleToGPU(bytes)`, `MakeVisibleToCPU(bytes)`, `Upload(ptr,bytes)`, `Download(ptr,bytes)`.
 
 ---
 
 ## File Structure
 
-| File | Responsibility |
-|---|---|
-| `src/Engine/Pipeline/Registration/GpuIcp.h` (Create) | `GpuPointToPlaneIcp` class declaration + the CPU grid helper (`LocalGrid`). Lives in the Pipeline layer (which already links Core/Compute) so `Engine::Registration` (CPU/Ceres) stays GPU-free. |
-| `src/Engine/Pipeline/Registration/GpuIcp.cpp` (Create) | Grid build, centring, upload, per-iteration dispatch + readback, 6×6 solve, pose compose. |
-| `src/shader/icp_iterate.comp.glsl` (Create) | One ICP iteration on the GPU: transform → grid-NN → per-workgroup `H`,`b` partial reduction. |
+| File                                                    | Responsibility                                                                                                                                                                                                 |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/Engine/Pipeline/Registration/GpuIcp.h` (Create)    | `GpuPointToPlaneIcp` class declaration + the CPU grid helper (`LocalGrid`). Lives in the Pipeline layer (which already links Core/Compute) so `Engine::Registration` (CPU/Ceres) stays GPU-free.               |
+| `src/Engine/Pipeline/Registration/GpuIcp.cpp` (Create)  | Grid build, centring, upload, per-iteration dispatch + readback, 6×6 solve, pose compose.                                                                                                                      |
+| `src/shader/icp_iterate.comp.glsl` (Create)             | One ICP iteration on the GPU: transform → grid-NN → per-workgroup `H`,`b` partial reduction.                                                                                                                   |
 | `src/Engine/Pipeline/Registration/Tracker.cpp` (Modify) | Add `GpuIcpTracker` (owns a lazily-created `Engine::Core::Context`, wraps `GpuPointToPlaneIcp`, crops target to source AABB). Register `"icp"` → GPU, `"icp-cpu"` → the existing CPU `PointToPlaneIcpTracker`. |
-| `test/test_gpuIcp.cpp` (Create) | Unit tests: `LocalGrid` NN == brute force; GPU one-iteration `H`,`b` ≈ CPU reference; GPU `Solve` pose ≈ CPU `AlignPointToPlaneIcp` on the corner fixture. |
+| `test/test_gpuIcp.cpp` (Create)                         | Unit tests: `LocalGrid` NN == brute force; GPU one-iteration `H`,`b` ≈ CPU reference; GPU `Solve` pose ≈ CPU `AlignPointToPlaneIcp` on the corner fixture.                                                     |
 
 ---
 
 ## Task 1: `LocalGrid` — CPU crop + uniform-grid NN (no GPU yet)
 
 **Files:**
+
 - Create: `src/Engine/Pipeline/Registration/GpuIcp.h`
 - Create: `src/Engine/Pipeline/Registration/GpuIcp.cpp`
 - Test: `test/test_gpuIcp.cpp`
 
 **Interfaces:**
+
 - Produces: `Engine::Pipeline::LocalGrid` with:
   - `LocalGrid(const std::vector<Eigen::Vector3f>& pts, float cell)` — buckets `pts` into a dense uniform grid over their AABB.
   - `int Nearest(const Eigen::Vector3f& q, float radius) const` — index of nearest `pts` within `radius`, else `-1`.
@@ -203,15 +205,18 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ## Task 2: `icp_iterate.comp.glsl` + one-iteration GPU accumulation
 
 **Files:**
+
 - Create: `src/shader/icp_iterate.comp.glsl`
 - Modify: `src/Engine/Pipeline/Registration/GpuIcp.h`, `src/Engine/Pipeline/Registration/GpuIcp.cpp`
 - Test: `test/test_gpuIcp.cpp`
 
 **Interfaces:**
+
 - Consumes: `LocalGrid` (Task 1).
 - Produces: `class GpuPointToPlaneIcp { GpuPointToPlaneIcp(Engine::Core::Context&); IterOut Accumulate(const std::vector<Eigen::Vector3f>& src, const Engine::Registration::PointCloud& tgt, const Eigen::Matrix4f& T, float maxCorrDist); };` where `struct IterOut { Eigen::Matrix<double,6,6> H; Eigen::Matrix<double,6,1> b; int inliers; };`. `Accumulate` runs ONE GPU dispatch and returns the (un-centred-frame) normal equations. Internally centres on the target centroid and un-centres the returned `H`,`b` back to `T`'s frame is NOT needed here — Accumulate works entirely in T's frame using centred coordinates only for fixed-point safety (subtract centroid from src', tgt', and adjust the residual is invariant to a common translation, so H,b are identical). Document that H,b equal the CPU reference on the SAME points.
 
 **Design notes for the shader (put as a comment header in the file):**
+
 - One thread per source point. `p = (T * vec4(src_i - c, 1)).xyz` where `c` = target centroid (uniform); target points are pre-shifted by `-c` on the CPU before upload. A common translation `-c` applied to BOTH `p` and `q` leaves the residual `(p-q)·n` and Jacobian `J=[p×n, n]`… note `p×n` is NOT translation-invariant, so **also shift by -c inside the cross product consistently**: the plan centres EVERYTHING on `c`, and the recovered pose is un-centred on the CPU (Task 3). Within one Accumulate call all math is in the centred frame, which is what the CPU reference also uses — so the test compares centred-frame `H`,`b`.
 - Reduction: each thread adds its 28 contributions (21 upper-triangular `H` + 6 `b` + 1 inlier) into `shared int acc[28]` via `atomicAdd` (fixed-point ×10000; centred magnitudes keep a 256-point workgroup sum well within int32). `barrier();` then thread 0 writes `acc[28]` to `partials[gl_WorkGroupID.x * 28 + k]`. No cross-workgroup atomics.
 
@@ -436,7 +441,7 @@ namespace Engine::Pipeline {
         const uint32_t numWG = (uint32_t(src.size()) + kLocal - 1) / kLocal;
         m_partials->AllocateHostVisibleReadback(numWG * 28u * sizeof(int32_t));
         std::memset(m_partials->MappedPtr(), 0, numWG * 28u * sizeof(int32_t));
-        m_partials->FlushMapped(numWG * 28u * sizeof(int32_t));
+        m_partials->MakeVisibleToGPU(numWG * 28u * sizeof(int32_t));
 
         IcpPC pc{};
         for (int i = 0; i < 16; ++i) pc.T[i] = T.data()[i]; // Eigen is column-major -> matches std430 mat4
@@ -450,7 +455,7 @@ namespace Engine::Pipeline {
         m_kernel->Args(pc);
         m_kernel->DispatchElements(uint32_t(src.size())); // synchronous
 
-        m_partials->InvalidateMapped(numWG * 28u * sizeof(int32_t));
+        m_partials->MakeVisibleToCPU(numWG * 28u * sizeof(int32_t));
         const int32_t *part = static_cast<const int32_t *>(m_partials->MappedPtr());
         double acc[28] = {0};
         for (uint32_t w = 0; w < numWG; ++w) for (int k = 0; k < 28; ++k) acc[k] += part[w * 28u + k];
@@ -487,10 +492,12 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ## Task 3: `GpuPointToPlaneIcp::Solve` — full iterate loop + 6×6 solve + un-centre
 
 **Files:**
+
 - Modify: `src/Engine/Pipeline/Registration/GpuIcp.h`, `src/Engine/Pipeline/Registration/GpuIcp.cpp`
 - Test: `test/test_gpuIcp.cpp`
 
 **Interfaces:**
+
 - Produces: `Engine::Registration::RegistrationResult GpuPointToPlaneIcp::Solve(const std::vector<Eigen::Vector3f>& src, const Engine::Registration::PointCloud& tgt, const Eigen::Matrix4f& priorT, const Engine::Registration::RegistrationParam& params);` — result-equivalent to `Engine::Registration::AlignPointToPlaneIcp`.
 
 **Design — work entirely in the centred frame, un-centre once at the end.** Everything (source, target, pose, Jacobian `p×n`) is expressed relative to the target centroid `c`, so all magnitudes stay small (fixed-point safe) and the math is self-consistent. Seed `T_centred = Tc · priorT · Tc⁻¹` (`Tc = Translate(-c)`). Each iteration: `AccumulateCentred` returns centred-frame `H`,`b`; solve `x = H.ldlt().solve(b)`; compose the incremental twist onto `T` exactly as the CPU code does (`AngleAxis Z*Y*X`, `delta*T`); break on `inliers < minInliers` or `x.norm() < convEps`. After the loop, un-centre: `res.T = Tc⁻¹ · T_centred · Tc`. This is the same recovered world pose as the CPU `AlignPointToPlaneIcp` (whose points happen to be near the origin already), so the Task-3 test compares the two world poses directly.
@@ -595,10 +602,12 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ## Task 4: `GpuIcpTracker` + register as `"icp"` (CPU → `"icp-cpu"`)
 
 **Files:**
+
 - Modify: `src/Engine/Pipeline/Registration/Tracker.cpp`
 - Test: `test/test_pipeline.cpp` (add a `--tracker icp` end-to-end smoke)
 
 **Interfaces:**
+
 - Consumes: `GpuPointToPlaneIcp::Solve` (Task 3), `TrackerRegistry`, `Tracker`, `TrackingResult`.
 - Produces: registry name `"icp"` → GPU tracker, `"icp-cpu"` → the existing CPU `PointToPlaneIcpTracker`.
 
@@ -747,13 +756,13 @@ Run: `./build-rel/test/vkspatial_tests --gtest_also_run_disabled_tests --gtest_f
 
 (Re-run confirmed run-to-run stable: 0.40x / 1.76x / 7.14x / 21.43x — same shape.)
 
-Note: this measures ONLY the core ICP solve on equal-N target/source clouds. In the real pipeline, `GpuIcpTracker::Track` additionally crops the model to the frame's source AABB (+ `maxCorrDist` margin) before calling `Solve`, which is an *additional* GPU-side advantage (smaller effective N per frame as the map grows) that this microbenchmark does not capture — real-world numbers should look at least as good as this table, not worse.
+Note: this measures ONLY the core ICP solve on equal-N target/source clouds. In the real pipeline, `GpuIcpTracker::Track` additionally crops the model to the frame's source AABB (+ `maxCorrDist` margin) before calling `Solve`, which is an _additional_ GPU-side advantage (smaller effective N per frame as the map grows) that this microbenchmark does not capture — real-world numbers should look at least as good as this table, not worse.
 
 **Crossover:** between N=5,043 and N=20,667. Below the crossover the GPU tracker is **slower** than CPU (0.4×) — GPU per-iteration overhead dominates when there's little actual compute to hide it behind. Above it, the GPU pulls ahead fast: 1.8× at 20k, 7.2× at 80k, ~20–21× at 200k, and CPU cost is clearly scaling worse than linearly with N (grid-cell occupancy grows with density at fixed `maxCorrDist`) while GPU cost grows much more slowly (28.9ms at 200k vs 3.4ms at 5k — an ~8× time increase for a ~40× increase in N).
 
 ### Phase-2 decision
 
-**Root cause identified, and it is worse than "just re-uploading buffers": inspecting `GpuPointToPlaneIcp::Solve`/`AccumulateCentred` (`src/Engine/Pipeline/Registration/GpuIcp.cpp`) shows that every one of the up-to-20 ICP iterations rebuilds the CPU-side `LocalGrid` from scratch (an O(N) counting sort over the target points) and re-uploads all of `src`, `tgt.points`, `tgt.normals`, and the grid's `bucketStart`/`bucketIdx` arrays to the GPU (each via `Buffer::Allocate` + `Upload`) — even though target and source point sets, and therefore the grid, are 100% invariant across the iterations of a single `Solve` call. The only thing that legitimately changes iteration-to-iteration is the push-constant pose `T`. On top of that, `DispatchElements` is synchronous (comment: `// synchronous`, implies a `vkQueueWaitIdle`-style per-dispatch stall) and the partials buffer is realloc'd + `memset` + `FlushMapped` every iteration too. This fully explains the shape of the results: at low N (5k) this fixed per-iteration overhead (CPU grid rebuild + 5 buffer allocate/upload round-trips + a synchronous dispatch) costs more than the CPU reference's entire solve, so GPU loses; at high N the O(N) GPU compute finally amortizes the fixed overhead and wins big.
+\*\*Root cause identified, and it is worse than "just re-uploading buffers": inspecting `GpuPointToPlaneIcp::Solve`/`AccumulateCentred` (`src/Engine/Pipeline/Registration/GpuIcp.cpp`) shows that every one of the up-to-20 ICP iterations rebuilds the CPU-side `LocalGrid` from scratch (an O(N) counting sort over the target points) and re-uploads all of `src`, `tgt.points`, `tgt.normals`, and the grid's `bucketStart`/`bucketIdx` arrays to the GPU (each via `Buffer::Allocate` + `Upload`) — even though target and source point sets, and therefore the grid, are 100% invariant across the iterations of a single `Solve` call. The only thing that legitimately changes iteration-to-iteration is the push-constant pose `T`. On top of that, `DispatchElements` is synchronous (comment: `// synchronous`, implies a `vkQueueWaitIdle`-style per-dispatch stall) and the partials buffer is realloc'd + `memset` + `MakeVisibleToGPU` every iteration too. This fully explains the shape of the results: at low N (5k) this fixed per-iteration overhead (CPU grid rebuild + 5 buffer allocate/upload round-trips + a synchronous dispatch) costs more than the CPU reference's entire solve, so GPU loses; at high N the O(N) GPU compute finally amortizes the fixed overhead and wins big.
 
 **Recommendation: prioritize hoisting the per-iteration grid-build and buffer uploads out of the iterate loop.** Concretely, inside `Solve`: build the `LocalGrid` and upload `src`/`tgt.points`/`tgt.normals`/`bucketStart`/`bucketIdx` **once**, before the iteration loop begins (they don't depend on `T`); then each iteration should only update the push-constant `T`, dispatch, and read back `H`,`b`. This directly targets the plan's anticipated follow-up ("eliminate per-iteration readback / stop re-uploading unchanged buffers, since only the push-constant T changes each iteration") but the fix is even more impactful than originally scoped, since it also removes a full O(N) CPU grid rebuild per iteration, not just GPU buffer uploads. Given the measured shape (GPU loses below ~10–15k points purely on fixed overhead), this single change should be enough to flip the small-N case to a GPU win too, making `"icp"` strictly better than `"icp-cpu"` at every map size instead of only above the crossover. Secondary/lower priority (only if the fix above still leaves per-iteration `vkQueueWaitIdle` as the bottleneck): solve the 6×6 on the GPU or reduce `maxIters` via a motion-model prior, to cut the number of CPU↔GPU round trips per `Solve` call.
 

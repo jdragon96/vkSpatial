@@ -82,36 +82,36 @@ swapChainDescriptor.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
 현재 구현은 다음 format만 지원한다.
 
-| Format | 처리 |
-| --- | --- |
+| Format                     | 처리                          |
+| -------------------------- | ----------------------------- |
 | `VK_FORMAT_B8G8R8A8_UNORM` | B/R 채널을 교환해 RGBA로 저장 |
-| `VK_FORMAT_B8G8R8A8_SRGB` | B/R 채널을 교환해 RGBA로 저장 |
-| `VK_FORMAT_R8G8B8A8_UNORM` | 그대로 RGBA로 저장 |
-| `VK_FORMAT_R8G8B8A8_SRGB` | 그대로 RGBA로 저장 |
+| `VK_FORMAT_B8G8R8A8_SRGB`  | B/R 채널을 교환해 RGBA로 저장 |
+| `VK_FORMAT_R8G8B8A8_UNORM` | 그대로 RGBA로 저장            |
+| `VK_FORMAT_R8G8B8A8_SRGB`  | 그대로 RGBA로 저장            |
 
 ## 사용된 Vulkan API
 
-| API | 위치 | 역할 |
-| --- | --- | --- |
-| `vkQueueWaitIdle` | 캡쳐 시작 전 / copy submit 후 | graphics queue에 제출된 작업이 끝날 때까지 CPU에서 대기 |
-| `vkCreateBuffer` | staging buffer 생성 | GPU image 데이터를 받을 CPU readback용 buffer 생성 |
-| `vkGetBufferMemoryRequirements` | memory allocation 전 | staging buffer에 필요한 memory 크기와 memory type bit 확인 |
-| `vkGetPhysicalDeviceMemoryProperties` | memory type 선택 | physical device가 제공하는 memory heap/type 조회 |
-| `vkAllocateMemory` | staging memory 생성 | host visible/coherent memory 할당 |
-| `vkBindBufferMemory` | buffer-memory 연결 | staging buffer에 할당한 memory를 bind |
-| `vkCreateCommandPool` | transient command pool 생성 | 캡쳐용 일회성 command buffer를 할당할 pool 생성 |
-| `vkAllocateCommandBuffers` | command buffer 생성 | 이미지 layout 전환과 copy 명령을 기록할 primary command buffer 할당 |
-| `vkBeginCommandBuffer` | command recording 시작 | `VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT`로 일회성 기록 시작 |
-| `vkCmdPipelineBarrier` | image layout 전환 | swapchain image를 copy 가능한 layout으로 바꾸고, copy 후 원래 layout으로 복원 |
-| `vkCmdCopyImageToBuffer` | GPU copy 명령 | swapchain image 픽셀을 staging buffer로 복사 |
-| `vkEndCommandBuffer` | command recording 종료 | 기록된 캡쳐 명령을 제출 가능한 상태로 만듦 |
-| `vkQueueSubmit` | copy 명령 제출 | graphics queue에 캡쳐 command buffer 제출 |
-| `vkMapMemory` | CPU readback | staging memory를 CPU 주소 공간에 map |
-| `vkUnmapMemory` | map 해제 | CPU readback 후 mapped memory 해제 |
-| `vkFreeCommandBuffers` | 정리 | 캡쳐 command buffer 해제 |
-| `vkDestroyCommandPool` | 정리 | 캡쳐용 command pool 파괴 |
-| `vkFreeMemory` | 정리 | staging memory 해제 |
-| `vkDestroyBuffer` | 정리 | staging buffer 파괴 |
+| API                                   | 위치                          | 역할                                                                          |
+| ------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------- |
+| `vkQueueWaitIdle`                     | 캡쳐 시작 전 / copy submit 후 | graphics queue에 제출된 작업이 끝날 때까지 CPU에서 대기                       |
+| `vkCreateBuffer`                      | staging buffer 생성           | GPU image 데이터를 받을 CPU readback용 buffer 생성                            |
+| `vkGetBufferMemoryRequirements`       | memory allocation 전          | staging buffer에 필요한 memory 크기와 memory type bit 확인                    |
+| `vkGetPhysicalDeviceMemoryProperties` | memory type 선택              | physical device가 제공하는 memory heap/type 조회                              |
+| `vkAllocateMemory`                    | staging memory 생성           | host visible/coherent memory 할당                                             |
+| `vkBindBufferMemory`                  | buffer-memory 연결            | staging buffer에 할당한 memory를 bind                                         |
+| `vkCreateCommandPool`                 | transient command pool 생성   | 캡쳐용 일회성 command buffer를 할당할 pool 생성                               |
+| `vkAllocateCommandBuffers`            | command buffer 생성           | 이미지 layout 전환과 copy 명령을 기록할 primary command buffer 할당           |
+| `vkBeginCommandBuffer`                | command recording 시작        | `VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT`로 일회성 기록 시작              |
+| `vkCmdPipelineBarrier`                | image layout 전환             | swapchain image를 copy 가능한 layout으로 바꾸고, copy 후 원래 layout으로 복원 |
+| `vkCmdCopyImageToBuffer`              | GPU copy 명령                 | swapchain image 픽셀을 staging buffer로 복사                                  |
+| `vkEndCommandBuffer`                  | command recording 종료        | 기록된 캡쳐 명령을 제출 가능한 상태로 만듦                                    |
+| `vkQueueSubmit`                       | copy 명령 제출                | graphics queue에 캡쳐 command buffer 제출                                     |
+| `vkMapMemory`                         | CPU readback                  | staging memory를 CPU 주소 공간에 map                                          |
+| `vkUnmapMemory`                       | map 해제                      | CPU readback 후 mapped memory 해제                                            |
+| `vkFreeCommandBuffers`                | 정리                          | 캡쳐 command buffer 해제                                                      |
+| `vkDestroyCommandPool`                | 정리                          | 캡쳐용 command pool 파괴                                                      |
+| `vkFreeMemory`                        | 정리                          | staging memory 해제                                                           |
+| `vkDestroyBuffer`                     | 정리                          | staging buffer 파괴                                                           |
 
 ## 핵심 API 설명
 
@@ -165,7 +165,7 @@ VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
 ```
 
 - `HOST_VISIBLE`: CPU에서 `vkMapMemory`로 접근 가능
-- `HOST_COHERENT`: 별도 `vkInvalidateMappedMemoryRanges` 없이 GPU write 결과를 CPU에서 일관되게 읽을 수 있음
+- `HOST_COHERENT`: 별도 `vkMakeVisibleToCPUMemoryRanges` 없이 GPU write 결과를 CPU에서 일관되게 읽을 수 있음
 
 ### `vkAllocateMemory` / `vkBindBufferMemory`
 
@@ -264,13 +264,13 @@ swapchain color image의 전체 영역을 staging buffer로 복사한다.
 
 중요한 필드:
 
-| 필드 | 값 | 의미 |
-| --- | --- | --- |
-| `imageSubresource.aspectMask` | `VK_IMAGE_ASPECT_COLOR_BIT` | color image를 복사 |
-| `imageSubresource.mipLevel` | `0` | 첫 번째 mip level |
-| `imageSubresource.baseArrayLayer` | `0` | 첫 번째 array layer |
-| `imageSubresource.layerCount` | `1` | layer 하나 |
-| `imageExtent` | `{width, height, 1}` | 전체 화면 크기 |
+| 필드                              | 값                          | 의미                |
+| --------------------------------- | --------------------------- | ------------------- |
+| `imageSubresource.aspectMask`     | `VK_IMAGE_ASPECT_COLOR_BIT` | color image를 복사  |
+| `imageSubresource.mipLevel`       | `0`                         | 첫 번째 mip level   |
+| `imageSubresource.baseArrayLayer` | `0`                         | 첫 번째 array layer |
+| `imageSubresource.layerCount`     | `1`                         | layer 하나          |
+| `imageExtent`                     | `{width, height, 1}`        | 전체 화면 크기      |
 
 `bufferOffset`, `bufferRowLength`, `bufferImageHeight`는 0으로 둔다. 이 경우 Vulkan은 image width/height와 texel size를 기준으로 tightly packed buffer layout을 사용한다.
 
@@ -307,7 +307,7 @@ vkUnmapMemory(context->device, stagingMemory);
 
 GPU가 staging buffer에 써 둔 픽셀 데이터를 CPU에서 읽는다.
 
-staging memory가 `HOST_COHERENT`로 할당되었기 때문에 별도의 invalidate 호출 없이 바로 읽는다. 만약 coherent memory가 아니라면 CPU read 전에 `vkInvalidateMappedMemoryRanges`가 필요할 수 있다.
+staging memory가 `HOST_COHERENT`로 할당되었기 때문에 별도의 invalidate 호출 없이 바로 읽는다. 만약 coherent memory가 아니라면 CPU read 전에 `vkMakeVisibleToCPUMemoryRanges`가 필요할 수 있다.
 
 ## Format 보정
 

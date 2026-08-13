@@ -24,18 +24,18 @@
 
 ## File Structure
 
-| File | Change |
-|---|---|
-| `src/Engine/Pipeline/Registration/RegistrationTypes.h` | add `float rmse` to `RegistrationResult` (Task 1) |
-| `src/shader/icp_iterate.comp.glsl` | 28→29 slot reduction (Σ residual², Task 1); source-normals binding + Huber weight + normal rejection (Task 4); per-iteration distance filter (Task 5) |
-| `src/Engine/Pipeline/Registration/GpuPointToPlaneIcp.{h,cpp}` | `IterOut.sumOfSquaredResiduals` + 29-slot readback + `res.rmse` (Task 1); source-normals buffer/binding (Task 4); coarsest-cell grid + per-iteration `currentMaxCorrespondenceDistance` (Task 5) |
-| `src/Engine/Pipeline/Registration/PointToPlaneIcp.h` | CPU Σ residual² + `res.rmse` (Task 1); Huber + normal rejection (Task 4); per-iteration distance filter (Task 5) |
-| `src/Engine/Pipeline/Types.h` | add `float truncationDistance` to `ModelSnapshot` (Task 3) |
-| `src/Engine/Pipeline/Integration/IntegrationThread.cpp` | populate `snap.truncationDistance` (Task 3) |
-| `src/Engine/Pipeline/Registration/GpuIcpTracker.cpp` + `PointToPlaneIcpTracker.cpp` | sub-voxel target in both trackers (Task 3); pass source normals to `Solve`/`AlignPointToPlaneIcp` (Task 4) — the trackers are split per-strategy files (no monolithic `Tracker.cpp`) |
-| `src/Engine/Pipeline/Registration/RegistrationThread.{h,cpp}` | constant-velocity motion prior + running RMSE accessor (Task 2 accessor, Task 5 motion) |
-| `test/test_gpuIcp.cpp` | RMSE consistency test (Task 1); perturbation-recovery harness (Task 2); per-tier assertions (Tasks 3–5) |
-| `example2/VoxelFillRenderStrategy.cpp` | live tracking RMSE in the stats panel (Task 2) |
+| File                                                                                | Change                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/Engine/Pipeline/Registration/RegistrationTypes.h`                              | add `float rmse` to `RegistrationResult` (Task 1)                                                                                                                                                |
+| `src/shader/icp_iterate.comp.glsl`                                                  | 28→29 slot reduction (Σ residual², Task 1); source-normals binding + Huber weight + normal rejection (Task 4); per-iteration distance filter (Task 5)                                            |
+| `src/Engine/Pipeline/Registration/GpuPointToPlaneIcp.{h,cpp}`                       | `IterOut.sumOfSquaredResiduals` + 29-slot readback + `res.rmse` (Task 1); source-normals buffer/binding (Task 4); coarsest-cell grid + per-iteration `currentMaxCorrespondenceDistance` (Task 5) |
+| `src/Engine/Pipeline/Registration/PointToPlaneIcp.h`                                | CPU Σ residual² + `res.rmse` (Task 1); Huber + normal rejection (Task 4); per-iteration distance filter (Task 5)                                                                                 |
+| `src/Engine/Pipeline/Types.h`                                                       | add `float truncationDistance` to `ModelSnapshot` (Task 3)                                                                                                                                       |
+| `src/Engine/Pipeline/Integration/IntegrationThread.cpp`                             | populate `snap.truncationDistance` (Task 3)                                                                                                                                                      |
+| `src/Engine/Pipeline/Registration/GpuIcpTracker.cpp` + `PointToPlaneIcpTracker.cpp` | sub-voxel target in both trackers (Task 3); pass source normals to `Solve`/`AlignPointToPlaneIcp` (Task 4) — the trackers are split per-strategy files (no monolithic `Tracker.cpp`)             |
+| `src/Engine/Pipeline/Registration/RegistrationThread.{h,cpp}`                       | constant-velocity motion prior + running RMSE accessor (Task 2 accessor, Task 5 motion)                                                                                                          |
+| `test/test_gpuIcp.cpp`                                                              | RMSE consistency test (Task 1); perturbation-recovery harness (Task 2); per-tier assertions (Tasks 3–5)                                                                                          |
+| `example2/VoxelFillRenderStrategy.cpp`                                              | live tracking RMSE in the stats panel (Task 2)                                                                                                                                                   |
 
 ---
 
@@ -77,6 +77,7 @@ TEST(GpuIcp, ResidualRmseMatchesCpu) {
 - [ ] **Step 3: Add the field**
 
 In `RegistrationTypes.h`'s `RegistrationResult`, add after `fitness`:
+
 ```cpp
         float rmse = 0.0f; // sqrt(mean squared point-to-plane residual) over inliers, final iteration; 0 if none
 ```
@@ -84,39 +85,51 @@ In `RegistrationTypes.h`'s `RegistrationResult`, add after `fitness`:
 - [ ] **Step 4: GPU — add the Σ residual² accumulator (28 → 29 slots)**
 
 In `icp_iterate.comp.glsl`:
+
 - `shared int s_acc[28];` → `shared int s_acc[29];`
 - zero + writeback guards `if (tid < 28u)` → `if (tid < 29u)` (both occurrences), and the partial stride `gl_WorkGroupID.x * 28u` → `* 29u`; the comment `[numWG * 28]` → `[numWG * 29]`.
 - inside `if (best >= 0) { ... }`, after `atomicAdd(s_acc[27], 1);` add:
+
 ```glsl
             atomicAdd(s_acc[28], int(round(e * e * SCALE))); // sum of squared residuals (fixed-point)
 ```
+
 (`e*e` is tiny in the centred frame — well within the int32 bound documented at the top of the file.)
 
 - [ ] **Step 5: GPU host — read slot 28, compute rmse**
 
 In `GpuPointToPlaneIcp.h`, add to `struct IterOut`:
+
 ```cpp
         double sumOfSquaredResiduals = 0.0;
 ```
+
 In `GpuPointToPlaneIcp.cpp`:
-- everywhere the partials buffer is sized/read as `* 28u`, change to `* 29u` (`prepareCentred`'s `AllocateHostVisibleReadback`, `dispatchCentred`'s `InvalidateMapped` + the `double acc[28]` → `acc[29]` + the `for (int k = 0; k < 28; ...)` → `< 29`).
+
+- everywhere the partials buffer is sized/read as `* 28u`, change to `* 29u` (`prepareCentred`'s `AllocateHostVisibleReadback`, `dispatchCentred`'s `MakeVisibleToCPU` + the `double acc[28]` → `acc[29]` + the `for (int k = 0; k < 28; ...)` → `< 29`).
 - in `dispatchCentred`, after reading `out.inliers`, add:
+
 ```cpp
         out.sumOfSquaredResiduals = acc[28] / double(kScale);
 ```
+
 - in `Solve`, capture the last iteration's value and set `res.rmse`. Inside the loop after `res.numInliers = size_t(a.inliers);` add `lastSumOfSquaredResiduals = a.sumOfSquaredResiduals;` (declare `double lastSumOfSquaredResiduals = 0.0;` before the loop), and after the loop before `res.valid`:
+
 ```cpp
         if (res.numInliers > 0)
             res.rmse = float(std::sqrt(lastSumOfSquaredResiduals / double(res.numInliers)));
 ```
+
 (`#include <cmath>` is already present.)
 
 - [ ] **Step 6: CPU — accumulate Σ residual² and set rmse**
 
 In `PointToPlaneIcp.h`'s `AlignPointToPlaneIcp`, inside the iteration loop add `float sumOfSquaredResiduals = 0.0f;` next to `int inliers = 0;`, and in the correspondence loop after `++inliers;` add `sumOfSquaredResiduals += e * e;`. After `res.fitness = ...` in the loop, add:
+
 ```cpp
             res.rmse = inliers > 0 ? std::sqrt(sumOfSquaredResiduals / float(inliers)) : 0.0f;
 ```
+
 (`#include <cmath>` is already present.)
 
 - [ ] **Step 7: Run the test + full suite**
@@ -248,15 +261,18 @@ Build the three targets; run the harness (record the improved numbers); `./build
 - [ ] **Step 2: Add tuning fields to `RegistrationParam`**
 
 In `RegistrationTypes.h` `RegistrationParam`, add:
+
 ```cpp
         float huberScale = 0.05f;               // robust-weight knee (world units; caller sets ~voxel)
         float normalCompatibilityCosine = 0.5f; // reject correspondence if sourceN·targetN < this (~60deg)
 ```
+
 Tighten the default gate note: callers already set `maxCorrDist = 2*voxel`; Task 5 anneals it. (Leave the default value; the tracker sets it per voxel.)
 
 - [ ] **Step 3: CPU — Huber weight + normal rejection**
 
 In `AlignPointToPlaneIcp`, the signature gains `const std::vector<Eigen::Vector3f> &sourceNormals` (may be empty ⇒ skip the normal check). In the correspondence loop, after computing `q`,`n`,`e`:
+
 ```cpp
                 if (!sourceNormals.empty()) {
                     const Eigen::Vector3f transformedSourceNormal = R * sourceNormals[sourceIndex];
@@ -271,12 +287,14 @@ In `AlignPointToPlaneIcp`, the signature gains `const std::vector<Eigen::Vector3
                 sumOfSquaredResiduals += e * e; // RMSE stays unweighted (a true fit metric)
                 ++inliers;
 ```
+
 (Track `sourceIndex` with an indexed loop instead of range-for.)
 
 - [ ] **Step 4: GPU — upload source normals, add binding, Huber + rejection in the shader**
 
 - `GpuPointToPlaneIcp`: add a `m_sourceNormals` buffer; `Solve`/`prepareCentred` take `sourceNormals`, upload them with `writeVec3Buf` (centring does NOT apply to normals — upload as-is), and `Bind(6, *m_sourceNormals)`.
 - Shader: add `layout(std430, binding=6) readonly buffer SrcNrm { vec4 g_srcNrm[]; };` and `float g_huberScale, g_normalCompatibilityCosine;` to the push-constant block (append after `g_maxCorr`; keep the C++ `IcpPC` in the SAME order and add the two floats). In `main`, transform the source normal by the pose's rotation (`mat3(g_T) * g_srcNrm[i].xyz`), and inside `if (best >= 0)`:
+
 ```glsl
             vec3 transformedSourceNormal = mat3(g_T) * g_srcNrm[i].xyz;
             if (dot(transformedSourceNormal, n) < g_normalCompatibilityCosine) { /* skip: fall through */ }
@@ -293,6 +311,7 @@ In `AlignPointToPlaneIcp`, the signature gains `const std::vector<Eigen::Vector3
                 atomicAdd(s_acc[28], int(round(e*e*SCALE)));
             }
 ```
+
 Keep the exact same weight/rejection math as the CPU so `SolveMatchesCpuOnCorner` holds. `IcpPC` in `dispatchCentred` sets `pc.huberScale`, `pc.normalCompatibilityCosine` from `params`.
 
 - [ ] **Step 5: the trackers pass source normals** — in `GpuIcpTracker.cpp` and `PointToPlaneIcpTracker.cpp`, both now call `Solve(frame.pts, frame.nrm, target, prior, params)` / `AlignPointToPlaneIcp(frame.pts, frame.nrm, target, prior, params)`, and set `params.huberScale = model->voxel; params.maxCorrDist = <tighter, per Task 5 default>`.
@@ -312,6 +331,7 @@ Keep the exact same weight/rejection math as the CPU so `SolveMatchesCpuOnCorner
 - [ ] **Step 2: Annealing WITHOUT breaking the grid hoist**
 
 Build the grid ONCE at the **coarsest** cell (the widest annealed distance): in `Solve`/`prepareCentred`, pass `params.maxCorrDist` (the widest) as the grid cell (unchanged — it already is). Then vary only the **distance filter** per iteration:
+
 - Add `currentMaxCorrespondenceDistance` to the GPU push constant (reuse `g_maxCorr` — set it per iteration in `dispatchCentred`) and to the CPU `Nearest(p, currentMaxCorrespondenceDistance)` call. The grid neighbor scan (cell size = widest distance) is unchanged; only `bestD2 = current*current` tightens.
 - In both `Solve` loops, compute a geometric schedule: `currentMaxCorrespondenceDistance = wide * pow(narrow/wide, iter/(maxIters-1))` from `wide = params.maxCorrDist` down to `narrow = 0.5 * model-voxel-scale` (pass `narrow` via a new `RegistrationParam` field `minCorrespondenceDistance`, default `0`, meaning "no annealing = use maxCorrDist"). Also anneal `huberScale` proportionally.
 - `dispatchCentred` must accept the per-iteration distance (add a parameter `float currentMaxCorrespondenceDistance` and set `pc.maxCorr` from it instead of `m_pMaxCorr`). This keeps buffers/grid bound once (hoist intact) — only the push constant changes per iteration.
@@ -319,6 +339,7 @@ Build the grid ONCE at the **coarsest** cell (the widest annealed distance): in 
 - [ ] **Step 3: Constant-velocity motion model in `RegistrationThread`**
 
 In `RegistrationThread.cpp::Run`, track two poses back:
+
 ```cpp
         Eigen::Isometry3f previousPose = Eigen::Isometry3f::Identity();
         Eigen::Isometry3f previousPreviousPose = Eigen::Isometry3f::Identity();
@@ -332,6 +353,7 @@ In `RegistrationThread.cpp::Run`, track two poses back:
             if (a.valid) { previousPreviousPose = previousPose; previousPose = a.pose; haveTwoPoses = true; }
             else { haveTwoPoses = false; } // stale velocity after a dropped track
 ```
+
 (Replace the current `prev`-only logic; keep the `TrackedFrame` push identical.)
 
 - [ ] **Step 4: Build + both new tests + harness (record) + full suite green** (three targets; `SolveMatchesCpuOnCorner` within tolerance; `Pipeline.*` green — the motion-model change must not regress the pipeline tests).

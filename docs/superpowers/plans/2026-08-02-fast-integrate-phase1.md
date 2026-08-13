@@ -23,12 +23,14 @@
 ### Task 1: `Buffer` host-visible persistent-mapped mode (additive)
 
 **Files:**
+
 - Modify: `src/Engine/Core/Buffer.h` (add 3 methods + `void *m_mapped` member)
 - Modify: `src/Engine/Core/Buffer.cpp` (implement; clear `m_mapped` in `free()`)
 - Test: `test/test_buffer.cpp` (create)
 
 **Interfaces:**
-- Produces: `void Buffer::AllocateHostVisible(uint32_t bytes)`, `void *Buffer::MappedPtr() const`, `void Buffer::FlushMapped(uint32_t bytes) const`.
+
+- Produces: `void Buffer::AllocateHostVisible(uint32_t bytes)`, `void *Buffer::MappedPtr() const`, `void Buffer::MakeVisibleToGPU(uint32_t bytes) const`.
 
 - [ ] **Step 1: Write the failing test** — `test/test_buffer.cpp`:
 
@@ -51,7 +53,7 @@ TEST(Buffer, HostVisibleMappedRoundTrip) {
     std::vector<float> src(16);
     for (int i = 0; i < 16; ++i) src[i] = float(i) * 1.5f;
     std::memcpy(buf.MappedPtr(), src.data(), src.size() * sizeof(float));
-    buf.FlushMapped(uint32_t(src.size() * sizeof(float)));
+    buf.MakeVisibleToGPU(uint32_t(src.size() * sizeof(float)));
 
     std::vector<float> dst(16, 0.0f);
     buf.Download(dst.data(), uint32_t(dst.size() * sizeof(float))); // GPU copy back
@@ -73,6 +75,7 @@ TEST(Buffer, PlainAllocateHasNoMappedPtr) {
 VULKAN_SDK=/usr/local cmake -S . -B build -DCMAKE_IGNORE_PREFIX_PATH=/opt/homebrew/anaconda3 -Ugflags_DIR -Uglog_DIR -UGTest_DIR -UCeres_DIR
 VULKAN_SDK=/usr/local cmake --build build --target vkspatial_tests -j8
 ```
+
 Expected: compile error — `no member named 'AllocateHostVisible'`.
 
 - [ ] **Step 3: Add declarations to `src/Engine/Core/Buffer.h`** — after the `Download(...)` declaration (line ~31):
@@ -88,7 +91,7 @@ Expected: compile error — `no member named 'AllocateHostVisible'`.
         void *MappedPtr() const { return m_mapped; }
 
         // Flush `bytes` of host writes to the device (no-op on HOST_COHERENT memory; always safe).
-        void FlushMapped(uint32_t bytes) const;
+        void MakeVisibleToGPU(uint32_t bytes) const;
 ```
 
 And add the member next to `m_size` (line ~41):
@@ -123,7 +126,7 @@ And add the member next to `m_size` (line ~41):
         m_size = bytes;
     }
 
-    void Buffer::FlushMapped(uint32_t bytes) const {
+    void Buffer::MakeVisibleToGPU(uint32_t bytes) const {
         if (m_allocation != VK_NULL_HANDLE)
             vmaFlushAllocation(m_context.allocator, m_allocation, 0, bytes);
     }
@@ -135,6 +138,7 @@ And add the member next to `m_size` (line ~41):
 VULKAN_SDK=/usr/local cmake --build build --target vkspatial_tests -j8
 (cd build && VULKAN_SDK=/usr/local ./test/vkspatial_tests --gtest_filter='Buffer.*')
 ```
+
 Expected: 2 passed.
 
 - [ ] **Step 6: Commit**:
@@ -149,12 +153,14 @@ git commit -m "feat(core): Buffer host-visible persistent-mapped mode (additive)
 ### Task 2: `AdvancedTSDF` mapped uploads + `RecordIntegrate(CommandBatch&)`
 
 **Files:**
+
 - Modify: `src/Engine/Spatial/AdvancedTSDF.h` (include CommandBatch; declare `RecordIntegrate`)
 - Modify: `src/Engine/Spatial/AdvancedTSDF.cpp` (Build: point/normal → `AllocateHostVisible`; add `RecordIntegrate`; `Integrate` → wrapper)
 - Test: `test/test_advancedTsdf.cpp` (add one equivalence test)
 
 **Interfaces:**
-- Consumes: `Buffer::AllocateHostVisible/MappedPtr/FlushMapped` (Task 1); `CommandBatch::DispatchElements(ComputePipeline&, uint32_t)` + `Submit()`.
+
+- Consumes: `Buffer::AllocateHostVisible/MappedPtr/MakeVisibleToGPU` (Task 1); `CommandBatch::DispatchElements(ComputePipeline&, uint32_t)` + `Submit()`.
 - Produces: `void AdvancedTSDF::RecordIntegrate(const std::vector<Eigen::Vector3f>&, const std::vector<Eigen::Vector3f>&, const Eigen::Vector3f&, Engine::Compute::CommandBatch&)`.
 
 - [ ] **Step 1: Write the failing test** — append to `test/test_advancedTsdf.cpp` (uses the file's existing includes/helpers; if it lacks a plane helper, build a small inline one):
@@ -188,6 +194,7 @@ TEST(AdvancedTsdf, RecordIntegrateMatchesIntegrate) {
     EXPECT_EQ(ea.size(), eb.size());
 }
 ```
+
 (Add `#include "Engine/Compute/CommandBatch.h"` to the test if not present.)
 
 - [ ] **Step 2: Build, verify FAIL** — `no member named 'RecordIntegrate'`:
@@ -201,6 +208,7 @@ VULKAN_SDK=/usr/local cmake --build build --target vkspatial_tests -j8
 ```cpp
 #include "Engine/Compute/CommandBatch.h"
 ```
+
 and declare after the existing `Integrate(...)` declaration (line ~85):
 
 ```cpp
@@ -247,8 +255,8 @@ and declare after the existing `Integrate(...)` declaration (line ~85):
         // Zero-copy upload: memcpy straight into the persistently mapped storage buffers.
         std::memcpy(m_pointBuffer->MappedPtr(), points.data(), N * 3u * sizeof(float));
         std::memcpy(m_normalBuffer->MappedPtr(), normals.data(), N * 3u * sizeof(float));
-        m_pointBuffer->FlushMapped(N * 3u * sizeof(float));
-        m_normalBuffer->FlushMapped(N * 3u * sizeof(float));
+        m_pointBuffer->MakeVisibleToGPU(N * 3u * sizeof(float));
+        m_normalBuffer->MakeVisibleToGPU(N * 3u * sizeof(float));
 
         IntegratePC pc{
                 N, m_hashCapacity, m_voxelSize, m_truncation,
@@ -261,6 +269,7 @@ and declare after the existing `Integrate(...)` declaration (line ~85):
         batch.DispatchElements(*m_kernel, N);
     }
 ```
+
 Add `#include "Engine/Compute/CommandBatch.h"` and `#include <cstring>` to the .cpp if not present.
 
 - [ ] **Step 5: Build + run AdvancedTsdf tests (equivalence + all existing), verify PASS**:
@@ -269,6 +278,7 @@ Add `#include "Engine/Compute/CommandBatch.h"` and `#include <cstring>` to the .
 VULKAN_SDK=/usr/local cmake --build build --target vkspatial_tests -j8
 (cd build && VULKAN_SDK=/usr/local ./test/vkspatial_tests --gtest_filter='AdvancedTsdf.*')
 ```
+
 Expected: all pass (existing tests prove bit-identical; the new test confirms Record==Integrate).
 
 - [ ] **Step 6: Commit**:
@@ -283,10 +293,12 @@ git commit -m "feat(spatial): AdvancedTSDF mapped uploads + RecordIntegrate(Comm
 ### Task 3: `TiledDirectionalTSDF` batched Integrate (one submit per Integrate)
 
 **Files:**
+
 - Modify: `src/Engine/Spatial/TiledDirectionalTSDF.h` (include CommandBatch; add batched overload; self-submit reuses it)
 - Test: `test/test_tiledAdvancedTsdf.cpp` (existing tests must still pass; add a batched-equivalence test)
 
 **Interfaces:**
+
 - Consumes: `Backend::RecordIntegrate(pts, nrm, cam, CommandBatch&)` (Task 2 for `AdvancedTSDF`); `m_ctx` (already stored).
 - Produces: `void Integrate(points, normals, cameraPos, Engine::Compute::CommandBatch &batch)` on `TiledDirectionalTSDF<Backend>`.
 
@@ -318,6 +330,7 @@ TEST(TiledAdvanced, BatchedIntegrateMatches) {
     EXPECT_GT(a.DownloadEntries().size(), 100u);
 }
 ```
+
 (Add `#include "Engine/Compute/CommandBatch.h"` to the test if not present.)
 
 - [ ] **Step 2: Build, verify FAIL** (no 4-arg Integrate):
@@ -331,6 +344,7 @@ VULKAN_SDK=/usr/local cmake --build build --target vkspatial_tests -j8
 ```cpp
 #include "Engine/Compute/CommandBatch.h"
 ```
+
 Replace the tile-dispatch loop at the end of the existing `Integrate` (lines ~121-124) so the self-submitting form delegates to a new batched overload. Change the existing function's tail from:
 
 ```cpp
@@ -340,6 +354,7 @@ Replace the tile-dispatch loop at the end of the existing `Integrate` (lines ~12
             }
         }
 ```
+
 to:
 
 ```cpp
@@ -349,6 +364,7 @@ to:
             }
         }
 ```
+
 and change that function's signature to take a batch (it becomes the batched overload):
 
 ```cpp
@@ -356,6 +372,7 @@ and change that function's signature to take a batch (it becomes the batched ove
                        const std::vector<Eigen::Vector3f> &normals,
                        const Eigen::Vector3f &cameraPos, Engine::Compute::CommandBatch &batch) {
 ```
+
 Then add the self-submitting overload just above it:
 
 ```cpp
@@ -369,6 +386,7 @@ Then add the self-submitting overload just above it:
             batch.Submit();
         }
 ```
+
 (The batched overload keeps the routing body; remove the old default arg from it since the self-submitting overload now owns the default.)
 
 - [ ] **Step 4: Build + run TiledAdvanced tests, verify PASS**:
@@ -377,6 +395,7 @@ Then add the self-submitting overload just above it:
 VULKAN_SDK=/usr/local cmake --build build --target vkspatial_tests -j8
 (cd build && VULKAN_SDK=/usr/local ./test/vkspatial_tests --gtest_filter='TiledAdvanced.*')
 ```
+
 Expected: all pass (existing + batched-equivalence).
 
 - [ ] **Step 5: Commit**:
@@ -391,11 +410,13 @@ git commit -m "feat(spatial): TiledDirectionalTSDF batched Integrate (one submit
 ### Task 4: `SubmapAdvancedTSDF` batched Integrate (base + detail in one batch) + measure
 
 **Files:**
+
 - Modify: `src/Engine/Spatial/SubmapAdvancedTSDF.h` (store `m_ctx`; batch base + detail into one submit)
 - Test: `test/test_submapAdvancedTsdf.cpp` (existing tests must still pass)
 - Measure: `example2/voxel_fill_debugger --dump`
 
 **Interfaces:**
+
 - Consumes: `TiledAdvancedTSDF::Integrate(pts, nrm, cam, CommandBatch&)` (Task 3); `CommandBatch(ctx)` + `Submit()`.
 
 - [ ] **Step 1: Edit `src/Engine/Spatial/SubmapAdvancedTSDF.h`** — store the context in `Build` (add `m_ctx = &ctx;` at the top of `Build`, and a member `Engine::Core::Context *m_ctx = nullptr;` near the other members). Include is already present (`Engine/Core/Context.h`); add `#include "Engine/Compute/CommandBatch.h"`.
@@ -426,6 +447,7 @@ Replace the body of `Integrate` (the base + detail calls) with a single batched 
             batch.Submit(); // one submit for base + detail
         }
 ```
+
 (Base tiles and detail tiles are all distinct `AdvancedTSDF` pipelines writing independent tile hashes, so one batch is safe and needs no intra-batch barrier.)
 
 - [ ] **Step 2: Build + run Submap tests, verify PASS** (bit-identical results):
@@ -434,6 +456,7 @@ Replace the body of `Integrate` (the base + detail calls) with a single batched 
 VULKAN_SDK=/usr/local cmake --build build --target vkspatial_tests -j8
 (cd build && VULKAN_SDK=/usr/local ./test/vkspatial_tests --gtest_filter='SubmapAdvanced.*')
 ```
+
 Expected: 6/6 pass.
 
 - [ ] **Step 3: Build the debugger and measure integrate before/after**:
@@ -444,6 +467,7 @@ mkdir -p scan_out/perf && for i in $(seq -w 0 14); do cp scans/dragon/frame_00$i
 VULKAN_SDK=/usr/local ./build/example2/voxel_fill_debugger --dir scan_out/perf --voxel 0.5 --dump 2>&1 | tail -6
 rm -rf scan_out/perf
 ```
+
 Expected: the `--dump` timing table's `integrate` avg is far below the pre-Phase-1 ~148 ms/frame; occupied counts and dense-block/tile counts unchanged from before (results identical).
 
 - [ ] **Step 4: Commit**:
