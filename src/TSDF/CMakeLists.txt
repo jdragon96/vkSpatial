@@ -6,7 +6,11 @@ add_library(TSDF STATIC ${TSDF_SOURCES})
 add_library(TSDF::TSDF ALIAS TSDF)
 
 target_link_libraries(TSDF
-        PUBLIC Engine::Core Engine::Compute Engine::Spatial Vulkan::Vulkan)
+        PUBLIC 
+        Engine::Core 
+        Engine::Compute 
+        Engine::Spatial 
+        Vulkan::Vulkan)
 
 target_include_directories(TSDF
         PUBLIC
