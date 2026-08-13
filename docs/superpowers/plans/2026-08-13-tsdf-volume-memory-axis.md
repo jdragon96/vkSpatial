@@ -903,9 +903,14 @@ namespace TSDF {
     }
 
     void SubmapStrategy::Configure(const IntegrationOptions &options) {
-        // Only the options this backend exposes; the interface allows a strategy to ignore the
-        // rest rather than fail, so one parameter set can drive every strategy in a sweep.
+        // Forward every option, exactly as the sibling strategies do -- SubmapAdvancedTSDF fans
+        // each setter out to both its base and detail levels. A strategy that quietly dropped
+        // sweep-relevant options would make an A/B run lie: the same parameter set would mean
+        // something different for `submap` than for `flat`/`tile`.
         m_tsdf.SetIntegrationQuality(options.quality);
+        m_tsdf.SetPointToPlane(options.pointToPlane);
+        m_tsdf.SetConfidenceWeight(options.confidenceWeight);
+        m_tsdf.SetHermitePosition(options.hermitePosition);
         m_tsdf.SetCurrentFrame(options.currentFrame);
     }
 
@@ -1178,3 +1183,50 @@ git commit -m "feat(tsdf): compose volumes from memory strategies and register f
 | `Memory/Hash` 전략 주입 | 스펙 §8 7단계 |
 | `insertFailureCount` 계측 + 버킷 해시 | 스펙 §8 8단계 — 이 계획은 필드를 0으로 채워둔다 |
 | `SubmapAdvancedTSDF` 배치 오버로드 | Task 5의 계약 이탈 해소 |
+
+---
+
+## 실행 결과 (2026-08-14 완료)
+
+7개 커밋 `f8b63c5..8423573`. 테스트 261 → **275 passed / 1 skipped / 0 failed** (신규 14개, 회귀 0).
+
+### 계획서가 틀렸던 곳 두 군데
+
+실행 중 리뷰가 잡아낸 **계획 자체의 결함**이다. 둘 다 같은 원인 — 계획 단계에서 여러 파일을
+한 번에 grep했을 때 **한 파일의 매치만 돌아온 것**을 검증 없이 옮겨 적었다. 이 저장소에서
+계획을 쓸 때는 파일별로 나눠 확인할 것.
+
+1. **Task 5 `Configure`** — "`SubmapAdvancedTSDF`는 세터를 2개만 노출한다"고 적었으나 실제로는
+   6개(`SubmapAdvancedTSDF.h:47,51,55,59,64,66`). 그대로 구현했으면 `pointToPlane` /
+   `confidenceWeight` / `hermitePosition`을 바꾸는 스윕이 `submap`에만 조용히 안 먹었다.
+2. **Task 4/5 `Record`** (Critical) — 타일드/서브맵에 clamp되는 `Integrate`를 지정했다.
+   타일당 `maxPointsPerFrame`(기본 32768)에서 **말없이 잘리는데** `flat`은 버퍼를 키운다.
+   메모리 비교가 타일링에 유리한 쪽으로 편향된다. 289점짜리 픽스처로는 보이지도 않는다.
+   → `TiledDirectionalTSDF::RecordIntegrateGPU`(신규, 추가만) + `SubmapAdvancedTSDF::IntegrateGPU`로 교체.
+
+### 측정 도구가 내놓은 첫 숫자
+
+289점 평면, 테이블당 65536 슬롯:
+
+| 전략 | occupied | slots | load factor | tables |
+|---|---|---|---|---|
+| flat | 1,045 | 65,536 | 0.0160 | 1 |
+| tile | 5,566 | 524,288 | 0.0106 | 8 |
+| submap | 6,838 | 524,288 | 0.0130 | 8 |
+
+**이 숫자로 "load-limited냐 count-limited냐"를 결론지으면 안 된다.** 픽스처가 289점이라
+세 전략 모두 load factor가 0.01~0.02로 바닥이고, `slotCapacity`가 `tableCount`에 정확히
+비례하는 건 타일당 고정 용량 할당의 정의일 뿐이다. 실제 답은 진짜 스캔을 돌려야 나온다.
+
+### 다음 계획으로 넘어간 것
+
+- **하네스 글루**: 테스트 말고는 아무것도 `TSDF::TSDF`를 링크하지 않는다. `tsdf_folder_eval --tsdf <name>`
+  같은 진입점이 있어야 실제 스캔으로 위 질문에 답할 수 있다. **이게 최우선.**
+- `ComputePipeline` 탐색 경로 / 2단 includer / 캐시 키 (스펙 §5)
+- Integrate·Extract 축 분리 + 커널 이동 (스펙 §8 5~6단계)
+- `Memory/Hash` 전략 주입 + `insertFailureCount` 계측 → 버킷 해시 A/B (7~8단계)
+- `SubmapAdvancedTSDF` 배치 오버로드 (Task 5 계약 이탈 해소)
+- **Integrate 축 착수 전 확인할 것**: 커널을 갈아끼우려면 메모리 전략이 해시 버퍼와
+  push constant의 메모리 절반을 노출해야 하는데(스펙 §6.2), 지금은 전부 `AdvancedTSDF` 내부에
+  private이다. 현재 이음매에서는 안 보이는 결합이고, `MemoryStrategy` 인터페이스를 바꾸게 만들
+  가장 유력한 후보다.
