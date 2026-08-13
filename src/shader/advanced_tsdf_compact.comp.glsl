@@ -1,5 +1,15 @@
 #version 460
 
+/*
+희소한 HashTable
+[빈칸][voxel][빈칸][voxel][voxel][빈칸]...
+                  ↓ Compact
+조밀한 출력 배열
+[voxel][voxel][voxel]
+
+- 이산적으로 떨어져있는 Voxel buffer를 linear하게 이어주는 역할을 한다.
+*/
+
 /// *********************************************
 /// Constants
 /// *********************************************
@@ -48,13 +58,6 @@ layout(push_constant) uniform PC {
 	int   g_coreMaxX, g_coreMaxY, g_coreMaxZ; // moves the tiled ghost-dedup into the kernel
 };
 
-/// *********************************************
-/// Compact + decode
-/// *********************************************
-// One thread per hash slot. Append the occupied, sufficiently-observed slots whose voxel lies in this
-// tile's CORE (drops ghost-margin duplicates without a CPU pass) to g_out via a shared atomic counter,
-// fully DECODED to world space -- so a tiled coordinator batches every tile into ONE submit writing a
-// single shared buffer, and the CPU reads back ready-made AdvancedEntry records (no per-tile decode).
 void main()
 {
 	uint slot = gl_GlobalInvocationID.x;
@@ -66,14 +69,14 @@ void main()
 
 	// 3. unpack the local voxel + direction from the key (mirrors DecodeEntry / the integrate packing).
 	int dir = int(entry.key & 0x7u);
-	int lz  = int((entry.key >>  3u) & 0x1FFu);
-	int ly  = int((entry.key >> 12u) & 0x1FFu);
-	int lx  = int((entry.key >> 21u) & 0x1FFu);
+	int localKeyZ  = int((entry.key >>  3u) & 0x1FFu);
+	int localKeyY  = int((entry.key >> 12u) & 0x1FFu);
+	int localKeyX  = int((entry.key >> 21u) & 0x1FFu);
 
 	// 4. core-only: skip voxels outside this tile's owned region (a neighbour owns them in its core).
-	if (lx < g_coreMinX || lx >= g_coreMaxX) return;
-	if (ly < g_coreMinY || ly >= g_coreMaxY) return;
-	if (lz < g_coreMinZ || lz >= g_coreMaxZ) return;
+	if (localKeyX < g_coreMinX || localKeyX >= g_coreMaxX) return;
+	if (localKeyY < g_coreMinY || localKeyY >= g_coreMaxY) return;
+	if (localKeyZ < g_coreMinZ || localKeyZ >= g_coreMaxZ) return;
 
 	// 5. reserve an output slot. g_count counts EVERY core hit (even past g_maxOut), so the CPU reads
 	//    it back as the exact required size and can grow + redo if the shared buffer was too small.
@@ -81,7 +84,12 @@ void main()
 	if (outIndex >= g_maxOut) return;
 
 	// 6. decode to world space and write the ready-made AdvancedEntry.
-	vec3  centre = (vec3(float(lx + g_originX), float(ly + g_originY), float(lz + g_originZ)) + vec3(0.5)) * g_voxelSize;
+	vec3 centre = vec3(
+		float(localKeyX + g_originX), 
+		float(localKeyY + g_originY), 
+		float(localKeyZ + g_originZ));
+	centre += vec3(0.5);
+	centre *= g_voxelSize;
 	float w      = float(entry.sumW);
 	vec3  n      = vec3(float(entry.sumNx), float(entry.sumNy), float(entry.sumNz));
 	float nlen   = length(n);

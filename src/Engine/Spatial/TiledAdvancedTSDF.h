@@ -23,9 +23,10 @@ namespace Engine::Spatial {
 
         void DownloadEntries(std::vector<AdvancedEntry> &out) const {
             if (this->TileCount() == 0) {
-                out.resize(0); // keep capacity for a later non-empty frame
+                out.resize(0);
                 return;
             }
+
             ensureShared(m_sharedCapacity == 0 ? kInitialShared : m_sharedCapacity);
             uint32_t total = compactAllTiles();
             if (total > m_sharedCapacity) {
@@ -34,9 +35,9 @@ namespace Engine::Spatial {
             }
             const uint32_t n = std::min(total, m_sharedCapacity);
             out.reserve(m_sharedCapacity);
-            out.resize(n); // NOT cleared first -> only the growth delta is value-initialised
+            out.resize(n);
             if (n > 0) {
-                m_sharedOut->InvalidateMapped(n * uint32_t(sizeof(AdvancedEntry)));
+                m_sharedOut->MakeVisibleToCPU(n * uint32_t(sizeof(AdvancedEntry)));
                 std::memcpy(out.data(), m_sharedOut->MappedPtr(), n * sizeof(AdvancedEntry));
             }
         }
@@ -55,7 +56,7 @@ namespace Engine::Spatial {
         uint32_t compactAllTiles() const {
             auto *countPtr = static_cast<uint32_t *>(m_sharedCount->MappedPtr());
             *countPtr = 0;
-            m_sharedCount->FlushMapped(sizeof(uint32_t));
+            m_sharedCount->MakeVisibleToGPU(sizeof(uint32_t));
 
             Engine::Compute::CommandBatch batch(*this->contextPtr());
             this->forEachTileCore([&](const AdvancedTSDF &tile,
@@ -63,9 +64,8 @@ namespace Engine::Spatial {
                                       const Eigen::Vector3i &coreMax) {
                 tile.RecordCompact(*m_sharedOut, *m_sharedCount, batch, coreMin, coreMax);
             });
-            batch.Submit(); // ONE submit for every tile (distinct kernels -> safe to batch)
-
-            m_sharedCount->InvalidateMapped(sizeof(uint32_t));
+            batch.Submit();
+            m_sharedCount->MakeVisibleToCPU(sizeof(uint32_t));
             return *countPtr;
         }
 

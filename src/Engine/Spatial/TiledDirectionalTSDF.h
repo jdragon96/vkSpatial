@@ -70,8 +70,8 @@ namespace Engine::Spatial {
         void Integrate(const std::vector<Eigen::Vector3f> &points,
                        const std::vector<Eigen::Vector3f> &normals,
                        const Eigen::Vector3f &cameraPos = Eigen::Vector3f::Zero()) {
-            for (auto &kv: route(points, normals)) {
-                Backend *tile = tileFor(kv.first);
+            for (auto &kv: splitPointsToTiles(points, normals)) {
+                Backend *tile = GetTSDF(kv.first);
                 tile->Integrate(kv.second.pts, kv.second.nrm, cameraPos);
             }
         }
@@ -80,8 +80,8 @@ namespace Engine::Spatial {
                        const std::vector<Eigen::Vector3f> &normals,
                        const Eigen::Vector3f &cameraPos,
                        Engine::Compute::CommandBatch &batch) {
-            for (auto &kv: route(points, normals)) {
-                Backend *tile = tileFor(kv.first);
+            for (auto &kv: splitPointsToTiles(points, normals)) {
+                Backend *tile = GetTSDF(kv.first);
                 tile->RecordIntegrate(kv.second.pts, kv.second.nrm, cameraPos, batch);
             }
         }
@@ -102,10 +102,14 @@ namespace Engine::Spatial {
             const std::size_t n = std::min(points.size(), normals.size());
             if (n == 0) return;
             UploadReuseBuffer(points, normals, static_cast<uint32_t>(n));
-            for (const TileKey &key: touchedTiles(points, normals)) {
-                Backend *tile = tileFor(key);
-                tile->RecordIntegrateShared(*m_reusePointBuffer, *m_reuseNormalBuffer, static_cast<uint32_t>(n),
-                                            cameraPos, batch);
+            for (const TileKey &key: GetTilesAffectedByFrame(points, normals)) {
+                Backend *tsdf = GetTSDF(key);
+                tsdf->RecordIntegrateShared(
+                        *m_reusePointBuffer,
+                        *m_reuseNormalBuffer,
+                        static_cast<uint32_t>(n),
+                        cameraPos,
+                        batch);
             }
         }
 
@@ -206,7 +210,7 @@ namespace Engine::Spatial {
             std::vector<Eigen::Vector3f> pts, nrm;
         };
 
-        int tileTargets(const Eigen::Vector3f &p, TileKey out[8]) const {
+        int GetTilesAffectedByPoint(const Eigen::Vector3f &p, TileKey out[8]) const {
             const Eigen::Vector3i v(static_cast<int>(std::floor(p.x() / m_voxelSize)),
                                     static_cast<int>(std::floor(p.y() / m_voxelSize)),
                                     static_cast<int>(std::floor(p.z() / m_voxelSize)));
@@ -233,17 +237,18 @@ namespace Engine::Spatial {
             return k;
         }
 
-        std::vector<TileKey> touchedTiles(const std::vector<Eigen::Vector3f> &points,
-                                          const std::vector<Eigen::Vector3f> &normals) const {
+        std::vector<TileKey> GetTilesAffectedByFrame(const std::vector<Eigen::Vector3f> &points,
+                                                     const std::vector<Eigen::Vector3f> &normals) const {
             const std::size_t n = std::min(points.size(), normals.size());
             std::vector<TileKey> out;
             if (n == 0) return out;
 
-            auto binRange = [&](std::size_t lo, std::size_t hi,
+            auto binRange = [&](std::size_t lo,
+                                std::size_t hi,
                                 std::unordered_set<TileKey, TileKeyHash> &into) {
                 TileKey tgt[8];
                 for (std::size_t i = lo; i < hi; ++i) {
-                    const int m = tileTargets(points[i], tgt);
+                    const int m = GetTilesAffectedByPoint(points[i], tgt);
                     for (int t = 0; t < m; ++t) into.insert(tgt[t]);
                 }
             };
@@ -262,10 +267,11 @@ namespace Engine::Spatial {
             workers.reserve(nThreads - 1);
             const std::size_t chunk = (n + nThreads - 1) / nThreads;
             for (unsigned w = 1; w < nThreads; ++w) {
-                const std::size_t lo = std::min(n, w * chunk), hi = std::min(n, lo + chunk);
+                const std::size_t lo = std::min(n, w * chunk);
+                const std::size_t hi = std::min(n, lo + chunk);
                 workers.emplace_back([&, lo, hi, w] { binRange(lo, hi, local[w]); });
             }
-            binRange(0, std::min(n, chunk), local[0]); // this thread bins the first chunk
+            binRange(0, std::min(n, chunk), local[0]);
             for (auto &t: workers) t.join();
 
             std::unordered_set<TileKey, TileKeyHash> merged;
@@ -280,8 +286,8 @@ namespace Engine::Spatial {
             AllocateReusePointCloudeBuffer(n);
             std::memcpy(m_reusePointBuffer->MappedPtr(), points.data(), n * 3u * sizeof(float));
             std::memcpy(m_reuseNormalBuffer->MappedPtr(), normals.data(), n * 3u * sizeof(float));
-            m_reusePointBuffer->FlushMapped(n * 3u * sizeof(float));
-            m_reuseNormalBuffer->FlushMapped(n * 3u * sizeof(float));
+            m_reusePointBuffer->MakeVisibleToGPU(n * 3u * sizeof(float));
+            m_reuseNormalBuffer->MakeVisibleToGPU(n * 3u * sizeof(float));
         }
 
         void AllocateReusePointCloudeBuffer(uint32_t n) {
@@ -293,9 +299,27 @@ namespace Engine::Spatial {
             m_reuseNormalBuffer->AllocateHostVisible(m_reuseBufferSize * 3u * sizeof(float));
         }
 
+        /*
+        Point Cloud
+        │
+        ├── point p
+        │
+        ▼
+        Voxel 좌표 계산
+        │
+        ▼
+        어느 Tile에 속하는지 계산
+        │
+        ├── Tile 내부 중앙 → 해당 Tile에만 추가
+        │
+        └── Tile 경계 근처
+                │
+                ├── 현재 Tile
+                └── 이웃 Tile에도 추가
+        */
         std::unordered_map<TileKey, SubList, TileKeyHash>
-        route(const std::vector<Eigen::Vector3f> &points,
-              const std::vector<Eigen::Vector3f> &normals) const {
+        splitPointsToTiles(const std::vector<Eigen::Vector3f> &points,
+                           const std::vector<Eigen::Vector3f> &normals) const {
             std::unordered_map<TileKey, SubList, TileKeyHash> routed;
             const size_t n = std::min(points.size(), normals.size());
             for (size_t i = 0; i < n; ++i) {
@@ -339,15 +363,17 @@ namespace Engine::Spatial {
                                    floorDiv(v.z() - m_origin.z(), kCore));
         }
 
-        Backend *tileFor(const TileKey &key) {
+        Backend *GetTSDF(const TileKey &key) {
             auto it = m_tiles.find(key);
             if (it != m_tiles.end()) return it->second.get();
 
+            // Calculate position of tile
             const Eigen::Vector3i tile(key.x, key.y, key.z);
             const Eigen::Vector3i originVoxel =
                     m_origin + tile * kCore - Eigen::Vector3i::Constant(m_ghost);
             const Eigen::Vector3f windowMinCorner = originVoxel.cast<float>() * m_voxelSize;
 
+            // Build TSDF
             auto tsdf = std::make_unique<Backend>();
             tsdf->Build(
                     *m_ctx,

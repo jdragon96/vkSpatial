@@ -22,12 +22,7 @@ namespace Engine::Pipeline {
                 m_dims[a] = std::max(1, int(std::floor((mx[a] - mn[a]) / m_cell)) + 1);
         };
         computeDims();
-        // Defensive cap on the dense cell count. bucketStart is a dense array of size dims.prod()+1, so a
-        // cell far finer than the point extent (e.g. a fixed maxCorrDist over a 100m+ scene) would request
-        // a multi-GB allocation. If dims.prod() would exceed the cap, coarsen the cell until it fits. This
-        // never drops a correspondence: the shader (and Nearest) still filter by the true radius (<= cell),
-        // so a coarser cell only scans more points per cell -- it does not shrink the search radius.
-        constexpr uint64_t kMaxCells = 32ull * 1024 * 1024; // 32M cells -> <= ~128 MB bucketStart
+        constexpr uint64_t kMaxCells = 32ull * 1024 * 1024;
         for (int guard = 0; guard < 64; ++guard) {
             const uint64_t nc = uint64_t(m_dims.x()) * uint64_t(m_dims.y()) * uint64_t(m_dims.z());
             if (nc <= kMaxCells) break;
@@ -120,16 +115,7 @@ namespace Engine::Pipeline {
         out.H.setZero();
         out.b.setZero();
         out.inliers = 0;
-        // One-shot convenience: upload once, dispatch once. Solve uses prepare/dispatch directly so the
-        // upload happens once per solve instead of once per iteration.
-        //
-        // This legacy entry point predates RegistrationParam, so it has no caller-chosen huberScale /
-        // normalCompatibilityCosine: pass no source normals (rejection sentinel, off) and a huge Huber
-        // scale (robustWeight == 1 for any real residual), reproducing the pre-Tier-2 raw (unweighted,
-        // unrejected) accumulation exactly.
         if (!prepareCentred(src, {}, tgt, c, maxCorrDist)) return out;
-        // No RegistrationParam here (legacy convenience path) -> no annealing schedule; use the same
-        // maxCorrDist the grid was just built at (matches pre-Task-5 behaviour exactly).
         return dispatchCentred(T, kNoRobustWeightingHuberScale, kNoNormalRejectionCosine, maxCorrDist);
     }
 
@@ -140,9 +126,6 @@ namespace Engine::Pipeline {
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return false;
         if (!sourceNormals.empty() && sourceNormals.size() != src.size()) return false;
 
-        // Centre on the (caller-supplied) target centroid `c` -- numerical conditioning + fixed-point
-        // safety. None of this depends on the pose, so it is done ONCE per solve (see class doc: the H,b
-        // dispatchCentred returns are in this CENTRED frame, not the un-centred/world one).
         std::vector<Eigen::Vector3f> sc(src.size()), tc(tgt.points.size());
         for (size_t i = 0; i < src.size(); ++i) sc[i] = src[i] - c;
         for (size_t i = 0; i < tc.size(); ++i) tc[i] = tgt.points[i] - c;
@@ -151,13 +134,9 @@ namespace Engine::Pipeline {
         writeVec3Buf(*m_src, sc);
         writeVec3Buf(*m_tgtPts, tc);
         writeVec3Buf(*m_tgtNrm, tgt.normals);
-        // Source normals do NOT translate -- upload as-is (not centred). When the caller supplies none,
-        // upload a same-length zero-filled buffer so the shader's unconditional g_srcNrm[i] read (i in
-        // [0, numSrc)) stays in-bounds; the caller pairs this with kNoNormalRejectionCosine so those
-        // zeros are never actually used to reject a correspondence.
         writeVec3Buf(*m_sourceNormals,
                      sourceNormals.empty() ? std::vector<Eigen::Vector3f>(src.size(), Eigen::Vector3f::Zero())
-                                            : sourceNormals);
+                                           : sourceNormals);
         m_bucketStart->Allocate(uint32_t(grid.m_bucketStart.size() * sizeof(uint32_t)));
         m_bucketStart->Upload(grid.m_bucketStart.data(), uint32_t(grid.m_bucketStart.size() * sizeof(uint32_t)));
         m_bucketIdx->Allocate(uint32_t(std::max<size_t>(1, grid.m_bucketIdx.size()) * sizeof(uint32_t)));
@@ -166,9 +145,6 @@ namespace Engine::Pipeline {
 
         m_pNumSrc = uint32_t(src.size());
         m_pNumWG = (m_pNumSrc + kLocal - 1) / kLocal;
-        // No pre-zero needed: every workgroup unconditionally writes all 29 of its slots at the end of the
-        // shader (`if (tid < 29u) g_part[...] = s_acc[tid]`, zero-initialised + reduced in `shared`), so a
-        // stale value is never read. Overwritten wholesale on each dispatch -> reusable across iterations.
         m_partials->AllocateHostVisibleReadback(m_pNumWG * 29u * sizeof(int32_t));
 
         m_pOrigin = grid.m_origin;
@@ -176,8 +152,6 @@ namespace Engine::Pipeline {
         m_pCell = grid.m_cell;
         m_pMaxCorr = maxCorrDist;
 
-        // Bind once: the buffer handles are stable until the next prepareCentred reallocates them, so per
-        // iteration Solve only re-sends the push constant + re-dispatches (no descriptor churn).
         m_kernel->Bind(0, *m_src).Bind(1, *m_tgtPts).Bind(2, *m_tgtNrm).Bind(3, *m_bucketStart).Bind(4, *m_bucketIdx).Bind(5, *m_partials).Bind(6, *m_sourceNormals);
         return true;
     }
@@ -195,9 +169,7 @@ namespace Engine::Pipeline {
         pc.originX = m_pOrigin.x();
         pc.originY = m_pOrigin.y();
         pc.originZ = m_pOrigin.z();
-        pc.cell = m_pCell; // grid cell width: fixed at prepareCentred's (widest) maxCorrDist -- NOT
-                           // rebuilt here, so this stays constant across iterations even while
-                           // pc.maxCorr below narrows (coarse-to-fine annealing keeps the hoist intact)
+        pc.cell = m_pCell;
         pc.dimsX = m_pDims.x();
         pc.dimsY = m_pDims.y();
         pc.dimsZ = m_pDims.z();
@@ -210,7 +182,7 @@ namespace Engine::Pipeline {
         m_kernel->Args(pc);
         m_kernel->DispatchElements(m_pNumSrc); // synchronous; buffers already bound by prepareCentred
 
-        m_partials->InvalidateMapped(m_pNumWG * 29u * sizeof(int32_t));
+        m_partials->MakeVisibleToCPU(m_pNumWG * 29u * sizeof(int32_t));
         const int32_t *part = static_cast<const int32_t *>(m_partials->MappedPtr());
         double acc[29] = {0};
         for (uint32_t w = 0; w < m_pNumWG; ++w)
@@ -248,22 +220,13 @@ namespace Engine::Pipeline {
         TcInv.block<3, 1>(0, 3) = c;
         Eigen::Matrix4f T = Tc * priorT * TcInv; // work in the centred frame
 
-        // Grid built ONCE per solve, at the WIDEST (coarsest) distance -- params.maxCorrDist (the
-        // existing hoist; prepareCentred/LocalGrid cell = maxCorrDist, unchanged by annealing below).
         if (!prepareCentred(src, sourceNormals, tgt, c, params.maxCorrDist)) return res;
 
-        // sourceNormals empty -> sentinel that disables the rejection, mirroring
-        // AlignPointToPlaneIcp's CPU `sourceNormals.empty()` early-out.
         const float normalCompatibilityCosine =
                 sourceNormals.empty() ? kNoNormalRejectionCosine : params.normalCompatibilityCosine;
 
         double lastSumOfSquaredResiduals = 0.0;
         for (int iter = 0; iter < params.maxIters; ++iter) {
-            // Coarse-to-fine: same schedule as the CPU AlignPointToPlaneIcp (Engine::Registration::
-            // AnnealIcpIteration) -- narrows the per-iteration DISTANCE FILTER (dispatchCentred's
-            // pc.maxCorr) from maxCorrDist down to minCorrespondenceDistance; the grid/buffers stay
-            // bound from prepareCentred above (hoist intact, no per-iteration rebuild/rebind). No-op
-            // (fixed params.maxCorrDist/huberScale) when minCorrespondenceDistance is 0 (default).
             const Engine::Registration::AnnealedIcpIterationParams annealed =
                     Engine::Registration::AnnealIcpIteration(params, iter);
             const IterOut a = dispatchCentred(T, annealed.huberScale, normalCompatibilityCosine,

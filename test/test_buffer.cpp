@@ -16,7 +16,7 @@ TEST(Buffer, HostVisibleMappedRoundTrip) {
     std::vector<float> src(16);
     for (int i = 0; i < 16; ++i) src[i] = float(i) * 1.5f;
     std::memcpy(buf.MappedPtr(), src.data(), src.size() * sizeof(float));
-    buf.FlushMapped(uint32_t(src.size() * sizeof(float)));
+    buf.MakeVisibleToGPU(uint32_t(src.size() * sizeof(float)));
 
     std::vector<float> dst(16, 0.0f);
     buf.Download(dst.data(), uint32_t(dst.size() * sizeof(float))); // GPU copy back

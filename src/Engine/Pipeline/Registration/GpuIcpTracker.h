@@ -10,11 +10,6 @@
 
 namespace Engine::Pipeline {
 
-    // GPU point-to-plane ICP against the latest model's occupied voxels, cropped to the source
-    // frame's AABB + maxCorrDist margin so the upload + LocalGrid stay local (not O(full model)).
-    // The Context + GpuPointToPlaneIcp are created lazily on the FIRST Track() call, which runs on
-    // the ICP (RegistrationThread) thread -- mirrors how IntegrationThread creates its own Context
-    // inside its own Run(). Result: two live GPU contexts at runtime (this one + Integration's).
     class GpuIcpTracker : public Tracker {
     public:
         const char *Name() const override { return "icp"; }

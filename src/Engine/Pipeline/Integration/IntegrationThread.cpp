@@ -51,9 +51,9 @@ namespace Engine::Pipeline {
             snap.integrateMs = prof.LastMs("integrate");
             snap.trackerMs = 0.0;
             snap.processedFrame = processed;
-            snap.voxel = baseVoxel; // so the tracker can scale its correspondence distance to the map
+            snap.voxel = baseVoxel;                       // so the tracker can scale its correspondence distance to the map
             snap.truncationDistance = truncationDistance; // so the tracker can recover a sub-voxel target
-                                                           // point via center - tsdf*truncationDistance*normal
+                                                          // point via center - tsdf*truncationDistance*normal
             snap.baseTiles = submap.BaseTileCount();
             snap.detailTiles = submap.DetailTileCount();
             snap.denseBlocks = submap.DenseBlockCount();
@@ -104,16 +104,8 @@ namespace Engine::Pipeline {
         submap.SetConfidenceWeight(m_cfg.confidence);
         submap.SetHermitePosition(m_cfg.hermite);
         submap.SetDownsample(m_cfg.downsample);
-        // Density is learned ONLINE from the stream (no pre-scan of future frames): each integrate
-        // updates per-block density and flips blocks to dense as their observed density crosses the
-        // threshold. So there is nothing to precompute here -- submap == false just never flips any
-        // block dense (base-only), submap == true lets the detail level grow as dense regions appear.
-        submap.PreWarm(); // compile the per-frame shaders now, so the first frame isn't a ~900ms spike
+        submap.PreWarm();
 
-        // Snapshot pool: reuse a snapshot once nothing but the pool still references it (the mailbox +
-        // render thread have moved on). Reusing keeps its big vectors' allocations warm, so the download
-        // no longer pays a fresh 100+ MB first-touch every frame. A latest-value mailbox + one render
-        // reader keeps at most ~3 snapshots live, so the pool stays tiny.
         std::vector<std::shared_ptr<ModelSnapshot>> pool;
         auto acquireSnapshot = [&pool]() -> std::shared_ptr<ModelSnapshot> {
             for (const auto &s: pool)

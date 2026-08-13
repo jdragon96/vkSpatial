@@ -194,17 +194,13 @@ namespace Engine::Spatial {
         std::unique_ptr<Engine::Core::Buffer> m_normalBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_statBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_firstFrameBuffer; // per-slot first-fill frame (int32)
-        std::unique_ptr<Engine::Core::ComputePipeline> m_kernel;
-        std::unique_ptr<Engine::Core::ComputePipeline> m_clearKernel;  // GPU hash clear (fast tile reset)
-        std::unique_ptr<Engine::Core::ComputePipeline> m_rehashKernel; // GPU rehash on auto-grow
-
-        // GPU compaction: a kernel appends only the occupied entries into (out, count) scratch, so
-        // the readback is O(occupied), not O(hashCapacity). CompactInto() takes the scratch from the
-        // caller (a tiled coordinator shares one pair). The standalone DownloadEntries() lazily
-        // allocates its OWN pair below, on first use — sized to the hash so the append can't overflow.
         mutable std::unique_ptr<Engine::Core::Buffer> m_compactBuffer;
         mutable std::unique_ptr<Engine::Core::Buffer> m_compactCountBuffer;
-        std::unique_ptr<Engine::Core::ComputePipeline> m_compactKernel;
+
+        std::unique_ptr<Engine::Core::ComputePipeline> kernel_integratePoints;
+        std::unique_ptr<Engine::Core::ComputePipeline> kernel_clearVoxel;
+        std::unique_ptr<Engine::Core::ComputePipeline> kernel_rehashTable;
+        std::unique_ptr<Engine::Core::ComputePipeline> kernel_compactTable;
     };
 
 } // namespace Engine::Spatial

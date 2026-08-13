@@ -223,6 +223,7 @@ bool writeCandidate(vec3 position, vec3 normal)
 /// *********************************************
 void main()
 {
+	// tiles are sorted previously
 	uint entryIndex = gl_GlobalInvocationID.x;
 	if (entryIndex >= g_hashCapacity) return;
 

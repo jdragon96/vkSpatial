@@ -17,14 +17,11 @@ namespace Engine::Pipeline {
     void RegistrationThread::Interrupt() { m_comm.capturedFrames.Close(); } // wake a blocked Pop
 
     void RegistrationThread::Run() {
-        // Constant-velocity motion model: predict the NEXT prior as the previous pose advanced by the
-        // same delta that got from previousPreviousPose to previousPose, instead of just re-handing the
-        // tracker the previous pose unchanged. Requires two valid poses in a row (haveTwoPoses); after
-        // any invalid track, reset so a stale/wrong velocity estimate isn't carried into future frames.
         Eigen::Isometry3f previousPose = Eigen::Isometry3f::Identity();
         Eigen::Isometry3f previousPreviousPose = Eigen::Isometry3f::Identity();
         bool haveTwoPoses = false;
         Frame f;
+
         while (!StopRequested() && m_comm.capturedFrames.Pop(f)) {
             const std::shared_ptr<const ModelSnapshot> model = m_comm.model.Latest();
             const Eigen::Isometry3f prior =
@@ -42,7 +39,7 @@ namespace Engine::Pipeline {
                 haveTwoPoses = true;
                 m_trackerRmse.Add(a.rmse);
             } else {
-                haveTwoPoses = false; // stale velocity after a dropped track
+                haveTwoPoses = false;
             }
 
             TrackedFrame tf;

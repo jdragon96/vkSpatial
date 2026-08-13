@@ -91,11 +91,11 @@ namespace Engine::Core {
         m_mapped = info.pMappedData;
         m_size = bytes;
     }
-    void Buffer::FlushMapped(uint32_t bytes) const {
+    void Buffer::MakeVisibleToGPU(uint32_t bytes) const {
         if (m_allocation != VK_NULL_HANDLE)
             vmaFlushAllocation(m_context.allocator, m_allocation, 0, bytes);
     }
-    void Buffer::InvalidateMapped(uint32_t bytes) const {
+    void Buffer::MakeVisibleToCPU(uint32_t bytes) const {
         if (m_allocation != VK_NULL_HANDLE)
             vmaInvalidateAllocation(m_context.allocator, m_allocation, 0, bytes);
     }

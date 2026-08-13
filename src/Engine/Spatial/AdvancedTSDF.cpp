@@ -102,37 +102,25 @@ namespace Engine::Spatial {
         m_hashBuffer->Allocate(hashCapacity * sizeof(AdvDirEntry));
         m_pointBuffer->AllocateHostVisible(maxPoints * 3u * sizeof(float));
         m_normalBuffer->AllocateHostVisible(maxPoints * 3u * sizeof(float));
-        // Host-visible so the fill count (written by the integrate shader's atomicAdd) can be read each
-        // frame with a mapped read -- no staging/submit -- to drive auto-grow. Same pattern as the
-        // compaction count buffer. On this UMA device shader atomics on host-visible memory are coherent.
         m_statBuffer->AllocateHostVisibleReadback(sizeof(uint32_t));
-        m_firstFrameBuffer->Allocate(hashCapacity * sizeof(int32_t)); // per-slot first-fill frame
+        m_firstFrameBuffer->Allocate(hashCapacity * sizeof(int32_t));
 
-        m_kernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_kernel->Build("advanced_tsdf_integrate.comp.glsl")
+        kernel_integratePoints = std::make_unique<Engine::Core::ComputePipeline>(ctx);
+        kernel_integratePoints->Build("advanced_tsdf_integrate.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, *m_pointBuffer)
                 .Bind(2, *m_normalBuffer)
                 .Bind(3, *m_statBuffer)
                 .Bind(4, *m_firstFrameBuffer);
 
-        // Compaction pass for DownloadEntries/CompactInto (built once, re-dispatched per download).
-        // The (out, count) scratch is NOT allocated here: CompactInto() binds caller-provided scratch,
-        // and standalone DownloadEntries() lazily allocates its own the first time it runs. This keeps
-        // per-tile compaction memory off the GPU until a download actually needs it. The per-slot
-        // first-fill buffer (binding 3) is bound here since it's owned by this tile.
-        m_compactKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_compactKernel->Build("advanced_tsdf_compact.comp.glsl").Bind(3, *m_firstFrameBuffer);
+        kernel_compactTable = std::make_unique<Engine::Core::ComputePipeline>(ctx);
+        kernel_compactTable->Build("advanced_tsdf_compact.comp.glsl").Bind(3, *m_firstFrameBuffer);
 
-        // Clear kernel: empties the hash on the GPU (one thread per slot). Replaces a per-tile 24 MB
-        // host upload of EMPTY -- the dominant tile-creation cost -- with a ~0.1 ms compute dispatch.
-        m_clearKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_clearKernel->Build("advanced_tsdf_clear.comp.glsl").Bind(0, *m_hashBuffer);
+        kernel_clearVoxel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
+        kernel_clearVoxel->Build("advanced_tsdf_clear.comp.glsl").Bind(0, *m_hashBuffer);
 
-        // Rehash kernel: re-inserts occupied slots into a larger hash on auto-grow (buffers are bound
-        // per-grow, since the old/new handles change each time). Compiled once here.
-        m_rehashKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_rehashKernel->Build("advanced_tsdf_rehash.comp.glsl");
+        kernel_rehashTable = std::make_unique<Engine::Core::ComputePipeline>(ctx);
+        kernel_rehashTable->Build("advanced_tsdf_rehash.comp.glsl");
 
         Reset();
     }
@@ -144,10 +132,10 @@ namespace Engine::Spatial {
         struct ClearPC {
             uint32_t hashCapacity;
         };
-        m_clearKernel->Args(ClearPC{m_hashCapacity});
-        m_clearKernel->DispatchElements(m_hashCapacity); // synchronous
+        kernel_clearVoxel->Args(ClearPC{m_hashCapacity});
+        kernel_clearVoxel->DispatchElements(m_hashCapacity);     // synchronous
         *static_cast<uint32_t *>(m_statBuffer->MappedPtr()) = 0; // host-visible fill count
-        m_statBuffer->FlushMapped(sizeof(uint32_t));
+        m_statBuffer->MakeVisibleToGPU(sizeof(uint32_t));
         // firstFrame is stamped on each slot's first fill, so empty slots' stale values never surface
         // (compaction only reads occupied slots) -- no explicit clear needed.
     }
@@ -166,12 +154,11 @@ namespace Engine::Spatial {
                                        const Eigen::Vector3f &cameraPos,
                                        Engine::Compute::CommandBatch &batch) {
         if (points.empty()) return;
-        // Clamp to the Build-time capacity: excess points are dropped (see IntegrateGPU for the
-        // grow-instead-of-clamp real-time path).
         const uint32_t N = std::min({static_cast<uint32_t>(points.size()),
-                                     static_cast<uint32_t>(normals.size()), m_maxPoints});
+                                     static_cast<uint32_t>(normals.size()),
+                                     m_maxPoints});
         if (N == 0) return;
-        maybeGrow(); // keep the hash load bounded (constant integrate cost) before recording this frame
+        maybeGrow();
         recordUpload(points, normals, cameraPos, N, batch);
     }
 
@@ -205,7 +192,7 @@ namespace Engine::Spatial {
         const uint32_t grown = n + n / 2u;
         m_pointBuffer->AllocateHostVisible(grown * 3u * sizeof(float));
         m_normalBuffer->AllocateHostVisible(grown * 3u * sizeof(float));
-        m_kernel->Bind(1, *m_pointBuffer).Bind(2, *m_normalBuffer);
+        kernel_integratePoints->Bind(1, *m_pointBuffer).Bind(2, *m_normalBuffer);
         m_maxPoints = grown;
     }
 
@@ -217,11 +204,11 @@ namespace Engine::Spatial {
         // no submit) — the dispatch is recorded into the caller's batch, not self-submitted.
         std::memcpy(m_pointBuffer->MappedPtr(), points.data(), n * 3u * sizeof(float));
         std::memcpy(m_normalBuffer->MappedPtr(), normals.data(), n * 3u * sizeof(float));
-        m_pointBuffer->FlushMapped(n * 3u * sizeof(float));
-        m_normalBuffer->FlushMapped(n * 3u * sizeof(float));
+        m_pointBuffer->MakeVisibleToGPU(n * 3u * sizeof(float));
+        m_normalBuffer->MakeVisibleToGPU(n * 3u * sizeof(float));
 
         // Bind this tile's OWN buffers (a prior RecordIntegrateShared may have left the shared ones).
-        m_kernel->Bind(1, *m_pointBuffer).Bind(2, *m_normalBuffer);
+        kernel_integratePoints->Bind(1, *m_pointBuffer).Bind(2, *m_normalBuffer);
         IntegratePC pc{
                 n, m_hashCapacity, m_voxelSize, m_truncation,
                 cameraPos.x(), cameraPos.y(), cameraPos.z(),
@@ -229,52 +216,54 @@ namespace Engine::Spatial {
                 m_quality.viewAngleWeight ? 1u : 0u,
                 m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z(),
                 uint32_t(m_pointToPlane ? 1u : 0u), m_confWeight, m_currentFrame};
-        m_kernel->Args(pc);
-        batch.DispatchElements(*m_kernel, n);
+        kernel_integratePoints->Args(pc);
+        batch.DispatchElements(*kernel_integratePoints, n);
     }
 
-    void AdvancedTSDF::RecordIntegrateShared(Engine::Core::Buffer &points, Engine::Core::Buffer &normals,
-                                             uint32_t n, const Eigen::Vector3f &cameraPos,
+    void AdvancedTSDF::RecordIntegrateShared(Engine::Core::Buffer &points,
+                                             Engine::Core::Buffer &normals,
+                                             uint32_t n,
+                                             const Eigen::Vector3f &cameraPos,
                                              Engine::Compute::CommandBatch &batch) {
         if (n == 0 || !m_ctx) return;
-        maybeGrow(); // bound the hash load (constant integrate cost) before recording this frame
-        // Integrate from a SHARED whole-cloud buffer (uploaded once by the tiled coordinator, not
-        // copied per tile). The shader's window filter keeps only the points inside THIS tile's window,
-        // so the CPU never routes/copies points -- it just dispatches every tile over the same cloud.
-        m_kernel->Bind(1, points).Bind(2, normals);
+        maybeGrow();
+        kernel_integratePoints->Bind(1, points).Bind(2, normals);
         IntegratePC pc{
-                n, m_hashCapacity, m_voxelSize, m_truncation,
-                cameraPos.x(), cameraPos.y(), cameraPos.z(),
-                m_quality.maxDirections, m_quality.dirExponent,
+                n,
+                m_hashCapacity,
+                m_voxelSize,
+                m_truncation,
+                cameraPos.x(),
+                cameraPos.y(),
+                cameraPos.z(),
+                m_quality.maxDirections,
+                m_quality.dirExponent,
                 m_quality.viewAngleWeight ? 1u : 0u,
-                m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z(),
-                uint32_t(m_pointToPlane ? 1u : 0u), m_confWeight, m_currentFrame};
-        m_kernel->Args(pc);
-        batch.DispatchElements(*m_kernel, n);
+                m_originVoxel.x(),
+                m_originVoxel.y(),
+                m_originVoxel.z(),
+                uint32_t(m_pointToPlane ? 1u : 0u),
+                m_confWeight,
+                m_currentFrame};
+        kernel_integratePoints->Args(pc);
+        batch.DispatchElements(*kernel_integratePoints, n);
     }
 
     uint32_t AdvancedTSDF::FilledCount() const {
-        m_statBuffer->InvalidateMapped(sizeof(uint32_t));
+        m_statBuffer->MakeVisibleToCPU(sizeof(uint32_t));
         return *static_cast<const uint32_t *>(m_statBuffer->MappedPtr());
     }
 
-    // Bound the hash load factor so probe chains -- and thus per-frame integrate cost -- stay ~constant
-    // as the map accumulates, and so no insert overflows MAX_PROBE (which silently drops a voxel). Read
-    // the GPU fill count; if the table is at least half full, double it and rehash. Only tiles that fill
-    // grow, so total memory tracks real occupancy.
     void AdvancedTSDF::maybeGrow() {
         if (!m_hashBuffer || m_hashCapacity == 0) return;
         const uint32_t filled = FilledCount();
-        if (uint64_t(filled) * 2u < m_hashCapacity) return; // load < 0.5 -> probe chains still short
+        if (uint64_t(filled) * 2u < m_hashCapacity) return;
         growHash(m_hashCapacity * 2u);
     }
 
     void AdvancedTSDF::growHash(uint32_t newCapacity) {
         if (newCapacity <= m_hashCapacity) return;
 
-        // Allocate the larger hash + parallel first-fill buffer, empty the new hash (findOrInsert needs
-        // EMPTY slots), then GPU-rehash every occupied old slot into it. Both dispatches self-submit
-        // synchronously -- a rare, one-off cost paid only on the frame a tile crosses the load threshold.
         auto newHash = std::make_unique<Engine::Core::Buffer>(*m_ctx);
         auto newFirst = std::make_unique<Engine::Core::Buffer>(*m_ctx);
         newHash->Allocate(newCapacity * sizeof(AdvDirEntry));
@@ -283,78 +272,81 @@ namespace Engine::Spatial {
         struct ClearPC {
             uint32_t hashCapacity;
         };
-        m_clearKernel->Bind(0, *newHash).Args(ClearPC{newCapacity});
-        m_clearKernel->DispatchElements(newCapacity); // synchronous: clear before rehash reads it
+        kernel_clearVoxel->Bind(0, *newHash).Args(ClearPC{newCapacity});
+        kernel_clearVoxel->DispatchElements(newCapacity); // synchronous: clear before rehash reads it
 
         struct RehashPC {
             uint32_t oldCapacity;
             uint32_t newCapacity;
         };
-        m_rehashKernel->Bind(0, *m_hashBuffer)
+        kernel_rehashTable->Bind(0, *m_hashBuffer)
                 .Bind(1, *m_firstFrameBuffer)
                 .Bind(2, *newHash)
                 .Bind(3, *newFirst)
                 .Args(RehashPC{m_hashCapacity, newCapacity});
-        m_rehashKernel->DispatchElements(m_hashCapacity); // synchronous
+        kernel_rehashTable->DispatchElements(m_hashCapacity); // synchronous
 
-        // Swap in the grown buffers and re-point every kernel that reads the hash / first-fill table.
-        // The fill count is unchanged (a rehash moves entries, it does not add or drop any).
         m_hashBuffer = std::move(newHash);
         m_firstFrameBuffer = std::move(newFirst);
         m_hashCapacity = newCapacity;
-        m_kernel->Bind(0, *m_hashBuffer).Bind(4, *m_firstFrameBuffer);
-        m_compactKernel->Bind(3, *m_firstFrameBuffer);
-        m_clearKernel->Bind(0, *m_hashBuffer);
+        kernel_integratePoints->Bind(0, *m_hashBuffer).Bind(4, *m_firstFrameBuffer);
+        kernel_compactTable->Bind(3, *m_firstFrameBuffer);
+        kernel_clearVoxel->Bind(0, *m_hashBuffer);
         m_compactBuffer.reset(); // standalone-download scratch was hash-sized -> re-alloc on next use
         m_compactCountBuffer.reset();
     }
 
-    void AdvancedTSDF::RecordCompact(Engine::Core::Buffer &out, Engine::Core::Buffer &count,
+    void AdvancedTSDF::RecordCompact(Engine::Core::Buffer &out,
+                                     Engine::Core::Buffer &count,
                                      Engine::Compute::CommandBatch &batch,
                                      const Eigen::Vector3i &coreMinWorld,
                                      const Eigen::Vector3i &coreMaxWorld) const {
         if (!m_ctx) return;
-        // `out` holds decoded AdvancedEntry records; its capacity caps the append (overflow is reported
-        // back via `count`, which the caller reads to grow + redo). Core bounds arrive in world voxel
-        // coords; the kernel filters in LOCAL coords, so shift by this tile's origin.
         const uint32_t capacity = static_cast<uint32_t>(out.Size() / sizeof(AdvancedEntry));
         const Eigen::Vector3i lo = coreMinWorld - m_originVoxel;
         const Eigen::Vector3i hi = coreMaxWorld - m_originVoxel;
 
-        m_compactKernel->Bind(0, *m_hashBuffer).Bind(1, out).Bind(2, count);
-        m_compactKernel->Args(CompactPC{m_hashCapacity, capacity, m_voxelSize,
-                                        m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z(),
-                                        lo.x(), lo.y(), lo.z(), hi.x(), hi.y(), hi.z()});
-        batch.DispatchElements(*m_compactKernel, m_hashCapacity); // recorded; caller submits once
+        kernel_compactTable->Bind(0, *m_hashBuffer).Bind(1, out).Bind(2, count);
+        kernel_compactTable->Args(CompactPC{m_hashCapacity,
+                                            capacity,
+                                            m_voxelSize,
+                                            m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z(),
+                                            lo.x(), lo.y(), lo.z(),
+                                            hi.x(), hi.y(), hi.z()});
+        batch.DispatchElements(*kernel_compactTable, m_hashCapacity);
     }
 
     std::vector<AdvancedEntry> AdvancedTSDF::DownloadEntries() const {
         if (!m_ctx) return {};
-        // Standalone download: lazily allocate this tile's OWN scratch (hash-sized in AdvancedEntry
-        // units, so the append can never overflow) and compact the WHOLE window (no core cropping) in
-        // one self-submitted batch. A tiled coordinator instead shares one buffer across all tiles and
-        // gives each its own core via RecordCompact -- one submit for the whole map.
         if (!m_compactBuffer) {
             m_compactBuffer = std::make_unique<Engine::Core::Buffer>(*m_ctx);
             m_compactCountBuffer = std::make_unique<Engine::Core::Buffer>(*m_ctx);
             m_compactBuffer->AllocateHostVisibleReadback(m_hashCapacity * sizeof(AdvancedEntry));
             m_compactCountBuffer->AllocateHostVisibleReadback(sizeof(uint32_t));
         }
+
+        // 1. 채워진 복샐 개수 초기화
         auto *countPtr = static_cast<uint32_t *>(m_compactCountBuffer->MappedPtr());
         *countPtr = 0;
-        m_compactCountBuffer->FlushMapped(sizeof(uint32_t));
+        m_compactCountBuffer->MakeVisibleToGPU(sizeof(uint32_t));
 
+        // 2. 복셀 압축
         Engine::Compute::CommandBatch batch(*m_ctx);
         const Eigen::Vector3i whole = Eigen::Vector3i::Constant(512); // append the full 512^3 window
-        RecordCompact(*m_compactBuffer, *m_compactCountBuffer, batch, m_originVoxel,
-                      m_originVoxel + whole);
+        RecordCompact(
+                *m_compactBuffer,
+                *m_compactCountBuffer,
+                batch,
+                m_originVoxel,
+                m_originVoxel + whole);
         batch.Submit();
 
-        m_compactCountBuffer->InvalidateMapped(sizeof(uint32_t));
+        // 3. Copy
+        m_compactCountBuffer->MakeVisibleToCPU(sizeof(uint32_t));
         const uint32_t n = std::min(*countPtr, m_hashCapacity); // out is hash-sized -> never truncates
         std::vector<AdvancedEntry> result(n);
         if (n > 0) {
-            m_compactBuffer->InvalidateMapped(n * sizeof(AdvancedEntry));
+            m_compactBuffer->MakeVisibleToCPU(n * sizeof(AdvancedEntry));
             std::memcpy(result.data(), m_compactBuffer->MappedPtr(), n * sizeof(AdvancedEntry));
         }
         return result;

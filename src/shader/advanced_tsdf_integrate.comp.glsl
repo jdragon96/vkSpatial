@@ -133,7 +133,8 @@ int selectDirections(
 
 	// Descending insertion sort by alignment.
 	for (int i = 1; i < 3; i++) {
-		float a = align[i]; uint ax = axis[i];
+		float a = align[i]; 
+		uint ax = axis[i];
 		int j = i - 1;
 		while (j >= 0 && align[j] < a)
 		{
@@ -141,7 +142,8 @@ int selectDirections(
 			axis[j + 1] = axis[j];
 			j--;
 		}
-		align[j + 1] = a; axis[j + 1] = ax;
+		align[j + 1] = a; 
+		axis[j + 1] = ax;
 	}
 
 	// The strongest axis is always kept, at relative weight 1.
@@ -174,7 +176,7 @@ void Integrate(
 	vec3 rayDirection,
 	float depth,
 	float voxelSize,
-	float truncateFactor,
+	float truncateDistance,
 	float viewReliabilityFactor)
 {
 	// 1. Select the dominant direction layers for this surface normal.
@@ -186,8 +188,9 @@ void Integrate(
 		reliability);
 
 	// 2. March the truncation band along the ray and integrate each voxel.
+	// truncateDistance == acceptable band width
 	bool usePointToPlane = (g_pointToPlane != 0u);
-	int  steps = int(ceil(truncateFactor / voxelSize)) + 1;
+	int  steps = int(ceil(truncateDistance / voxelSize)) + 1;
 	for (int t = -steps; t <= steps; t++) {
 
 		// 2.1. Signed distance from this voxel centre to the surface.
@@ -199,8 +202,8 @@ void Integrate(
 		float voxel2point = usePointToPlane
 			? dot(voxelCenter - point, unitNormal)
 			: depth - dot(voxelCenter - camera, rayDirection);
-		if (abs(voxel2point) > truncateFactor) continue;
-		float tsdf = clamp(voxel2point / truncateFactor, -1.0, 1.0);
+		if (abs(voxel2point) > truncateDistance) continue;
+		float tsdf = clamp(voxel2point / truncateDistance, -1.0, 1.0);
 
 		// A1: surface-proximity confidence — down-weight band voxels far from the surface
 		//     (|tsdf|→1) relative to near-surface ones (|tsdf|→0). lambda=0 disables it.
@@ -236,10 +239,9 @@ void main()
 		g_points[gid * 3u + 1u],
 		g_points[gid * 3u + 2u]);
 
-	// Window filter: only integrate points whose voxel lies in THIS tile's 512^3 window (ghost margin
-	// included -- their band still reaches the core). For per-subset uploads every point is already
-	// in-window (a no-op); for a SHARED whole-cloud upload this is what routes points to tiles on the
-	// GPU (each tile dispatches over the full cloud and keeps only its own), replacing the CPU route.
+	// Windowing filter
+	// - 포인트들이 해당 TSDF(Window)에 속하는지 검사한다.
+	// point to window coordinates
 	ivec3 localVoxel = ivec3(floor(point / g_voxelSize)) - ivec3(g_originX, g_originY, g_originZ);
 	if (localVoxel.x < 0 || localVoxel.x > 511 ||
 		localVoxel.y < 0 || localVoxel.y > 511 ||
@@ -251,8 +253,6 @@ void main()
 		g_normals[gid * 3u + 2u]);
 	vec3 camera = vec3(g_camX, g_camY, g_camZ);
 
-	// Degenerate normal → the point carries no orientation; skip it (also guards
-	// normalize() and the point-to-plane distance against a zero-length normal).
 	float normalLength = length(normal);
 	if (normalLength < 1e-6) return;
 	vec3 unitNormal = normal / normalLength;

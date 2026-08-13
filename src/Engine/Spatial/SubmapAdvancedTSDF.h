@@ -71,11 +71,15 @@ namespace Engine::Spatial {
         void Integrate(const std::vector<Eigen::Vector3f> &pts,
                        const std::vector<Eigen::Vector3f> &nrm,
                        const Eigen::Vector3f &cam = Eigen::Vector3f::Zero()) {
-            updateDensity(pts); // online: learn dense blocks from this frame BEFORE splitting the cloud
+
+            // online: learn dense blocks from this frame BEFORE splitting the cloud
+            updateDensity(pts);
             std::vector<Eigen::Vector3f> dsP, dsN;
 
             // 1. Downsample points
-            if (m_downsample) voxelDownsample(pts, nrm, m_baseVoxel * 0.5f, dsP, dsN);
+            if (m_downsample) {
+                voxelDownsample(pts, nrm, m_baseVoxel * 0.5f, dsP, dsN);
+            }
             const std::vector<Eigen::Vector3f> &p = m_downsample ? dsP : pts;
             const std::vector<Eigen::Vector3f> &n = m_downsample ? dsN : nrm;
             if (std::min(p.size(), n.size()) == 0) return;
@@ -83,8 +87,15 @@ namespace Engine::Spatial {
             std::vector<Eigen::Vector3f> basePts, baseNrm, detailPts, detailNrm;
 
             // 2. Split the cloud per level (base = non-dense + seam blocks, detail = dense blocks)
-            if (!SplitPointDenseOrDetail(p, n, basePts, baseNrm, detailPts, detailNrm)) {
-                m_base.Integrate(p, n, cam, batch); // no detail level -> whole cloud to base
+            if (!SplitPointDenseOrDetail(
+                        p,
+                        n,
+                        basePts,
+                        baseNrm,
+                        detailPts,
+                        detailNrm)) {
+                // no detail level -> whole cloud to base
+                m_base.Integrate(p, n, cam, batch);
             } else {
                 if (!basePts.empty()) m_base.Integrate(basePts, baseNrm, cam, batch);
                 if (!detailPts.empty()) m_detail.Integrate(detailPts, detailNrm, cam, batch);
@@ -157,8 +168,6 @@ namespace Engine::Spatial {
         void Reset() {
             m_base.Reset();
             m_detail.Reset();
-            // Online density is learned from the stream, so a replay-from-frame-0 re-learns it: clear
-            // the accumulators + the dense set (unlike the old pre-scan, which kept a fixed dense set).
             m_count.clear();
             m_occ.clear();
             m_dense.clear();
@@ -202,13 +211,6 @@ namespace Engine::Spatial {
         static constexpr std::size_t kParallelDedupMin = 1u << 15; // below this, filter serially
         static constexpr unsigned kMaxDedupThreads = 8u;           // cap workers for the base dedup
 
-        // Append every base entry whose block is NOT dense (detail already covers dense blocks) onto
-        // `out`. This is O(base voxels) with a dense-set hash probe + block computation per entry, and
-        // at scale (~1.1M base voxels) it was the dominant download cost. So it is PARALLELISED with the
-        // codebase's privatisation pattern (cf. touchedTiles): each worker filters a contiguous chunk
-        // into its OWN local buffer -- no shared writes, no locks -- then the locals are concatenated
-        // onto `out`. Entry order is irrelevant (an unordered occupied-voxel set). Small models run
-        // serially (thread setup would dominate).
         void appendBaseOutsideDenseBlocks(std::vector<AdvancedEntry> &out) const {
             const std::size_t n = m_baseScratch.size();
             if (n == 0) return;
@@ -326,8 +328,10 @@ namespace Engine::Spatial {
         float m_baseVoxel = 0.01f;
         float m_blockWorld = 0.32f;
         float m_detailK = 4.0f;
-        bool m_downsample = false;                        // off by default; the pipeline/debugger opt in via SetDownsample
-        mutable std::vector<AdvancedEntry> m_baseScratch; // reused base readback (dense-path download)
+        // off by default; the pipeline/debugger opt in via SetDownsample
+        bool m_downsample = false;
+        // reused base readback (dense-path download)
+        mutable std::vector<AdvancedEntry> m_baseScratch;
         TiledAdvancedTSDF m_base;
         TiledAdvancedTSDF m_detail;
         std::unordered_map<BlockKey, uint32_t, BlockKeyHash> m_count;
