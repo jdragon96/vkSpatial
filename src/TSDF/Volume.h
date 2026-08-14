@@ -125,6 +125,11 @@ namespace TSDF {
         // so a per-frame caller keeps one buffer alive. Non-directional volumes report direction 0.
         virtual void Download(std::vector<TSDF::AdvancedEntry> &out) const = 0;
 
+        // Surface point candidates with normals, extracted on the GPU. `merge` collapses
+        // near-duplicate candidates within a voxel. This is the form an evaluator compares against
+        // ground truth; Download is the raw slot dump.
+        virtual Engine::Core::OrientedPointCloud Extract(bool merge = true) const = 0;
+
         // Occupancy and health counters for the state as of the last completed integration.
         virtual VolumeStats Stats() const = 0;
 

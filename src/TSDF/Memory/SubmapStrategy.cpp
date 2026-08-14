@@ -51,6 +51,11 @@ namespace TSDF {
         m_tsdf.DownloadEntries(out);
     }
 
+    Engine::Core::OrientedPointCloud SubmapStrategy::Extract(bool merge) const {
+        if (m_context == nullptr) return {};
+        return m_tsdf.ExtractPointCloud(merge);
+    }
+
     VolumeStats SubmapStrategy::Stats() const {
         VolumeStats stats;
         if (m_context == nullptr) return stats;

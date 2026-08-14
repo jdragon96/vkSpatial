@@ -21,6 +21,8 @@ namespace TSDF {
 
         void Download(std::vector<TSDF::AdvancedEntry> &out) const override;
 
+        Engine::Core::OrientedPointCloud Extract(bool merge = true) const override;
+
         VolumeStats Stats() const override;
         const char *Name() const override { return "flat"; }
         Engine::Core::Context *Device() const override { return m_context; }

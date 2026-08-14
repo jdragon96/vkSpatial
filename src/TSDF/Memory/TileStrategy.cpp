@@ -49,6 +49,11 @@ namespace TSDF {
         m_tsdf.DownloadEntries(out);
     }
 
+    Engine::Core::OrientedPointCloud TileStrategy::Extract(bool merge) const {
+        if (m_context == nullptr) return {};
+        return m_tsdf.ExtractPointCloud(merge);
+    }
+
     VolumeStats TileStrategy::Stats() const {
         VolumeStats stats;
         if (m_context == nullptr) return stats;

@@ -56,6 +56,25 @@ namespace {
                 normals.emplace_back(0.0f, 0.0f, 1.0f);
             }
     }
+
+    // The origin sits exactly on a TileStrategy tile boundary (confirmed by
+    // TsdfVolumeSwitching.EveryStrategyIntegratesTheSameScan's tableCount == 8 for the same-shaped
+    // MakePlane fixture in test_tsdf_volume.cpp), so SeventeenBySeventeenPlane -- centered on the
+    // origin -- gets split across up to 8 tiles under TileStrategy, diluting every tile's occupancy
+    // far below a 2048-slot growth threshold. This is the same plane translated well clear of the
+    // origin (offset validated tile-safe by test_tsdf_volume.cpp's MakeDenseSingleTilePlane, which
+    // places points from 1.0 to 10.15 in one tile) so every point routes to ONE tile, giving that
+    // tile the same ~1045-entry concentration BucketedGrowsLaterThanLinear relies on for
+    // FlatStrategy's single window.
+    void SeventeenBySeventeenPlaneInOneTile(std::vector<Eigen::Vector3f> &points,
+                                            std::vector<Eigen::Vector3f> &normals) {
+        constexpr float kOffset = 2.0f;
+        for (int i = -8; i <= 8; ++i)
+            for (int j = -8; j <= 8; ++j) {
+                points.emplace_back(kOffset + float(i) * 0.0375f, kOffset + float(j) * 0.0375f, 0.0f);
+                normals.emplace_back(0.0f, 0.0f, 1.0f);
+            }
+    }
 } // namespace
 
 TEST(TsdfHashCounters, NormalIntegrationDropsNothing) {
@@ -333,5 +352,91 @@ TEST(TsdfHashStrategy, TileAndSubmapBuildAndRunWithBucketed) {
         const TSDF::VolumeStats stats = strategy.Stats();
         EXPECT_GT(stats.occupiedEntryCount, 0u);
         EXPECT_EQ(stats.insertFailureCount, 0u);
+    }
+}
+
+// Ruling 6 (controller, task 6): TileAndSubmapBuildAndRunWithBucketed above only asserts
+// occupiedEntryCount > 0 and insertFailureCount == 0 -- both true whether the tile's own
+// AdvancedTSDF::Build actually received the bucketed strategy or silently fell back to linear,
+// because its hashCapacity (1<<16) is nowhere near either threshold. This test discriminates the
+// same way BucketedGrowsLaterThanLinear does for FlatStrategy: force a grow at a small capacity and
+// assert bucketed's slot count stays strictly below linear's. If TiledDirectionalTSDF::GetTSDF's
+// HasHashStrategyBuild dispatch ever silently drops the strategy for the tile's Build call, both
+// grow to the same capacity and EXPECT_LT fails.
+//
+// Uses SeventeenBySeventeenPlaneInOneTile, not the plain SeventeenBySeventeenPlane: the plain
+// fixture straddles the origin tile boundary and splits across 8 tiles (see that helper's comment),
+// which dilutes every tile's occupancy so far below a 2048-slot threshold that NEITHER hash grows --
+// this was verified empirically (linear.growCount stayed 0). Concentrating the plane in one tile
+// restores the single-table growth semantics BucketedGrowsLaterThanLinear depends on, which is what
+// this test actually needs: proof that ONE tile's Build call was given the right strategy, not
+// anything about routing across tiles.
+TEST(TsdfHashStrategy, BucketedTileGrowsLaterThanLinear) {
+    std::vector<Eigen::Vector3f> points, normals;
+    SeventeenBySeventeenPlaneInOneTile(points, normals);
+
+    auto capacityAfter = [&](const char *hashName) {
+        Engine::Core::Context context;
+        TSDF::TileStrategy strategy;
+        TSDF::VolumeParams params;
+        params.voxelSize = 0.05f;
+        params.truncation = 0.15f;
+        params.hashCapacity = 1u << 11; // per-tile capacity, deliberately small -> forces a grow
+        params.hashStrategy = hashName;
+        strategy.Build(context, params);
+
+        {
+            Engine::Compute::CommandBatch batch(context);
+            strategy.Record(points, normals, Eigen::Vector3f(2.0f, 2.0f, 1.0f), batch);
+            batch.Submit();
+        }
+        {
+            Engine::Compute::CommandBatch batch(context);
+            strategy.Record(points, normals, Eigen::Vector3f(2.0f, 2.0f, 1.0f), batch);
+            batch.Submit();
+        }
+        return strategy.Stats();
+    };
+
+    const TSDF::VolumeStats linear = capacityAfter("linear");
+    const TSDF::VolumeStats bucketed = capacityAfter("bucketed");
+
+    EXPECT_GT(linear.growCount, 0u) << "이 픽스처는 성장을 강제해야 한다";
+    EXPECT_LT(bucketed.slotCapacity, linear.slotCapacity)
+            << "타일 경로도 실제로 버킷 임계값 0.8을 쓴다면 선형탐사(0.5)보다 늦게 자라야 한다 -- "
+               "같으면 타일이 조용히 선형으로 폴백한 것";
+    EXPECT_EQ(bucketed.insertFailureCount, 0u);
+    EXPECT_EQ(linear.insertFailureCount, 0u);
+}
+
+#include "TSDF/ComposedVolume.h"
+
+// Task 6's Step 1 fixture: every registered strategy must implement Extract and return a
+// non-empty, points/normals-parallel cloud for the same simple plane scan the other tests in this
+// file use.
+TEST(TsdfVolumeExtract, EveryStrategyExtractsAPointCloud) {
+    const TSDF::VolumeRegistry registry = TSDF::VolumeRegistry::Default();
+    std::vector<Eigen::Vector3f> points, normals;
+    for (int i = -8; i <= 8; ++i)
+        for (int j = -8; j <= 8; ++j) {
+            points.emplace_back(float(i) * 0.0375f, float(j) * 0.0375f, 0.0f);
+            normals.emplace_back(0.0f, 0.0f, 1.0f);
+        }
+
+    for (const std::string &name: registry.Names()) {
+        Engine::Core::Context context;
+        std::unique_ptr<TSDF::Volume> volume = registry.Create(name);
+        ASSERT_NE(volume, nullptr) << name;
+
+        TSDF::VolumeParams params;
+        params.voxelSize = 0.05f;
+        params.truncation = 0.15f;
+        params.hashCapacity = 1u << 16;
+        volume->Build(context, params);
+        volume->Integrate(points, normals, Eigen::Vector3f(0.0f, 0.0f, 1.0f));
+
+        const Engine::Core::OrientedPointCloud cloud = volume->Extract(/*merge=*/true);
+        EXPECT_GT(cloud.points.size(), 0u) << name;
+        EXPECT_EQ(cloud.points.size(), cloud.normals.size()) << name;
     }
 }

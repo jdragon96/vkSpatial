@@ -1,18 +1,18 @@
-// TSDF folder evaluator — read every frame_*.ply in a folder, integrate them into AdvancedTSDF,
-// extract the surface, and score it against ground_truth.ply (RMSE). Fully separate from
-// capture (object_scan_viewer) and headless.
+// TSDF folder evaluator — read every frame_*.ply in a folder, integrate them into a TSDF::Volume
+// (selected by --tsdf/--hash through TSDF::VolumeRegistry), extract the surface, and score it
+// against ground_truth.ply (RMSE). Fully separate from capture (object_scan_viewer) and headless.
 //
 //   ./tsdf_folder_eval --dir scans/bunny [--voxel v] [--trunc t] [--gt path.ply]
 //        [--out extracted.ply] [--no-p2p] [--conf lambda] [--hermite]
+//        [--tsdf flat|tile|submap] [--hash linear|bucketed]
 //
 // Per-frame camera position is ESTIMATED from each cloud (centroid + k·mean-normal), so this
 // works on any folder of oriented-point PLYs, not just object_scan_viewer output.
 
 #include "Engine/Core/Context.h"
-#include "TSDF/Backends/AdvancedTSDF.h"
-#include "TSDF/Backends/SubmapAdvancedTSDF.h"
 #include "Engine/Core/OrientedPointCloud.h"
-#include "TSDF/Backends/TiledAdvancedTSDF.h"
+#include "TSDF/Memory/Hash/HashStrategy.h"
+#include "TSDF/Volume.h"
 
 #include "utilities/ArgParser.h"
 #include "utilities/PointCloudIO.h"
@@ -136,8 +136,8 @@ int main(int argc, char **argv) {
                         .Option("--out")
                         .Option("--conf", 0.5)
                         .Option("--tile-hash", 1 << 21)
-                        .Option("--block", 32)
-                        .Option("--detail-k", 4.0);
+                        .Option("--tsdf", "flat")
+                        .Option("--hash", "linear");
         if (!arg) return 2;
         const std::string dir = arg.Value("--dir");
         if (!fs::is_directory(dir)) {
@@ -211,7 +211,6 @@ int main(int argc, char **argv) {
                          voxel, axisVox, minVoxel);
             return 3;
         }
-        const bool useTiled = axisVox > 512; // exceeds one window -> tile
         // Place the window's min corner a margin below the object; scale the hash to the expected
         // surface-shell entry count (bbox-surface proxy, x2 load headroom, clamped).
         const Vector3f windowMinCorner = bbMin - float(margin) * Vector3f::Constant(voxel);
@@ -236,56 +235,68 @@ int main(int argc, char **argv) {
                     axisVox, hashCap, maxPts, windowMinCorner.x(), windowMinCorner.y(),
                     windowMinCorner.z());
 
-        // Integrate + extract (single window if it fits, else tiled).
+        // Integrate + extract through the registry, so --tsdf/--hash pick the strategy without
+        // recompiling. This is the axis the whole plan exists to measure (Task 6).
         Engine::Core::Context ctx;
-        Engine::Core::OrientedPointCloud recon;
-        if (arg.Has("--submap")) {
-            const int blockVoxels = int(arg.ValueFloat("--block"));
-            const float detailK = arg.ValueFloat("--detail-k");
-            TSDF::SubmapAdvancedTSDF s;
-            // Detail is at half voxel -> ~4-8x more entries/tile than base; use the (larger)
-            // --tile-hash size for both levels so the detail hash doesn't overflow (holes).
-            s.Build(ctx, voxel, trunc, blockVoxels, detailK, tileHash, maxPts);
-            s.SetIntegrationQuality({3, 4, true});
-            s.SetPointToPlane(p2p);
-            s.SetConfidenceWeight(conf);
-            s.SetHermitePosition(hermite);
-            // Density is learned online inside Integrate (dense blocks flip as their observed density
-            // crosses the threshold), so there is no separate density pass -- one integrate pass.
-            for (const auto &fr: frames) s.Integrate(fr.pts, fr.nrm, fr.cam);
-            recon = s.ExtractPointCloud(/*merge=*/true);
-            std::printf("path      : SUBMAP (base %.4f + detail %.4f); dense blocks %u, base tiles "
-                        "%u, detail tiles %u\n",
-                        voxel, voxel * 0.5f, s.DenseBlockCount(), s.BaseTileCount(),
-                        s.DetailTileCount());
-        } else if (useTiled) {
-            std::printf("path      : TILED (scene exceeds one 512^3 window); per-tile hash %u "
-                        "(~%.0f MB/tile)\n",
-                        tileHash, double(tileHash) * 24.0 / 1e6);
-            TSDF::TiledAdvancedTSDF tiled;
-            tiled.Build(ctx, voxel, trunc, /*hashCapPerTile=*/tileHash, /*maxPtsPerFrame=*/maxPts);
-            tiled.SetIntegrationQuality({3, 4, true});
-            tiled.SetPointToPlane(p2p);
-            tiled.SetConfidenceWeight(conf);
-            tiled.SetHermitePosition(hermite);
-            for (const auto &fr: frames) tiled.Integrate(fr.pts, fr.nrm, fr.cam);
-            recon = tiled.ExtractPointCloud(/*merge=*/true);
-            std::printf("integrated: %zu frames → %u tiles, %u occupied entries (ghost-inflated)\n",
-                        frames.size(), tiled.TileCount(), tiled.FilledCount());
-        } else {
-            std::printf("path      : SINGLE 512^3 window\n");
-            TSDF::AdvancedTSDF tsdf;
-            tsdf.Build(ctx, voxel, trunc, hashCap, maxPts, windowMinCorner);
-            tsdf.SetIntegrationQuality({3, 4, true});
-            tsdf.SetPointToPlane(p2p);
-            tsdf.SetConfidenceWeight(conf);
-            tsdf.SetHermitePosition(hermite);
-            for (const auto &fr: frames) tsdf.Integrate(fr.pts, fr.nrm, fr.cam);
-            recon = tsdf.ExtractPointCloud(1u << 21, /*merge=*/true);
-            std::printf("integrated: %zu frames → %u occupied entries\n", frames.size(),
-                        tsdf.FilledCount());
+        const std::string tsdfName = arg.Value("--tsdf");
+        const std::string hashName = arg.Value("--hash");
+
+        const TSDF::VolumeRegistry registry = TSDF::VolumeRegistry::Default();
+        std::unique_ptr<TSDF::Volume> volume = registry.Create(tsdfName);
+        if (!volume) {
+            std::cerr << "unknown --tsdf: " << tsdfName << "\n";
+            return 2;
         }
+
+        // HashStrategyByName falls back to linear on an unknown name WITHOUT telling the caller --
+        // so --hash typo would otherwise silently run linear while the operator believes they asked
+        // for something else. Resolve it here and report if the fallback fired, so the comparison
+        // table below is labelled with what actually ran, not with what was typed.
+        const std::string resolvedHashName = TSDF::HashStrategyByName(hashName).name;
+        if (resolvedHashName != hashName)
+            std::fprintf(stderr, "warning: --hash %s is not a known strategy; falling back to %s\n",
+                         hashName.c_str(), resolvedHashName.c_str());
+
+        TSDF::VolumeParams params;
+        params.voxelSize = voxel;
+        params.truncation = trunc;
+        params.hashCapacity = arg.Has("--tile-hash") && tsdfName != "flat" ? tileHash : hashCap;
+        params.maxPointsPerFrame = maxPts;
+        params.hashStrategy = hashName;
+        if (tsdfName == "flat") params.windowMinCorner = windowMinCorner;
+        volume->Build(ctx, params);
+
+        TSDF::IntegrationOptions options;
+        options.pointToPlane = p2p;
+        options.confidenceWeight = conf;
+        options.hermitePosition = hermite;
+        options.quality = {3, 4, true};
+        volume->Configure(options);
+
+        for (const auto &fr: frames) volume->Integrate(fr.pts, fr.nrm, fr.cam);
+        Engine::Core::OrientedPointCloud recon = volume->Extract(/*merge=*/true);
         std::printf("extracted : %zu oriented points\n", recon.points.size());
+
+        // The comparison table this plan exists to produce: run twice with --tsdf/--hash held
+        // fixed except for one axis and diff tableMB. Labelled with the RESOLVED hash name (see
+        // above), not the raw --hash argument.
+        const TSDF::VolumeStats stats = volume->Stats();
+        std::printf("\n%-10s %-8s %10s %10s %7s %7s %9s %6s %6s\n",
+                    "hash", "tsdf", "occupied", "slots", "load", "tables", "tableMB",
+                    "drops", "grows");
+        std::printf("%-10s %-8s %10llu %10llu %7.3f %7u %9.1f %6llu %6u\n",
+                    resolvedHashName.c_str(), tsdfName.c_str(),
+                    (unsigned long long) stats.occupiedEntryCount,
+                    (unsigned long long) stats.slotCapacity,
+                    stats.LoadFactor(),
+                    stats.tableCount,
+                    double(stats.deviceMemoryBytes) / (1024.0 * 1024.0),
+                    (unsigned long long) stats.insertFailureCount,
+                    stats.growCount);
+        if (stats.insertFailureCount > 0)
+            std::printf("WARNING: %llu observations were dropped -- this hash's load factor limit "
+                        "is too high for this scene; the numbers above understate occupancy.\n",
+                        (unsigned long long) stats.insertFailureCount);
 
         // RMSE vs ground truth (accuracy: recon→GT, completeness: GT→recon).
         // std::vector<Vector3f> gtP, gtN;

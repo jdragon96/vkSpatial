@@ -39,6 +39,9 @@ namespace TSDF {
 
         virtual void Download(std::vector<TSDF::AdvancedEntry> &out) const = 0;
 
+        // Mirrors Volume::Extract; see its doc comment.
+        virtual Engine::Core::OrientedPointCloud Extract(bool merge = true) const = 0;
+
         virtual VolumeStats Stats() const = 0;
         virtual const char *Name() const = 0;
 

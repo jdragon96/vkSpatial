@@ -40,6 +40,10 @@ namespace TSDF {
             m_memory->Download(out);
         }
 
+        Engine::Core::OrientedPointCloud Extract(bool merge = true) const override {
+            return m_memory->Extract(merge);
+        }
+
         VolumeStats Stats() const override { return m_memory->Stats(); }
 
         // The registered name is the memory strategy's name while it is the only axis.

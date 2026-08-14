@@ -40,6 +40,11 @@ namespace TSDF {
         out = m_tsdf.DownloadEntries();
     }
 
+    Engine::Core::OrientedPointCloud FlatStrategy::Extract(bool merge) const {
+        if (m_context == nullptr) return {};
+        return m_tsdf.ExtractPointCloud(1u << 21, merge);
+    }
+
     VolumeStats FlatStrategy::Stats() const {
         VolumeStats stats;
         if (m_context == nullptr) return stats; // FilledCount would dereference an unbuilt buffer
