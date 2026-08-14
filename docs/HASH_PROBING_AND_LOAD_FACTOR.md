@@ -236,3 +236,40 @@ MrHash. 충돌은 Nießner식 offset 필드(`o_j ∈ N`)로 처리하며, 탐사
 - O. Kähler et al., [*InfiniTAM v3: A Framework for Large-Scale 3D Reconstruction with Loop Closure*](https://arxiv.org/pdf/1708.00783), 2017
 - [*Mesh-LOAM: Real-time Mesh-Based LiDAR Odometry and Mapping*](https://arxiv.org/pdf/2312.15630), 2023
 - De Rebotti et al., [*Resolution Where It Counts: Hash-based GPU-Accelerated 3D Reconstruction via Variance-Adaptive Voxel Grids*](https://arxiv.org/html/2511.21459), TOG 2025
+
+---
+
+## 8. 실측 결과 (2026-08-15)
+
+§5에서 "고밀도가 필요하면 bucketed 구조로 전환"이라고 적었던 그 가설을 실제로 재봤다.
+`AdvancedTSDF`의 해시 주소 지정을 교체 가능하게 만들고(`--hash linear|bucketed`), 실제 dragon
+스캔(4079 타일, voxel 0.01, 타일당 평균 점유 2731)을 두 방식으로 돌렸다.
+
+| `--tile-hash` | linear | bucketed | 전체 비 | 성장이 결정한 부분만 | 드롭 (lin / buck) |
+|---|---|---|---|---|---|
+| 65536 (24× 과다) | 7138.2 MB | 7138.2 MB | **1.00×** | 성장 자체가 없음 | 0 / 0 |
+| 8192 (적정) | 1144.3 MB | 955.7 MB | 1.20× | 3.97× | 0 / 739 |
+| 1024 (과소) | 844.9 MB | 525.8 MB | 1.61× | 1.77× | 5,827 / 60,444 |
+
+### 답: 이 워크로드에서 메모리는 load factor가 아니라 **타일 개수**가 지배한다
+
+- **과다 할당 구간에서 두 방식은 완전히 동일하다.** 테이블이 자랄 일이 없으니 주소 지정이
+  개입할 여지가 없다. 이 구간의 올바른 처방은 해시 교체가 아니라 **타일당 초기 용량 축소**다 —
+  65536 → 8192로 줄이자 7138 MB가 1144 MB로 떨어졌고, 이는 해시 변형이 준 20%보다 훨씬 크다.
+- **§1의 1.6~1.8× 예측이 나타나는 건 `--tile-hash 1024`뿐인데, 그 설정은 쓸 수 없다.**
+  두 방식 모두 복셀을 버리고, bucketed가 linear보다 **10.4배 더** 버린다. 즉 그 구간에서
+  bucketed의 작은 테이블 일부는 "버린 데이터"다. 절감으로 셀 수 없다.
+- 이론(§2)이 틀린 게 아니라 **적용 구간이 다르다.** §2는 테이블이 꽉 차는 상황을 다루는데,
+  실제 타일드 TSDF는 대부분의 타일이 헐렁한 채로 개수만 많다.
+
+### 부수적으로 드러난 것
+
+초기 구현에서 bucketed의 탐사 예산이 `MAX_PROBE`를 **버킷 수**로 재사용해 128×32 = 4096 슬롯이었다.
+linear의 128슬롯 대비 32배다. 이 상태에서는 테스트 용량(2048)에서 테이블 전체를 훑으므로
+**bucketed는 실패할 수가 없었고**, `insertFailureCount == 0`이 안전의 증거가 되지 못했다.
+예산을 128슬롯으로 맞추자 8192 구간에서 드롭 739개가 드러났다 — 위 표의 숫자는 맞춘 뒤의 것이다.
+
+또한 α=0.8은 문서화되지 않은 대가를 치른다. `maybeGrow`는 **완료된 제출**의 점유율만 보고 성장을
+결정하므로, 한 프레임이 `(1−α)×capacity`보다 많이 삽입하면 다음 `Record`가 자라기 전에 넘친다.
+0.5에서 테이블의 절반이던 여유가 0.8에서는 5분의 1이 된다. 자세한 것은
+[`HashStrategy.h`](../src/TSDF/Memory/Hash/HashStrategy.h)의 `loadFactorLimit` 주석.
