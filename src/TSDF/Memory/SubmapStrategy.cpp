@@ -8,7 +8,8 @@ namespace TSDF {
         // tiled internally (both its base and detail levels), so there is no single window corner
         // to place -- each tile derives its own origin from the tile grid.
         m_tsdf.Build(context, params.voxelSize, params.truncation, kBlockVoxels,
-                     kDetailPointsPerVoxel, params.hashCapacity, params.maxPointsPerFrame);
+                     kDetailPointsPerVoxel, params.hashCapacity, params.maxPointsPerFrame,
+                     3.0f, HashStrategyByName(params.hashStrategy));
     }
 
     void SubmapStrategy::Reset() {

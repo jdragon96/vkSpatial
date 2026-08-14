@@ -30,15 +30,16 @@ namespace TSDF {
                    float detailPtsPerVoxel = 4.0f,
                    uint32_t tileHashPerTile = 1u << 20,
                    uint32_t maxPointsPerFrame = 1u << 17,
-                   float detailTruncVoxels = 3.0f) {
+                   float detailTruncVoxels = 3.0f,
+                   const HashStrategy &hash = LinearProbeStrategy()) {
             m_ctx = &ctx;
             m_baseVoxel = baseVoxel;
             m_blockWorld = baseVoxel * float(blockVoxels);
             m_detailK = detailPtsPerVoxel;
-            m_base.Build(ctx, baseVoxel, truncation, tileHashPerTile, maxPointsPerFrame);
+            m_base.Build(ctx, baseVoxel, truncation, tileHashPerTile, maxPointsPerFrame, hash);
             const float detailVoxel = baseVoxel * 0.5f;
             const float detailTrunc = std::min(truncation, detailVoxel * detailTruncVoxels);
-            m_detail.Build(ctx, detailVoxel, detailTrunc, tileHashPerTile, maxPointsPerFrame);
+            m_detail.Build(ctx, detailVoxel, detailTrunc, tileHashPerTile, maxPointsPerFrame, hash);
             m_count.clear();
             m_occ.clear();
             m_dense.clear();

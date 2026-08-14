@@ -7,7 +7,7 @@ namespace TSDF {
         // windowMinCorner is deliberately unused: a tiled layout derives each tile's origin from
         // the tile grid, so there is no single window corner to place.
         m_tsdf.Build(context, params.voxelSize, params.truncation, params.hashCapacity,
-                     params.maxPointsPerFrame);
+                     params.maxPointsPerFrame, HashStrategyByName(params.hashStrategy));
     }
 
     void TileStrategy::Reset() {

@@ -5,6 +5,7 @@
 #include "Engine/Core/Context.h"
 #include "TSDF/Backends/DirectionalIntegrationQuality.h"
 #include "Engine/Core/OrientedPointCloud.h"
+#include "TSDF/Memory/Hash/HashStrategy.h"
 
 #include <Eigen/Core>
 #include <algorithm>
@@ -30,6 +31,19 @@ namespace TSDF {
     struct HasSetCurrentFrame<T, std::void_t<decltype(std::declval<T &>().SetCurrentFrame(0))>>
         : std::true_type {};
 
+    // Only AdvancedTSDF's Build takes a trailing HashStrategy; the frozen CompactDirectionalTSDF
+    // (also instantiated through this template, via TiledCompactDirectionalTSDF) does not and must
+    // not be touched. GetTSDF below picks the right overload with this instead of hard-coding the
+    // hash-aware call, which would fail to compile for that instantiation.
+    template<class T, class = void>
+    struct HasHashStrategyBuild : std::false_type {};
+    template<class T>
+    struct HasHashStrategyBuild<
+            T, std::void_t<decltype(std::declval<T &>().Build(
+                       std::declval<Engine::Core::Context &>(), 0.0f, 0.0f, uint32_t(0), uint32_t(0),
+                       std::declval<const Eigen::Vector3f &>(), std::declval<const HashStrategy &>()))>>
+        : std::true_type {};
+
     template<class Backend>
     class TiledDirectionalTSDF {
     public:
@@ -40,12 +54,14 @@ namespace TSDF {
                    float voxelSize,
                    float truncation,
                    uint32_t hashCapacityPerTile = 1u << 22,
-                   uint32_t maxPointsPerFrame = 1u << 17) {
+                   uint32_t maxPointsPerFrame = 1u << 17,
+                   const TSDF::HashStrategy &hash = TSDF::LinearProbeStrategy()) {
             m_ctx = &ctx;
             m_voxelSize = voxelSize;
             m_truncation = truncation;
             m_hashCapacityPerTile = hashCapacityPerTile;
             m_maxPointsPerFrame = maxPointsPerFrame;
+            m_hash = &hash;
             m_origin = Eigen::Vector3i::Zero();
             m_ghost = static_cast<int>(std::ceil(truncation / voxelSize)) + 1;
             if (kCore + 2 * m_ghost > 512) {
@@ -412,13 +428,24 @@ namespace TSDF {
 
             // Build TSDF
             auto tsdf = std::make_unique<Backend>();
-            tsdf->Build(
-                    *m_ctx,
-                    m_voxelSize,
-                    m_truncation,
-                    m_hashCapacityPerTile,
-                    m_maxPointsPerFrame,
-                    windowMinCorner);
+            if constexpr (HasHashStrategyBuild<Backend>::value) {
+                tsdf->Build(
+                        *m_ctx,
+                        m_voxelSize,
+                        m_truncation,
+                        m_hashCapacityPerTile,
+                        m_maxPointsPerFrame,
+                        windowMinCorner,
+                        *m_hash);
+            } else {
+                tsdf->Build(
+                        *m_ctx,
+                        m_voxelSize,
+                        m_truncation,
+                        m_hashCapacityPerTile,
+                        m_maxPointsPerFrame,
+                        windowMinCorner);
+            }
             tsdf->SetIntegrationQuality(m_quality);
             tsdf->SetPointToPlane(m_pointToPlane);
             if constexpr (HasSetCurrentFrame<Backend>::value) tsdf->SetCurrentFrame(m_currentFrame);
@@ -433,6 +460,7 @@ namespace TSDF {
         float m_truncation = 0.003f;
         uint32_t m_hashCapacityPerTile = 1u << 22;
         uint32_t m_maxPointsPerFrame = 1u << 17;
+        const TSDF::HashStrategy *m_hash = &TSDF::LinearProbeStrategy();
         int m_ghost = 0;                                    // G (set in Build)
         Eigen::Vector3i m_origin = Eigen::Vector3i::Zero(); // O
         IntegrationQuality m_quality;

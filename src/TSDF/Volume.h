@@ -30,6 +30,9 @@ namespace TSDF {
         // NaN => the memory strategy picks its own default window (a 512^3 window centred on the origin).
         Eigen::Vector3f windowMinCorner =
                 Eigen::Vector3f::Constant(std::numeric_limits<float>::quiet_NaN());
+        // Hash addressing variant: "linear" (default) or "bucketed". Resolved through
+        // HashStrategyByName, which falls back to linear on an unknown name.
+        std::string hashStrategy = "linear";
     };
 
     // Per-run integration knobs. Separated from VolumeParams because these are the quality axes an

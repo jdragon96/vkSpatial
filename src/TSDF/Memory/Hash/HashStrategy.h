@@ -20,6 +20,13 @@ namespace TSDF {
         return strategy;
     }
 
+    // Bucketed probing: a probe reads a whole HASH_BUCKET_SIZE-slot bucket per step instead of one
+    // slot at a time, so it stays cheap at a higher load -- hence the 0.8 threshold vs linear's 0.5.
+    inline const HashStrategy &BucketedStrategy() {
+        static const HashStrategy strategy{"bucketed", "HASH_BUCKETED", 0.8f};
+        return strategy;
+    }
+
     // Unknown names fall back to linear rather than throwing: a comparison run that silently used
     // a different hash than asked for would be worse than one that visibly used the baseline.
     // Callers that care should check the returned name.

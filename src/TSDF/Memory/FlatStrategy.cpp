@@ -5,7 +5,8 @@ namespace TSDF {
     void FlatStrategy::Build(Engine::Core::Context &context, const VolumeParams &params) {
         m_context = &context;
         m_tsdf.Build(context, params.voxelSize, params.truncation, params.hashCapacity,
-                     params.maxPointsPerFrame, params.windowMinCorner);
+                     params.maxPointsPerFrame, params.windowMinCorner,
+                     HashStrategyByName(params.hashStrategy));
     }
 
     void FlatStrategy::Reset() {

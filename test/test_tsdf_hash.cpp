@@ -106,3 +106,93 @@ TEST(TsdfHashCounters, GrowCountRisesWhenTheTableIsTooSmall) {
     EXPECT_GT(stats.slotCapacity, 1u << 11);
     EXPECT_EQ(stats.insertFailureCount, 0u) << "성장이 제때 일어났다면 드롭은 없어야 한다";
 }
+
+TEST(TsdfHashStrategy, BucketedIsRegisteredWithItsOwnThreshold) {
+    const TSDF::HashStrategy &bucketed = TSDF::HashStrategyByName("bucketed");
+    EXPECT_STREQ(bucketed.name, "bucketed");
+    EXPECT_STREQ(bucketed.macroName, "HASH_BUCKETED");
+    EXPECT_FLOAT_EQ(bucketed.loadFactorLimit, 0.8f);
+}
+
+// 같은 스캔을 두 해시로 적분하면 저장된 엔트리 집합이 같아야 한다. 주소 지정만 다를 뿐
+// 무엇을 저장하는지는 동일하기 때문이다. 다르면 버킷 구현이 키를 잃고 있다는 뜻이다.
+TEST(TsdfHashStrategy, BucketedStoresTheSameEntriesAsLinear) {
+    std::vector<Eigen::Vector3f> points, normals;
+    for (int i = -8; i <= 8; ++i)
+        for (int j = -8; j <= 8; ++j) {
+            points.emplace_back(float(i) * 0.0375f, float(j) * 0.0375f, 0.0f);
+            normals.emplace_back(0.0f, 0.0f, 1.0f);
+        }
+
+    auto runWith = [&](const char *hashName) {
+        Engine::Core::Context context;
+        TSDF::FlatStrategy strategy;
+        TSDF::VolumeParams params;
+        params.voxelSize = 0.05f;
+        params.truncation = 0.15f;
+        params.hashCapacity = 1u << 16;
+        params.hashStrategy = hashName;
+        strategy.Build(context, params);
+
+        Engine::Compute::CommandBatch batch(context);
+        strategy.Record(points, normals, Eigen::Vector3f(0.0f, 0.0f, 1.0f), batch);
+        batch.Submit();
+        return strategy.Stats();
+    };
+
+    const TSDF::VolumeStats linear = runWith("linear");
+    const TSDF::VolumeStats bucketed = runWith("bucketed");
+
+    EXPECT_EQ(bucketed.occupiedEntryCount, linear.occupiedEntryCount);
+    EXPECT_EQ(bucketed.insertFailureCount, 0u);
+    EXPECT_GT(linear.occupiedEntryCount, 0u);
+}
+
+// Ruling 2 (progress.md): the plan's 81x81 plane at voxel 0.01 with hashCapacity = 1u << 12 would
+// need bucketed's own inserts to grow the table within the SAME Record call that produced them --
+// but maybeGrow decides from occupancy accumulated by EARLIER calls, so a single call can never
+// demonstrate growth from its own inserts. Uses the same 17x17 plane at voxel 0.05 / truncation
+// 0.15 fixture as the counters test above (measured at roughly 1045 entries) with
+// hashCapacity = 1u << 11 (2048 slots), integrated via TWO Record calls each in its own
+// CommandBatch. The first Record sees occupancy 0 and does not grow, inserting ~1045
+// (alpha ~= 0.51). The second sees 1045 >= 1024 (linear's 0.5 * 2048) and grows linear to 4096,
+// while bucketed's 0.8 * 2048 = 1638 threshold is not crossed and it stays at 2048.
+TEST(TsdfHashStrategy, BucketedGrowsLaterThanLinear) {
+    std::vector<Eigen::Vector3f> points, normals;
+    for (int i = -8; i <= 8; ++i)
+        for (int j = -8; j <= 8; ++j) {
+            points.emplace_back(float(i) * 0.0375f, float(j) * 0.0375f, 0.0f);
+            normals.emplace_back(0.0f, 0.0f, 1.0f);
+        }
+
+    auto capacityAfter = [&](const char *hashName) {
+        Engine::Core::Context context;
+        TSDF::FlatStrategy strategy;
+        TSDF::VolumeParams params;
+        params.voxelSize = 0.05f;
+        params.truncation = 0.15f;
+        params.hashCapacity = 1u << 11; // 의도적으로 작게 -> 리해시를 강제한다
+        params.hashStrategy = hashName;
+        strategy.Build(context, params);
+
+        {
+            Engine::Compute::CommandBatch batch(context);
+            strategy.Record(points, normals, Eigen::Vector3f(0.0f, 0.0f, 1.0f), batch);
+            batch.Submit();
+        }
+        {
+            Engine::Compute::CommandBatch batch(context);
+            strategy.Record(points, normals, Eigen::Vector3f(0.0f, 0.0f, 1.0f), batch);
+            batch.Submit();
+        }
+        return strategy.Stats();
+    };
+
+    const TSDF::VolumeStats linear = capacityAfter("linear");
+    const TSDF::VolumeStats bucketed = capacityAfter("bucketed");
+
+    EXPECT_GT(linear.growCount, 0u) << "이 픽스처는 성장을 강제해야 한다";
+    EXPECT_LE(bucketed.slotCapacity, linear.slotCapacity)
+            << "버킷은 임계값 0.8이라 선형탐사(0.5)보다 늦게 자라야 한다";
+    EXPECT_EQ(bucketed.insertFailureCount, 0u);
+}

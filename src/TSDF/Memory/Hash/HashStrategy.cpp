@@ -3,7 +3,8 @@
 namespace TSDF {
 
     const HashStrategy &HashStrategyByName(const std::string &name) {
-        return LinearProbeStrategy(); // bucketed joins in Task 5
+        if (name == "bucketed") return BucketedStrategy();
+        return LinearProbeStrategy();
     }
 
 } // namespace TSDF
