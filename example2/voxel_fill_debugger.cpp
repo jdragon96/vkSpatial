@@ -26,7 +26,7 @@
 namespace fs = std::filesystem;
 namespace ep = Engine::Pipeline;
 using Eigen::Vector3f;
-using Engine::Spatial::AdvancedEntry;
+using TSDF::AdvancedEntry;
 
 namespace {
 
@@ -69,7 +69,7 @@ namespace {
 
     int runDump(const ep::MapConfig &cfg, const std::vector<ep::Frame> &frames, float wThresh) {
         Engine::Core::Context ctx;
-        Engine::Spatial::SubmapAdvancedTSDF submap;
+        TSDF::SubmapAdvancedTSDF submap;
         submap.Build(ctx, cfg.baseVoxel, cfg.truncation, cfg.blockVoxels, cfg.detailK, cfg.tileHash,
                      cfg.maxPoints, cfg.detailTruncVoxels);
         submap.SetIntegrationQuality(cfg.quality);

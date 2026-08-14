@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     class SubmapAdvancedTSDF {
     public:
@@ -133,9 +133,9 @@ namespace Engine::Spatial {
         }
 
         // Detail (whole) + base (points inside dense blocks dropped) -> precedence dedup.
-        OrientedPointCloud ExtractPointCloud(bool merge = true) const {
-            OrientedPointCloud out = m_detail.ExtractPointCloud(merge);
-            const OrientedPointCloud base = m_base.ExtractPointCloud(merge);
+        Engine::Core::OrientedPointCloud ExtractPointCloud(bool merge = true) const {
+            Engine::Core::OrientedPointCloud out = m_detail.ExtractPointCloud(merge);
+            const Engine::Core::OrientedPointCloud base = m_base.ExtractPointCloud(merge);
             const std::size_t m = std::min(base.points.size(), base.normals.size());
             for (std::size_t i = 0; i < m; ++i) {
                 if (m_dense.count(blockOf(base.points[i]))) continue; // detail covers this block
@@ -346,4 +346,4 @@ namespace Engine::Spatial {
         std::unordered_set<BlockKey, BlockKeyHash> m_dense; // blocks decided dense (monotonic, online)
     };
 
-} // namespace Engine::Spatial
+} // namespace TSDF

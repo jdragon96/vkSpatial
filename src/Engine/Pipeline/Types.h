@@ -1,7 +1,7 @@
 #pragma once
 
-#include "TSDF/Backends/AdvancedTSDF.h"                  // Engine::Spatial::AdvancedEntry
-#include "TSDF/Backends/DirectionalIntegrationQuality.h" // Engine::Spatial::IntegrationQuality
+#include "TSDF/Backends/AdvancedTSDF.h"                  // TSDF::AdvancedEntry
+#include "TSDF/Backends/DirectionalIntegrationQuality.h" // TSDF::IntegrationQuality
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -13,7 +13,7 @@
 
 namespace Engine::Pipeline {
 
-    using Engine::Spatial::AdvancedEntry;
+    using TSDF::AdvancedEntry;
 
     enum class EAcquisitionType {
         File,
@@ -63,7 +63,7 @@ namespace Engine::Pipeline {
         float detailTruncVoxels = 3.0f; // detail-level band radius (in detail voxels); quality<->speed
         uint32_t tileHash = 1u << 19;   // per-tile hash slots; smaller = cheaper compaction + tile alloc
         uint32_t maxPoints = 1u << 15;
-        Engine::Spatial::IntegrationQuality quality{3, 4, true};
+        TSDF::IntegrationQuality quality{3, 4, true};
 
         // Integration-stage feature toggles (each independently on/off).
         bool submap = true;         // false -> base-only map: skip density, no detail (voxel/2) level

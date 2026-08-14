@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     // Directional TSDF with a host/GPU streaming cache
     // (docs/superpowers/specs/2026-07-17-directional-tsdf-design.md).
@@ -100,8 +100,8 @@ namespace Engine::Spatial {
 
         // Oriented surface point cloud (shared feature currency; e.g. FPFH): position + normal
         // copied from the last extraction. Decouples feature code from the ExtractedPoint layout.
-        OrientedPointCloud ExtractOrientedCloud() const {
-            OrientedPointCloud c;
+        Engine::Core::OrientedPointCloud ExtractOrientedCloud() const {
+            Engine::Core::OrientedPointCloud c;
             c.points.reserve(m_pointCloud.size());
             c.normals.reserve(m_pointCloud.size());
             for (const ExtractedPoint &p : m_pointCloud) {
@@ -176,4 +176,4 @@ namespace Engine::Spatial {
                 const std::vector<DirectionalCandidate> &candidates) const;
     };
 
-} // namespace Engine::Spatial
+} // namespace TSDF

@@ -8,9 +8,9 @@
 #include <limits>
 #include <vector>
 
-using Engine::Spatial::CompactDirectionalTSDF;
-using Engine::Spatial::OrientedPointCloud;
-using Engine::Spatial::TiledCompactDirectionalTSDF;
+using TSDF::CompactDirectionalTSDF;
+using Engine::Core::OrientedPointCloud;
+using TSDF::TiledCompactDirectionalTSDF;
 using Eigen::Vector3f;
 
 namespace {
@@ -64,12 +64,12 @@ TEST(TiledCompact, TilingMatchesSingleWindowWhereItFits) {
     TiledCompactDirectionalTSDF tiled;
     tiled.Build(ctx, 0.05f, 0.15f);
     tiled.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
-    const OrientedPointCloud tiledCloud = tiled.ExtractPointCloud(/*merge=*/false);
+    const Engine::Core::OrientedPointCloud tiledCloud = tiled.ExtractPointCloud(/*merge=*/false);
 
     CompactDirectionalTSDF single;
     single.Build(ctx, 0.05f, 0.15f, 1u << 20, 1u << 15, Vector3f(-12.8f, -12.8f, -12.8f));
     single.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
-    const OrientedPointCloud singleCloud = single.ExtractPointCloud(1u << 18, /*merge=*/false);
+    const Engine::Core::OrientedPointCloud singleCloud = single.ExtractPointCloud(1u << 18, /*merge=*/false);
 
     ASSERT_GT(tiledCloud.points.size(), 100u);
     ASSERT_GT(singleCloud.points.size(), 100u);
@@ -90,7 +90,7 @@ TEST(TiledCompact, PlaneSpanningTilesIsSeamFree) {
     TiledCompactDirectionalTSDF tiled;
     tiled.Build(ctx, 0.05f, 0.15f);
     tiled.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, 1.0f));
-    const OrientedPointCloud cloud = tiled.ExtractPointCloud(/*merge=*/false);
+    const Engine::Core::OrientedPointCloud cloud = tiled.ExtractPointCloud(/*merge=*/false);
 
     ASSERT_GT(cloud.points.size(), 1000u);
     EXPECT_GE(tiled.TileCount(), 2u); // crosses the x=0 / y=0 tile boundary

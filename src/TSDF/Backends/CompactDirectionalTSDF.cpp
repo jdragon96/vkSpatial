@@ -4,7 +4,7 @@
 #include <cmath>
 #include <unordered_map>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     static constexpr uint32_t EMPTY_KEY = 0xFFFFFFFFu;
     // Matches #define TSDF_SCALE 10000.0 in compact_directional_integrate.comp /
@@ -173,9 +173,9 @@ namespace Engine::Spatial {
         return out;
     }
 
-    OrientedPointCloud CompactDirectionalTSDF::ExtractPointCloud(uint32_t maxCandidates,
+    Engine::Core::OrientedPointCloud CompactDirectionalTSDF::ExtractPointCloud(uint32_t maxCandidates,
                                                                  bool merge) const {
-        OrientedPointCloud cloud;
+        Engine::Core::OrientedPointCloud cloud;
         if (!m_ctx) return cloud;
 
         Engine::Core::Buffer candBuf(*m_ctx);
@@ -216,7 +216,7 @@ namespace Engine::Spatial {
         return MergeCandidates(cloud.points, cloud.normals, m_voxelSize);
     }
 
-    OrientedPointCloud CompactDirectionalTSDF::MergeCandidates(
+    Engine::Core::OrientedPointCloud CompactDirectionalTSDF::MergeCandidates(
             const std::vector<Eigen::Vector3f> &points,
             const std::vector<Eigen::Vector3f> &normals, float voxelSize) {
         struct Cluster {
@@ -256,7 +256,7 @@ namespace Engine::Spatial {
                 clusters.push_back({pos, nrm, 1});
         }
 
-        OrientedPointCloud out;
+        Engine::Core::OrientedPointCloud out;
         for (auto &bucket: buckets)
             for (auto &cl: bucket.second) {
                 out.points.push_back(cl.posSum / float(cl.count));
@@ -265,4 +265,4 @@ namespace Engine::Spatial {
         return out;
     }
 
-} // namespace Engine::Spatial
+} // namespace TSDF

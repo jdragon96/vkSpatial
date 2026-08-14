@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace Engine::Spatial {
+namespace Engine::Core {
 
     struct OrientedPointCloud {
         std::vector<Eigen::Vector3f> points;
@@ -18,4 +18,4 @@ namespace Engine::Spatial {
         bool empty() const { return points.empty(); }
     };
 
-} // namespace Engine::Spatial
+} // namespace Engine::Core

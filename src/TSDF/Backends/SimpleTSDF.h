@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     // Fixed-point scale for TSDF values stored in the hash table.
     // sumDW / sumW recovers the float SDF in metres.
@@ -73,7 +73,7 @@ namespace Engine::Spatial {
         // Oriented surface point cloud (shared feature currency; e.g. FPFH): Marching-Cubes
         // vertices welded to unique positions, with per-vertex area-weighted normals computed
         // from the triangles (the volume stores no normals).
-        OrientedPointCloud ExtractPointCloud(uint32_t maxTris = 500000u) const;
+        Engine::Core::OrientedPointCloud ExtractPointCloud(uint32_t maxTris = 500000u) const;
 
         uint32_t FilledCount() const;
 
@@ -100,4 +100,4 @@ namespace Engine::Spatial {
         std::vector<Eigen::Vector3f> downloadMCVertices(uint32_t maxTris) const;
     };
 
-} // namespace Engine::Spatial
+} // namespace TSDF

@@ -41,10 +41,10 @@
 #include <unordered_map>
 #include <vector>
 
-using Engine::Spatial::DirectionalGroupKey;
-using Engine::Spatial::DirectionalGroupKeyHash;
-using Engine::Spatial::DirectionalTSDF;
-using Group = Engine::Spatial::DirectionalHostStore::Group;
+using TSDF::DirectionalGroupKey;
+using TSDF::DirectionalGroupKeyHash;
+using TSDF::DirectionalTSDF;
+using Group = TSDF::DirectionalHostStore::Group;
 using Cache = std::unordered_map<DirectionalGroupKey, Group, DirectionalGroupKeyHash>;
 
 namespace {
@@ -89,7 +89,7 @@ float valueAt(DirectionalTSDF &tsdf, Cache &cache, uint8_t dir, float voxelSize,
     const int vy = int(std::floor(p.y() / voxelSize));
     const int vz = int(std::floor(p.z() / voxelSize));
     DirectionalGroupKey key{floorDiv8(vx), floorDiv8(vy), floorDiv8(vz), dir};
-    if (tsdf.DebugQueryPoolIndex(key) == Engine::Spatial::kInvalidPoolIndex) { occupied = false; return 0.f; }
+    if (tsdf.DebugQueryPoolIndex(key) == TSDF::kInvalidPoolIndex) { occupied = false; return 0.f; }
     auto it = cache.find(key);
     if (it == cache.end()) it = cache.emplace(key, tsdf.DebugDownloadGroupVoxels(key)).first;
     const int lx = vx - key.gx * 8, ly = vy - key.gy * 8, lz = vz - key.gz * 8;

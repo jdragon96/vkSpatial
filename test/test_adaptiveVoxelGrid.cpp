@@ -52,7 +52,7 @@ namespace {
         for (const auto &v : fixtures::SampleViews(fixtures::Shape::Cube, voxel)) a.Integrate(v.points, v.camPos);
     }
 
-    void integrateCubeSimple(Engine::Core::Context &ctx, Engine::Spatial::SimpleTSDF &s, float voxel) {
+    void integrateCubeSimple(Engine::Core::Context &ctx, TSDF::SimpleTSDF &s, float voxel) {
         (void) ctx;
         for (const auto &v : fixtures::SampleViews(fixtures::Shape::Cube, voxel)) s.Integrate(v.points, v.camPos);
     }
@@ -116,7 +116,7 @@ TEST(AdaptiveVoxelGrid, FineMatchesSimpleTSDF) {
     const auto views = fixtures::SampleViews(fixtures::Shape::Cube, kVoxel);
     ASSERT_FALSE(views.empty());
 
-    Engine::Spatial::SimpleTSDF ref;
+    TSDF::SimpleTSDF ref;
     ref.Build(ctx, kVoxel, kTrunc);
     for (const auto &v : views) ref.Integrate(v.points, v.camPos);
 
@@ -144,7 +144,7 @@ TEST(AdaptiveVoxelGrid, CoarsensFlatKeepsMemoryLower) {
     ASSERT_FALSE(mixed.empty());
     EXPECT_GT(a.CoarseCount(), 0u); // some flat blocks coarsened
 
-    Engine::Spatial::SimpleTSDF allFine;
+    TSDF::SimpleTSDF allFine;
     allFine.Build(ctx, kVoxel, kTrunc);
     integrateCubeSimple(ctx, allFine, kVoxel);
     const size_t allFineCount = size_t(allFine.FilledCount());
@@ -178,7 +178,7 @@ TEST(AdaptiveVoxelGrid, CpuMcMatchesGpuMcAllFine) {
     a.SetVarianceThreshold(0.0f); // force all-fine (same rule as FineMatchesSimpleTSDF)
     const Engine::Spatial::AdaptiveMesh m = a.ExtractMesh();
 
-    Engine::Spatial::SimpleTSDF s;
+    TSDF::SimpleTSDF s;
     s.Build(ctx, kVoxel, kTrunc);
     integrateCubeSimple(ctx, s, kVoxel);
     const auto ref = s.ExtractPointCloud().points; // GPU MC vertices

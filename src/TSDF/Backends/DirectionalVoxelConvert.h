@@ -4,7 +4,7 @@
 
 #include <cmath>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     // Single source of truth for Host<->Gpu TSDF voxel conversion, reused by both residency
     // backends and every debug download. Host stores running-average (value,weight)+unit
@@ -37,4 +37,4 @@ namespace Engine::Spatial {
         return h;
     }
 
-} // namespace Engine::Spatial
+} // namespace TSDF

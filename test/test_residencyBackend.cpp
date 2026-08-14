@@ -1,7 +1,7 @@
 #include "TSDF/Backends/Residency/IResidencyBackend.h"
 #include <gtest/gtest.h>
 
-using namespace Engine::Spatial;
+using namespace TSDF;
 
 namespace {
 // Minimal in-memory fake proving the interface is implementable without Vulkan.
@@ -119,9 +119,9 @@ void makePlane(std::vector<Eigen::Vector3f> &pts, std::vector<Eigen::Vector3f> &
         }
 }
 
-std::vector<Engine::Spatial::ExtractedPoint> runWith(Engine::Spatial::ResidencyMode mode) {
+std::vector<TSDF::ExtractedPoint> runWith(TSDF::ResidencyMode mode) {
     Engine::Core::Context ctx;
-    Engine::Spatial::DirectionalTSDF tsdf;
+    TSDF::DirectionalTSDF tsdf;
     tsdf.Build(ctx, 0.1f, 0.3f, 32768, 1u << 15, 1u << 16, mode);
     std::vector<Eigen::Vector3f> pts, nrm;
     makePlane(pts, nrm);
@@ -142,9 +142,9 @@ std::vector<Engine::Spatial::ExtractedPoint> runWith(Engine::Spatial::ResidencyM
 bool unifiedAvailable() {
     Engine::Core::Context ctx;
     try {
-        Engine::Spatial::DirectionalTSDF t;
+        TSDF::DirectionalTSDF t;
         t.Build(ctx, 0.1f, 0.3f, 32768, 1u << 15, 1u << 16,
-                Engine::Spatial::ResidencyMode::Unified);
+                TSDF::ResidencyMode::Unified);
     } catch (...) {
         return false;
     }
@@ -158,8 +158,8 @@ TEST(ResidencyBackend, CrossBackendReconstructionMatches) {
 
     // Explicit modes — no env. (If VKLBVH_RESIDENCY is set it would override; the
     // FactoryHonorsOverride test clears it, so nothing leaks into this run.)
-    auto a = runWith(Engine::Spatial::ResidencyMode::Streaming);
-    auto b = runWith(Engine::Spatial::ResidencyMode::Unified);
+    auto a = runWith(TSDF::ResidencyMode::Streaming);
+    auto b = runWith(TSDF::ResidencyMode::Unified);
     ASSERT_GT(a.size(), 0u) << "extraction produced no points — cross-backend test would false-green";
     ASSERT_EQ(a.size(), b.size());
     const float eps = 1e-3f; // ε: positions match to 1 micron at 0.1mm voxel scale
@@ -172,7 +172,7 @@ TEST(ResidencyBackend, CrossBackendReconstructionMatches) {
 #include "TSDF/Backends/DirectionalVoxelConvert.h"
 
 TEST(DirectionalVoxelConvert, RoundTripPreservesValueWeightNormal) {
-    using namespace Engine::Spatial;
+    using namespace TSDF;
     HostTsdfVoxel h{};
     h.value = 0.5f; h.weight = 3.0f;
     Eigen::Vector3f n = Eigen::Vector3f(0.2f, -0.3f, 0.9f).normalized();
@@ -191,7 +191,7 @@ TEST(DirectionalVoxelConvert, RoundTripPreservesValueWeightNormal) {
 }
 
 TEST(DirectionalVoxelConvert, DegenerateNormalStaysZero) {
-    using namespace Engine::Spatial;
+    using namespace TSDF;
     GpuTsdfVoxel g{}; g.sumW = 10000; g.sumDW = 0; // sumN all zero
     const HostTsdfVoxel back = GpuVoxelToHost(g);
     EXPECT_FLOAT_EQ(back.nx, 0.0f);
@@ -200,7 +200,7 @@ TEST(DirectionalVoxelConvert, DegenerateNormalStaysZero) {
 }
 
 TEST(ResidencyBackend, StreamingUploadRehydratesNormal) {
-    using namespace Engine::Spatial;
+    using namespace TSDF;
     Engine::Core::Context ctx;
     StreamingResidencyBackend be;
     be.Build(ctx, /*poolCapacity=*/1024);
@@ -221,7 +221,7 @@ TEST(ResidencyBackend, StreamingUploadRehydratesNormal) {
 }
 
 TEST(ResidencyBackend, StreamingWriteBackPersistsNormalAcrossEviction) {
-    using namespace Engine::Spatial;
+    using namespace TSDF;
     Engine::Core::Context ctx;
     DirectionalTSDF tsdf;
     tsdf.Build(ctx, 0.1f, 0.3f, 32768, 1u << 15, 1u << 16, ResidencyMode::Streaming);

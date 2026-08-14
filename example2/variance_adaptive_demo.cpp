@@ -93,13 +93,13 @@ int main(int argc, char **argv) {
 
     Engine::Core::Context ctx;
 
-    Engine::Spatial::SimpleTSDF simple;
+    TSDF::SimpleTSDF simple;
     simple.Build(ctx, voxelArg, kTruncation);
 
     const std::vector<fixtures::View> views = fixtures::SampleViews(shapeArg, voxelArg);
     for (const auto &v : views) simple.Integrate(v.points, v.camPos);
 
-    const std::vector<Engine::Spatial::VoxelStat> voxels = simple.DownloadVoxels();
+    const std::vector<TSDF::VoxelStat> voxels = simple.DownloadVoxels();
 
     // ---- Premise check: per-region mean variance ----
     std::array<RegionStat, kNumRegions> stats{};

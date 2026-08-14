@@ -4,7 +4,7 @@
 > - **A1 — 불확실성 가중(uncertainty weighting):** 관측을 신뢰도로 가중해 다중관측·노이즈에서 표면을 sharpen.
 > - **A2 — Hermite(gradient-augmented) 위치 보간:** 저장된 gradient로 zero-crossing을 선형→3차 Hermite로 올려 **곡면 서브복셀 위치** 개선.
 
-> 대상: [`AdvancedTSDF`](../src/Engine/Spatial/AdvancedTSDF.h), 셰이더 [`advanced_tsdf_{integrate,extract}.vert.glsl`](../src/shader/advanced_tsdf_integrate.vert.glsl). 배경: [`ADVANCED_TSDF.md`](ADVANCED_TSDF.md).
+> 대상: [`AdvancedTSDF`](../src/TSDF/Backends/AdvancedTSDF.h), 셰이더 [`advanced_tsdf_{integrate,extract}.vert.glsl`](../src/shader/advanced_tsdf_integrate.vert.glsl). 배경: [`ADVANCED_TSDF.md`](ADVANCED_TSDF.md).
 
 ---
 
@@ -109,4 +109,4 @@ A1의 이득은 부분적으로 **밴드 가장자리(부정확) 관측을 걷�
 
 ## 참조
 - [PSDF Fusion (ECCV 2018)](https://openaccess.thecvf.com/content_ECCV_2018/papers/Wei_Dong_Probabilistic_Signed_Distance_ECCV_2018_paper.pdf) · [∇-SDF/OREN (arXiv 2510.18999, 2025)](https://arxiv.org/abs/2510.18999) · [NKSR (CVPR 2023)](https://arxiv.org/abs/2305.19590) · [PIN-SLAM (T-RO 2024)](https://arxiv.org/abs/2401.09101)
-- 내부: [`ADVANCED_TSDF.md`](ADVANCED_TSDF.md), 구현 [`AdvancedTSDF.{h,cpp}`](../src/Engine/Spatial/AdvancedTSDF.h), 셰이더 `advanced_tsdf_{integrate,extract}.vert.glsl`.
+- 내부: [`ADVANCED_TSDF.md`](ADVANCED_TSDF.md), 구현 [`AdvancedTSDF.{h,cpp}`](../src/TSDF/Backends/AdvancedTSDF.h), 셰이더 `advanced_tsdf_{integrate,extract}.vert.glsl`.

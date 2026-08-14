@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <unordered_set>
 
-using namespace Engine::Spatial;
+using namespace TSDF;
 
 TEST(DirectionalGroupKeyTest, EqualityComparesAllFields) {
     DirectionalGroupKey a{1, 2, 3, 4};

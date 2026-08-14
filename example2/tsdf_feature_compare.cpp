@@ -130,14 +130,14 @@ namespace {
         }
 
         // ---- SimpleTSDF: single averaged field (rounds sharp features) ----
-        Engine::Spatial::SimpleTSDF simple;
+        TSDF::SimpleTSDF simple;
         simple.Build(ctx, voxel, truncation);
         for (const auto &v : r.views) simple.Integrate(v.points, v.camPos);
-        const Engine::Spatial::OrientedPointCloud simpleCloud = simple.ExtractPointCloud();
+        const Engine::Core::OrientedPointCloud simpleCloud = simple.ExtractPointCloud();
         r.simplePts = simpleCloud.points;
 
         // ---- DirectionalTSDF, legacy extraction (axis-crossing average) ----
-        Engine::Spatial::DirectionalTSDF dirLegacy;
+        TSDF::DirectionalTSDF dirLegacy;
         dirLegacy.Build(ctx, voxel, truncation);
         dirLegacy.SetIntegrationQuality({3, 4, true}); // maxDirections=3, dirExponent=4, viewAngleWeight
         dirLegacy.SetExtractMode(0);
@@ -152,7 +152,7 @@ namespace {
         // Same synthetic input is deterministic at this sample budget, so the two integrated
         // volumes match and only the extraction differs. (No public re-extract API exists;
         // a second Build+Integrate is the clean way to get both clouds.)
-        Engine::Spatial::DirectionalTSDF dirRefined;
+        TSDF::DirectionalTSDF dirRefined;
         dirRefined.Build(ctx, voxel, truncation);
         dirRefined.SetIntegrationQuality({3, 4, true});
         dirRefined.SetExtractMode(1);
@@ -168,7 +168,7 @@ namespace {
         // (center - c*trunc*n): measured to win normals but REGRESS position ~10x (cube flat
         // 0.112 vs legacy 0.011 mm). Mode 3 keeps the accurate legacy zero-crossing position
         // AND the denoised stored normal -> best of both (position == legacy, normal == stored).
-        Engine::Spatial::DirectionalTSDF dirHybrid;
+        TSDF::DirectionalTSDF dirHybrid;
         dirHybrid.Build(ctx, voxel, truncation);
         dirHybrid.SetIntegrationQuality({3, 4, true});
         dirHybrid.SetExtractMode(3);

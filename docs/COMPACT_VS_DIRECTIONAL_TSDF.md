@@ -197,5 +197,5 @@ Compact은 낱개 voxel 후보를 그대로 뽑고, DirectionalTSDF는 블록 �
 ## 참조
 - 적분 수식: [`DIRECTIONAL_TSDF_INTEGRATION.md`](DIRECTIONAL_TSDF_INTEGRATION.md)
 - 벤치마크/분석: [`MRHASH_VS_DIRECTIONAL_TSDF.md`](MRHASH_VS_DIRECTIONAL_TSDF.md)
-- 구현: `src/Engine/Spatial/CompactDirectionalTSDF.{h,cpp}`, `src/Engine/Spatial/TiledCompactDirectionalTSDF.{h,cpp}`
+- 구현: `src/TSDF/Backends/CompactDirectionalTSDF.{h,cpp}`, `src/TSDF/Backends/TiledCompactDirectionalTSDF.{h,cpp}`
 - 셰이더: `src/shader/compact_directional_integrate.comp`, `src/shader/directional_tsdf_integrate.comp`

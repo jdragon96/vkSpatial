@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     bool DirectionalHostStore::Contains(const DirectionalGroupKey &key) const {
         return m_groups.find(key) != m_groups.end();
@@ -26,4 +26,4 @@ namespace Engine::Spatial {
         m_groups[key] = data;
     }
 
-} // namespace Engine::Spatial
+} // namespace TSDF

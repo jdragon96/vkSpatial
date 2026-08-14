@@ -15,7 +15,7 @@ namespace Engine::Pipeline {
 
     namespace {
 
-        void integrateWorld(Engine::Spatial::SubmapAdvancedTSDF &submap,
+        void integrateWorld(TSDF::SubmapAdvancedTSDF &submap,
                             const TrackedFrame &tf,
                             util::StageProfiler &prof) {
             util::ScopedStageTimer t(prof, "integrate");
@@ -38,7 +38,7 @@ namespace Engine::Pipeline {
         }
 
         void buildSnapshot(ModelSnapshot &snap,
-                           const Engine::Spatial::SubmapAdvancedTSDF &submap,
+                           const TSDF::SubmapAdvancedTSDF &submap,
                            util::StageProfiler &prof,
                            int processed,
                            float baseVoxel,
@@ -63,7 +63,7 @@ namespace Engine::Pipeline {
             if (!snap.entries.empty()) {
                 float mnx = 1e30f, mny = 1e30f, mnz = 1e30f;
                 float mxx = -1e30f, mxy = -1e30f, mxz = -1e30f;
-                for (const Engine::Spatial::AdvancedEntry &e: snap.entries) {
+                for (const TSDF::AdvancedEntry &e: snap.entries) {
                     const float x = e.center.x(), y = e.center.y(), z = e.center.z();
                     mnx = std::min(mnx, x);
                     mny = std::min(mny, y);
@@ -90,7 +90,7 @@ namespace Engine::Pipeline {
 
     void IntegrationThread::Run() {
         Engine::Core::Context ctx;
-        Engine::Spatial::SubmapAdvancedTSDF submap;
+        TSDF::SubmapAdvancedTSDF submap;
         submap.Build(ctx,
                      m_cfg.baseVoxel,
                      m_cfg.truncation,

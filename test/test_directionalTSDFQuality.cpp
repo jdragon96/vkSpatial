@@ -1,6 +1,6 @@
 #include "TSDF/Backends/DirectionalIntegrationQuality.h"
 #include <gtest/gtest.h>
-using namespace Engine::Spatial;
+using namespace TSDF;
 
 #include "Engine/Core/Context.h"
 #include "TSDF/Backends/DirectionalTSDF.h"

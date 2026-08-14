@@ -13,7 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     namespace {
         struct IntegratePC {
@@ -415,4 +415,4 @@ namespace Engine::Spatial {
                                int(std::floor(center.z() / g)) - half);
     }
 
-} // namespace Engine::Spatial
+} // namespace TSDF

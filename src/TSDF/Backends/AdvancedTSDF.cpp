@@ -5,7 +5,7 @@
 #include <cstring>
 #include <unordered_map>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     static constexpr uint32_t EMPTY_KEY = 0xFFFFFFFFu;
     // Matches #define TSDF_SCALE 10000.0 in advanced_tsdf_integrate.vert.glsl /
@@ -352,8 +352,8 @@ namespace Engine::Spatial {
         return result;
     }
 
-    OrientedPointCloud AdvancedTSDF::ExtractPointCloud(uint32_t maxCandidates, bool merge) const {
-        OrientedPointCloud cloud;
+    Engine::Core::OrientedPointCloud AdvancedTSDF::ExtractPointCloud(uint32_t maxCandidates, bool merge) const {
+        Engine::Core::OrientedPointCloud cloud;
         if (!m_ctx) return cloud;
 
         Engine::Core::Buffer candBuf(*m_ctx);
@@ -395,7 +395,7 @@ namespace Engine::Spatial {
         return MergeCandidates(cloud.points, cloud.normals, m_voxelSize);
     }
 
-    OrientedPointCloud AdvancedTSDF::MergeCandidates(const std::vector<Eigen::Vector3f> &points,
+    Engine::Core::OrientedPointCloud AdvancedTSDF::MergeCandidates(const std::vector<Eigen::Vector3f> &points,
                                                      const std::vector<Eigen::Vector3f> &normals,
                                                      float voxelSize) {
         struct Cluster {
@@ -435,7 +435,7 @@ namespace Engine::Spatial {
                 clusters.push_back({pos, nrm, 1});
         }
 
-        OrientedPointCloud out;
+        Engine::Core::OrientedPointCloud out;
         for (auto &bucket: buckets)
             for (auto &cl: bucket.second) {
                 out.points.push_back(cl.posSum / float(cl.count));
@@ -444,4 +444,4 @@ namespace Engine::Spatial {
         return out;
     }
 
-} // namespace Engine::Spatial
+} // namespace TSDF

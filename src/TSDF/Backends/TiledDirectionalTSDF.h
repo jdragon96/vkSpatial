@@ -22,7 +22,7 @@
 #include <utility>
 #include <vector>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     template<class T, class = void>
     struct HasSetCurrentFrame : std::false_type {};
@@ -128,15 +128,15 @@ namespace Engine::Spatial {
             }
         }
 
-        OrientedPointCloud ExtractPointCloud(bool merge = true) const {
-            OrientedPointCloud out;
+        Engine::Core::OrientedPointCloud ExtractPointCloud(bool merge = true) const {
+            Engine::Core::OrientedPointCloud out;
             for (const auto &kv: m_tiles) {
                 const TileKey &key = kv.first;
                 const Eigen::Vector3i tile(key.x, key.y, key.z);
                 const Eigen::Vector3i coreMin = m_origin + tile * kCore;
                 const Eigen::Vector3i coreMax = coreMin + Eigen::Vector3i::Constant(kCore);
 
-                const OrientedPointCloud tileCloud = kv.second->ExtractPointCloud(1u << 21, merge);
+                const Engine::Core::OrientedPointCloud tileCloud = kv.second->ExtractPointCloud(1u << 21, merge);
                 const size_t m = std::min(tileCloud.points.size(), tileCloud.normals.size());
                 for (size_t i = 0; i < m; ++i) {
                     const Eigen::Vector3f &p = tileCloud.points[i];
@@ -433,4 +433,4 @@ namespace Engine::Spatial {
         uint32_t m_reuseBufferSize = 0;
     };
 
-} // namespace Engine::Spatial
+} // namespace TSDF

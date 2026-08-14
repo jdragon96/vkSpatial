@@ -29,7 +29,7 @@
 // worker always steps toward the newest requested frame (reset+replay when scrubbing backward).
 namespace asyncmap {
 
-    using Engine::Spatial::AdvancedEntry;
+    using TSDF::AdvancedEntry;
 
     // One captured frame the mapper integrates. Owned by the caller (shared, read-only).
     struct MapperFrame {
@@ -60,7 +60,7 @@ namespace asyncmap {
         float detailK = 4.0f;
         uint32_t tileHash = 1u << 20;
         uint32_t maxPoints = 1u << 15;
-        Engine::Spatial::IntegrationQuality quality{3, 4, true};
+        TSDF::IntegrationQuality quality{3, 4, true};
         bool pointToPlane = true;
         float confidence = 0.5f;
         bool hermite = false;
@@ -147,7 +147,7 @@ namespace asyncmap {
         void workerMain() {
             try {
                 Engine::Core::Context ctx;
-                Engine::Spatial::SubmapAdvancedTSDF submap;
+                TSDF::SubmapAdvancedTSDF submap;
                 submap.Build(ctx, m_cfg.baseVoxel, m_cfg.truncation, m_cfg.blockVoxels, m_cfg.detailK,
                              m_cfg.tileHash, m_cfg.maxPoints);
                 submap.SetIntegrationQuality(m_cfg.quality);

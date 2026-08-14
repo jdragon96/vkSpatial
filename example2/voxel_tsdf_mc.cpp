@@ -45,7 +45,7 @@ int main() {
     savePointsPLY("tsdf_sphere_points.ply", surfacePoints);
 
     {
-        Engine::Spatial::SimpleTSDF tsdf;
+        TSDF::SimpleTSDF tsdf;
         tsdf.Build(ctx, voxelSize, truncation, hashCapacity, maxPoints);
 
         // ── Spiral camera orbit ──────────────────────────────────────────────────

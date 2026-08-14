@@ -13,7 +13,7 @@ namespace Engine::Pipeline {
         Engine::Registration::PointCloud tgt;
         tgt.points.reserve(model->entries.size());
         tgt.normals.reserve(model->entries.size());
-        for (const Engine::Spatial::AdvancedEntry &entry: model->entries) {
+        for (const TSDF::AdvancedEntry &entry: model->entries) {
             const Eigen::Vector3f surfacePoint = entry.center - entry.tsdf * truncationDistance * entry.normal;
             tgt.points.push_back(surfacePoint);
             tgt.normals.push_back(entry.normal);

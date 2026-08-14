@@ -14,8 +14,8 @@
 #include <unordered_map>
 #include <vector>
 
-namespace Engine::Spatial {
-    struct AdvancedEntry; // forward declaration; full definition in AdvancedTSDF.h
+namespace TSDF {
+    struct AdvancedEntry; // forward declaration; full definition in TSDF/Backends/AdvancedTSDF.h
 }
 
 namespace Engine::Spatial::Extraction {
@@ -59,6 +59,6 @@ namespace Engine::Spatial::Extraction {
     // Adapts a TSDF's downloaded (voxel,direction) entries into a VoxelField: coord recovered
     // from the entry's world-space centre (lround(center/cellSize - 0.5) per axis, matching
     // AdaptiveVoxelGrid's latticeCoordOf convention), value = tsdf, gradient = normal.
-    VoxelField FromAdvancedEntries(const std::vector<Engine::Spatial::AdvancedEntry> &entries, float cellSize);
+    VoxelField FromAdvancedEntries(const std::vector<TSDF::AdvancedEntry> &entries, float cellSize);
 
 } // namespace Engine::Spatial::Extraction

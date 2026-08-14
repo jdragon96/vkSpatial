@@ -210,5 +210,5 @@ $$
 
 ## 참조
 - Splietker & Behnke, *Directional TSDF: Modeling Surface Orientation for Coherent Meshes* (2019)
-- 구현: `src/shader/compact_directional_integrate.comp`, `src/Engine/Spatial/CompactDirectionalTSDF.{h,cpp}`
+- 구현: `src/shader/compact_directional_integrate.comp`, `src/TSDF/Backends/CompactDirectionalTSDF.{h,cpp}`
 - 관련 문서: `docs/TSDF_IMPLEMENTATION.md`, `docs/MRHASH_VS_DIRECTIONAL_TSDF.md`

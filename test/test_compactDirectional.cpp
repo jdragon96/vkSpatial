@@ -58,7 +58,7 @@ namespace {
     constexpr float kTruncation = 0.3f;
     // maxDirections=3 matches tsdf_benchmark's default --maxdir; dirExponent=4,
     // viewAngleWeight=true matches RunCompactDirectional's SetIntegrationQuality call.
-    const Engine::Spatial::IntegrationQuality kQuality{3, 4, true};
+    const TSDF::IntegrationQuality kQuality{3, 4, true};
 
     // Directional tier threshold: tsdf_benchmark measures cube RMSE ~0.022mm for
     // Compact-Directional (docs/MRHASH_VS_DIRECTIONAL_TSDF.md), clearly below the
@@ -71,7 +71,7 @@ TEST(CompactDirectionalTSDF, AccuracyNearDirectional) {
     CtxHolder h;
     if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
 
-    Engine::Spatial::CompactDirectionalTSDF cd;
+    TSDF::CompactDirectionalTSDF cd;
     cd.Build(*h.ctx, kVoxel, kTruncation); // default window: origin voxel (-256,-256,-256)
     cd.SetIntegrationQuality(kQuality);
     EXPECT_EQ(cd.OriginVoxel(), Eigen::Vector3i(-256, -256, -256));
@@ -80,7 +80,7 @@ TEST(CompactDirectionalTSDF, AccuracyNearDirectional) {
     ASSERT_FALSE(views.empty());
     for (const auto &v : views) cd.Integrate(v.points, v.normals, v.camPos);
 
-    const Engine::Spatial::OrientedPointCloud cloud = cd.ExtractPointCloud();
+    const Engine::Core::OrientedPointCloud cloud = cd.ExtractPointCloud();
     ASSERT_FALSE(cloud.points.empty()) << "extraction produced no surface points";
 
     ErrStats stats;
@@ -108,7 +108,7 @@ TEST(CompactDirectionalTSDF, OriginRelativeWindowWorks) {
     // comfortably inside the 512^3-voxel (51.2mm-per-axis at voxel=0.1) window.
     const Eigen::Vector3f windowMin = shift - Eigen::Vector3f::Constant(2.5f);
 
-    Engine::Spatial::CompactDirectionalTSDF cd;
+    TSDF::CompactDirectionalTSDF cd;
     cd.Build(*h.ctx, kVoxel, kTruncation, 1u << 20, 1u << 15, windowMin);
     cd.SetIntegrationQuality(kQuality);
 
@@ -117,7 +117,7 @@ TEST(CompactDirectionalTSDF, OriginRelativeWindowWorks) {
 
     for (const auto &v : views) cd.Integrate(v.points, v.normals, v.camPos);
 
-    const Engine::Spatial::OrientedPointCloud cloud = cd.ExtractPointCloud();
+    const Engine::Core::OrientedPointCloud cloud = cd.ExtractPointCloud();
     ASSERT_FALSE(cloud.points.empty())
             << "movable-window extraction produced no surface points -- window did not move";
 
@@ -137,11 +137,11 @@ TEST(CompactDirectionalTSDF, OriginRelativeWindowWorks) {
     // Confirm the OLD fixed window (default Build(), origin pinned at world 0) would have
     // missed this scene entirely: every sample here falls outside [-25.6,25.6]mm, so
     // packDirKey's window-bounds check should skip every write and extraction should be empty.
-    Engine::Spatial::CompactDirectionalTSDF cdOldWindow;
+    TSDF::CompactDirectionalTSDF cdOldWindow;
     cdOldWindow.Build(*h.ctx, kVoxel, kTruncation); // default window, NOT shifted
     cdOldWindow.SetIntegrationQuality(kQuality);
     for (const auto &v : views) cdOldWindow.Integrate(v.points, v.normals, v.camPos);
-    const Engine::Spatial::OrientedPointCloud oldCloud = cdOldWindow.ExtractPointCloud();
+    const Engine::Core::OrientedPointCloud oldCloud = cdOldWindow.ExtractPointCloud();
     EXPECT_TRUE(oldCloud.points.empty())
             << "expected the OLD fixed [-25.6,25.6]mm window to miss a scene 100mm away "
                "from the origin; got "
@@ -149,7 +149,7 @@ TEST(CompactDirectionalTSDF, OriginRelativeWindowWorks) {
 }
 
 TEST(CompactDirectional, DirEntryIs24Bytes) {
-    using Engine::Spatial::DirEntry;
+    using TSDF::DirEntry;
     static_assert(sizeof(DirEntry) == 24, "DirEntry must be 24B (key+sumDW+sumW+sumN)");
     EXPECT_EQ(offsetof(DirEntry, sumW), 8u);
     EXPECT_EQ(offsetof(DirEntry, sumNx), 12u);
@@ -158,7 +158,7 @@ TEST(CompactDirectional, DirEntryIs24Bytes) {
 
 TEST(CompactDirectional, IntegrateAccumulatesStoredNormal) {
     Engine::Core::Context ctx;
-    Engine::Spatial::CompactDirectionalTSDF tsdf;
+    TSDF::CompactDirectionalTSDF tsdf;
     tsdf.Build(ctx, 0.05f, 0.15f);           // voxel, truncation
     tsdf.SetIntegrationQuality({1, 4, true}); // single dominant dir, view weight on
 
@@ -182,7 +182,7 @@ TEST(CompactDirectional, IntegrateAccumulatesStoredNormal) {
 
 TEST(CompactDirectional, ExtractUsesStoredGradientNormal) {
     Engine::Core::Context ctx;
-    Engine::Spatial::CompactDirectionalTSDF tsdf;
+    TSDF::CompactDirectionalTSDF tsdf;
     // Explicit symmetric window (voxel 0.05 -> 512*0.05=25.6m span, [-12.8,+12.8]).
     // The default windowMinCorner is calibrated for voxelSize=0.1 (span [-25.6,+25.6]);
     // at voxelSize=0.05 the same corner only reaches world [-25.6, 0.0), which would

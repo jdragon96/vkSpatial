@@ -178,7 +178,7 @@ int main(int argc, char **argv) {
 
     const float camDist = 1000.0f; // mm, camera along each frame's mean normal
     auto cameraFor = [camDist](const Frame &fr) { return fr.centroid + camDist * fr.meanNormal; };
-    const Engine::Spatial::IntegrationQuality quality{3, 4, true};
+    const TSDF::IntegrationQuality quality{3, 4, true};
 
     // ================================================================================
     // CONFIG 1 -- VALIDATION @ common voxel (fits ONE 512 window): tiled must match single.
@@ -195,11 +195,11 @@ int main(int argc, char **argv) {
     {
         std::cout << "  [tiled] integrating...\n";
         Engine::Core::Context ctx; // fresh Context per method (Engine::Core convention)
-        Engine::Spatial::TiledCompactDirectionalTSDF tiled;
+        TSDF::TiledCompactDirectionalTSDF tiled;
         tiled.Build(ctx, voxel1, trunc1);
         tiled.SetIntegrationQuality(quality);
         for (const auto &fr : frames) tiled.Integrate(fr.points, fr.normals, cameraFor(fr));
-        const Engine::Spatial::OrientedPointCloud cloud = tiled.ExtractPointCloud(/*merge=*/true);
+        const Engine::Core::OrientedPointCloud cloud = tiled.ExtractPointCloud(/*merge=*/true);
         tiled1 = Evaluate(cloud.points, refObserved);
         tiled1Tiles = tiled.TileCount();
         tiled1Filled = tiled.FilledCount();
@@ -211,13 +211,13 @@ int main(int argc, char **argv) {
     {
         std::cout << "  [single] integrating...\n";
         Engine::Core::Context ctx; // fresh Context per method
-        Engine::Spatial::CompactDirectionalTSDF single;
+        TSDF::CompactDirectionalTSDF single;
         const float margin = trunc1 + voxel1;
         const Eigen::Vector3f windowMin = bbMin - Eigen::Vector3f::Constant(margin);
         single.Build(ctx, voxel1, trunc1, 1u << 22, 1u << 17, windowMin);
         single.SetIntegrationQuality(quality);
         for (const auto &fr : frames) single.Integrate(fr.points, fr.normals, cameraFor(fr));
-        const Engine::Spatial::OrientedPointCloud cloud = single.ExtractPointCloud(1u << 21, true);
+        const Engine::Core::OrientedPointCloud cloud = single.ExtractPointCloud(1u << 21, true);
         single1 = Evaluate(cloud.points, refObserved);
         single1Filled = single.FilledCount();
         std::cout << "  [single] nPoints=" << single1.nPoints << " filled=" << single1Filled
@@ -252,11 +252,11 @@ int main(int argc, char **argv) {
     {
         std::cout << "  [tiled] integrating @ 1mm...\n";
         Engine::Core::Context ctx; // fresh Context
-        Engine::Spatial::TiledCompactDirectionalTSDF tiled;
+        TSDF::TiledCompactDirectionalTSDF tiled;
         tiled.Build(ctx, voxel2, trunc2);
         tiled.SetIntegrationQuality(quality);
         for (const auto &fr : frames) tiled.Integrate(fr.points, fr.normals, cameraFor(fr));
-        const Engine::Spatial::OrientedPointCloud cloud = tiled.ExtractPointCloud(/*merge=*/true);
+        const Engine::Core::OrientedPointCloud cloud = tiled.ExtractPointCloud(/*merge=*/true);
         tiled2 = Evaluate(cloud.points, refObserved);
         tiled2Tiles = tiled.TileCount();
         tiled2Filled = tiled.FilledCount();
@@ -272,13 +272,13 @@ int main(int argc, char **argv) {
         // with much worse completeness (large stretches of the chair have no recon point nearby).
         std::cout << "  [single] integrating @ 1mm (window placed at bbMin)...\n";
         Engine::Core::Context ctx; // fresh Context
-        Engine::Spatial::CompactDirectionalTSDF single;
+        TSDF::CompactDirectionalTSDF single;
         const float margin = trunc2 + voxel2;
         const Eigen::Vector3f windowMin = bbMin - Eigen::Vector3f::Constant(margin);
         single.Build(ctx, voxel2, trunc2, 1u << 22, 1u << 17, windowMin);
         single.SetIntegrationQuality(quality);
         for (const auto &fr : frames) single.Integrate(fr.points, fr.normals, cameraFor(fr));
-        const Engine::Spatial::OrientedPointCloud cloud = single.ExtractPointCloud(1u << 21, true);
+        const Engine::Core::OrientedPointCloud cloud = single.ExtractPointCloud(1u << 21, true);
         single2 = Evaluate(cloud.points, refObserved);
         std::cout << "  [single] nPoints=" << single2.nPoints
                   << " (window covers only a 512-voxel slab of the " << span2

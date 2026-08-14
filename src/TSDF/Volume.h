@@ -39,7 +39,7 @@ namespace TSDF {
         float confidenceWeight = 0.5f; // surface-proximity weight lambda in [0,1]; 0 = uniform
         bool hermitePosition = false;  // cubic-Hermite zero-crossing instead of linear
         int currentFrame = 0;          // stamped into a slot on its first fill
-        Engine::Spatial::IntegrationQuality quality{};
+        TSDF::IntegrationQuality quality{};
     };
 
     /// *********************************************
@@ -120,7 +120,7 @@ namespace TSDF {
 
         // Compact every occupied slot into `out`. Reusing form: `out` is resized, not reallocated,
         // so a per-frame caller keeps one buffer alive. Non-directional volumes report direction 0.
-        virtual void Download(std::vector<Engine::Spatial::AdvancedEntry> &out) const = 0;
+        virtual void Download(std::vector<TSDF::AdvancedEntry> &out) const = 0;
 
         // Occupancy and health counters for the state as of the last completed integration.
         virtual VolumeStats Stats() const = 0;
@@ -136,8 +136,8 @@ namespace TSDF {
 
         // Convenience: allocate a vector per call. Tests and one-off callers only -- the per-frame
         // path uses the reusing form above.
-        std::vector<Engine::Spatial::AdvancedEntry> Download() const {
-            std::vector<Engine::Spatial::AdvancedEntry> out;
+        std::vector<TSDF::AdvancedEntry> Download() const {
+            std::vector<TSDF::AdvancedEntry> out;
             Download(out);
             return out;
         }

@@ -5,7 +5,7 @@
 #include <array>
 #include <set>
 
-using Engine::Spatial::AdvancedEntry;
+using TSDF::AdvancedEntry;
 using Eigen::Vector3f;
 using namespace voxdbg;
 

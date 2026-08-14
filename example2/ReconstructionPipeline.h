@@ -133,7 +133,7 @@ namespace pipeline {
         void mapMain() {
             try {
                 Engine::Core::Context ctx;
-                Engine::Spatial::SubmapAdvancedTSDF submap;
+                TSDF::SubmapAdvancedTSDF submap;
                 submap.Build(
                         ctx,
                         m_cfg.map.baseVoxel,
@@ -177,7 +177,7 @@ namespace pipeline {
         }
 
         // Integrate a posed frame in world coords (no-op transform for an identity pose).
-        void integrateWorld(Engine::Spatial::SubmapAdvancedTSDF &submap, const TrackedFrame &tf,
+        void integrateWorld(TSDF::SubmapAdvancedTSDF &submap, const TrackedFrame &tf,
                             util::StageProfiler &prof) {
             util::ScopedStageTimer t(prof, "integrate");
             if (tf.pose.matrix().isApprox(Eigen::Matrix4f::Identity())) {
@@ -194,7 +194,7 @@ namespace pipeline {
             submap.Integrate(wp, wn, tf.cameraWorld);
         }
 
-        void publishSnapshot(const Engine::Spatial::SubmapAdvancedTSDF &submap,
+        void publishSnapshot(const TSDF::SubmapAdvancedTSDF &submap,
                              voxdbg::FillTracker &tracker, util::StageProfiler &prof, int processed) {
             auto snap = std::make_shared<ModelSnapshot>();
             {
@@ -228,7 +228,7 @@ namespace pipeline {
             if (snap.entries.empty()) return;
             Eigen::Vector3f mn = Eigen::Vector3f::Constant(1e30f);
             Eigen::Vector3f mx = Eigen::Vector3f::Constant(-1e30f);
-            for (const Engine::Spatial::AdvancedEntry &e: snap.entries) {
+            for (const TSDF::AdvancedEntry &e: snap.entries) {
                 mn = mn.cwiseMin(e.center);
                 mx = mx.cwiseMax(e.center);
             }

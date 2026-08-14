@@ -9,7 +9,7 @@
 #include <vector>
 #include <vk_mem_alloc.h>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     // UMA backend: one coherent DEVICE_LOCAL|HOST_VISIBLE pool holds the whole model, so
     // residency is CPU-side slot bookkeeping + indexGrid relabel with no GPU copies.
@@ -74,4 +74,4 @@ namespace Engine::Spatial {
         ResidencyStats m_stats;
     };
 
-} // namespace Engine::Spatial
+} // namespace TSDF

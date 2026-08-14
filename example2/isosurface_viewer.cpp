@@ -3,7 +3,7 @@
 // Extracts a surface with a SELECTABLE isosurface extractor (mc/mc33/mtet/emc/dc/dmc/cms; see
 // Engine::Spatial::Extraction::ExtractorRegistry) over a selectable input shape -- an analytic
 // sphere/box/torus, or (with --dir) a folder of pre-registered frame_*.ply scans integrated into
-// an Engine::Spatial::AdvancedTSDF -- and renders the resulting triangle mesh so the differences
+// an TSDF::AdvancedTSDF -- and renders the resulting triangle mesh so the differences
 // between algorithms (sharp-feature preservation, cracks, topology, rounding) are visible.
 // Switching the extractor / shape / cellSize / featureAngle live re-extracts and re-renders;
 // wireframe toggles instantly with no re-extraction. A connectivity overlay (EdgeOverlayPass,
@@ -281,13 +281,13 @@ namespace {
         const uint32_t maxPointsPerFrame =
                 NextPowerOfTwo(static_cast<uint32_t>(std::max<std::size_t>(bounds.maxFramePoints, 1u << 15)));
 
-        Engine::Spatial::AdvancedTSDF tsdf;
+        TSDF::AdvancedTSDF tsdf;
         tsdf.Build(context, cellSize, truncation, hashCapacity, maxPointsPerFrame, windowMinCorner);
         tsdf.SetIntegrationQuality({3, 4, true});
         for (const ep::Frame &frame : frames)
             tsdf.Integrate(frame.pts, frame.nrm, frame.cam); // identity pose: folder is pre-registered
 
-        const std::vector<Engine::Spatial::AdvancedEntry> entries = tsdf.DownloadEntries();
+        const std::vector<TSDF::AdvancedEntry> entries = tsdf.DownloadEntries();
         return Engine::Spatial::Extraction::FromAdvancedEntries(entries, cellSize);
     }
 

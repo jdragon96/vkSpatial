@@ -8,7 +8,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     namespace {
         constexpr uint32_t kGroupBytes = kVoxelsPerGroup * uint32_t(sizeof(GpuTsdfVoxel)); // 10240
@@ -364,4 +364,4 @@ namespace Engine::Spatial {
                                     });
     }
 
-} // namespace Engine::Spatial
+} // namespace TSDF

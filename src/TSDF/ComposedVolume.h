@@ -36,7 +36,7 @@ namespace TSDF {
         // hazard Volume.h reasons about when it keeps Record and Integrate separately named.
         using Volume::Download;
 
-        void Download(std::vector<Engine::Spatial::AdvancedEntry> &out) const override {
+        void Download(std::vector<TSDF::AdvancedEntry> &out) const override {
             m_memory->Download(out);
         }
 

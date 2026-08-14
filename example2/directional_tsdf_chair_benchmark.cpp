@@ -68,15 +68,15 @@ struct Result {
 Result runScan(Engine::Core::Context &ctx, const std::vector<Frame> &frames,
                const Eigen::Vector3f &sceneCenter, float voxelSize, float truncation,
                uint32_t poolCapacity, uint32_t maxPoints, uint32_t maxCandidates,
-               const Engine::Spatial::IntegrationQuality &quality, const char *label,
+               const TSDF::IntegrationQuality &quality, const char *label,
                const std::string &outPly) {
-    Engine::Spatial::DirectionalTSDF tsdf;
+    TSDF::DirectionalTSDF tsdf;
     // Unified (UMA) backend: the whole scan lives in one fixed window, so the first frame's
     // missing set covers most of the model at once — that exceeds the Streaming staging cap
     // (chunked upload is an unimplemented Phase-5 TODO). Unified writes voxels straight into
     // the coherent pool with no staging, bounded only by poolCapacity.
     tsdf.Build(ctx, voxelSize, truncation, poolCapacity, maxPoints, maxCandidates,
-               Engine::Spatial::ResidencyMode::Unified);
+               TSDF::ResidencyMode::Unified);
     tsdf.SetIntegrationQuality(quality);
 
     Result r;
@@ -149,7 +149,7 @@ int main(int argc, char **argv) {
     const uint32_t poolCapacity = 1u << 18;   // all surface groups resident at once
 
     Engine::Core::Context ctx;
-    using Q = Engine::Spatial::IntegrationQuality;
+    using Q = TSDF::IntegrationQuality;
 
     std::cout << "=== SINGLE-direction (baseline: K=1, no view-angle) ===\n";
     Result single = runScan(ctx, frames, center, voxelSize, truncation, poolCapacity,

@@ -11,7 +11,7 @@
 #include <vector>
 #include <vulkan/vulkan.h>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     // Residency-side counters the core aggregates into DirectionalTSDF::Stats.
     struct ResidencyStats {
@@ -84,4 +84,4 @@ namespace Engine::Spatial {
     MakeResidencyBackend(Engine::Core::Context &ctx, uint32_t poolCapacity,
                          ResidencyMode mode = ResidencyMode::Auto);
 
-} // namespace Engine::Spatial
+} // namespace TSDF

@@ -411,7 +411,7 @@ namespace {
             Vector3f center;
             for (int axis = 0; axis < 3; ++axis) center[axis] = std::round(p[axis] / voxel) * voxel;
             const float signedDistance = n.dot(center - kCornerApex); // plane through kCornerApex
-            Engine::Spatial::AdvancedEntry entry;
+            TSDF::AdvancedEntry entry;
             entry.center = center;
             entry.direction = 0;
             entry.tsdf = signedDistance / truncation;

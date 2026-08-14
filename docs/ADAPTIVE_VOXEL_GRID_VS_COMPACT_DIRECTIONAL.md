@@ -120,4 +120,4 @@ $$\text{저장 단위} = (v,\ d,\ \ell)\quad\Rightarrow\quad \text{"방향 × �
 - 논문: `docs/Variance-Adaptive Voxel Grids.pdf` (De Rebotti et al. 2025, MrHash)
 - 관련: `docs/VARIANCE_ADAPTIVE_VOXEL_GRID.md`, `docs/COMPACT_VS_DIRECTIONAL_TSDF.md`, `docs/DIRECTIONAL_TSDF_INTEGRATION.md`
 - 설계: `docs/superpowers/specs/2026-07-26-adaptive-voxel-grid-design.md`
-- 구현: `src/Engine/Spatial/CompactDirectionalTSDF.{h,cpp}`, `src/Engine/Spatial/AdaptiveVoxelGrid.{h,cpp}` (예정)
+- 구현: `src/TSDF/Backends/CompactDirectionalTSDF.{h,cpp}`, `src/Engine/Spatial/AdaptiveVoxelGrid.{h,cpp}` (예정)

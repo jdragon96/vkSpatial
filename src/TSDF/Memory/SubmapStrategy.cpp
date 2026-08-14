@@ -42,7 +42,7 @@ namespace TSDF {
         m_tsdf.IntegrateGPU(points, normals, cameraPosition);
     }
 
-    void SubmapStrategy::Download(std::vector<Engine::Spatial::AdvancedEntry> &out) const {
+    void SubmapStrategy::Download(std::vector<TSDF::AdvancedEntry> &out) const {
         if (m_context == nullptr) {
             out.clear();
             return;

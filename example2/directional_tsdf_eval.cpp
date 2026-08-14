@@ -24,7 +24,7 @@ static void savePLY(const std::string &path, const std::vector<Eigen::Vector3f> 
     for (const auto &p : pts) f << p.x() << ' ' << p.y() << ' ' << p.z() << '\n';
 }
 
-static std::vector<Eigen::Vector3f> reconPositions(const Engine::Spatial::DirectionalTSDF &tsdf) {
+static std::vector<Eigen::Vector3f> reconPositions(const TSDF::DirectionalTSDF &tsdf) {
     std::vector<Eigen::Vector3f> out;
     out.reserve(tsdf.PointCloud().size());
     for (const auto &pt : tsdf.PointCloud()) out.push_back(pt.position);
@@ -39,7 +39,7 @@ static void evalSurface(Engine::Core::Context &ctx, const std::string &name,
     params.orbitCenter = orbitCenter;
     auto frames = GenerateOrbitScan(surface, params);
 
-    Engine::Spatial::DirectionalTSDF tsdf;
+    TSDF::DirectionalTSDF tsdf;
     tsdf.Build(ctx, 0.1f, 0.3f);
     int totalPts = 0;
     for (const auto &fr : frames) {

@@ -15,7 +15,7 @@ namespace Engine::Backend {
     using Engine::Spatial::CpuGridNeighborhood;
     using Engine::Spatial::FpfhSignature;
     using Engine::Spatial::FPFH_DIM;
-    using Engine::Spatial::OrientedPointCloud;
+    using Engine::Core::OrientedPointCloud;
 
     namespace {
 
@@ -46,8 +46,8 @@ namespace Engine::Backend {
 
     } // namespace
 
-    RegistrationResult RegisterPointClouds(const OrientedPointCloud &source,
-                                           const OrientedPointCloud &target,
+    RegistrationResult RegisterPointClouds(const Engine::Core::OrientedPointCloud &source,
+                                           const Engine::Core::OrientedPointCloud &target,
                                            const RegistrationConfig &cfg) {
         RegistrationResult res;
         const size_t ns = source.size(), nt = target.size();

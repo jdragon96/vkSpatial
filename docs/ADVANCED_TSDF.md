@@ -2,7 +2,7 @@
 
 > **한 줄 요약:** `AdvancedTSDF`는 이 저장소의 여러 TSDF 실험에서 **측정으로 검증된 최적 조합**만 뽑아 하나로 합친 정본(canonical) 클래스다. 핵심은 넷 — **① compact per-(voxel,direction) flat-hash 저장**(block 대비 ~11× 저메모리), **② 6축 방향 레이어링**(모서리·얇은 구조 보존), **③ point-to-plane 적분**(평면 거의 완벽, 모서리 개선), **④ stored-gradient mode-3 추출**(denoised 법선 + 서브복셀 위치). 결과: *block-DirectionalTSDF 급 정확도를 ~11× 적은 메모리로*.
 
-> 대상: [`src/Engine/Spatial/AdvancedTSDF.{h,cpp}`](../src/Engine/Spatial/AdvancedTSDF.h), 셰이더 [`src/shader/advanced_tsdf_{integrate,extract}.vert.glsl`](../src/shader/advanced_tsdf_integrate.vert.glsl).
+> 대상: [`src/TSDF/Backends/AdvancedTSDF.{h,cpp}`](../src/TSDF/Backends/AdvancedTSDF.h), 셰이더 [`src/shader/advanced_tsdf_{integrate,extract}.vert.glsl`](../src/shader/advanced_tsdf_integrate.vert.glsl).
 > 수식은 GitHub/마크다운 뷰어에서 렌더됩니다.
 
 ---
@@ -35,7 +35,7 @@ $$
 
 실측(합성 cube/cylinder): block DirectionalTSDF **6144/6784 KB** vs AdvancedTSDF **566/622 KB** = **~10.9× 감소**, 정확도는 동등 이상. 자세한 유도는 [`COMPACT_VS_DIRECTIONAL_TSDF.md`](COMPACT_VS_DIRECTIONAL_TSDF.md).
 
-**대가:** 32-bit 키 → 한 번에 $512^3$ voxel **창**만 다룸(원점 이동식). 초과 장면은 타일링([`TiledCompactDirectionalTSDF`](../src/Engine/Spatial/TiledCompactDirectionalTSDF.h)).
+**대가:** 32-bit 키 → 한 번에 $512^3$ voxel **창**만 다룸(원점 이동식). 초과 장면은 타일링([`TiledCompactDirectionalTSDF`](../src/TSDF/Backends/TiledCompactDirectionalTSDF.h)).
 
 ### 24-byte 엔트리 설계
 ```cpp
@@ -99,13 +99,13 @@ $$
 
 **측정:** cube 평면 법선각 **1.88° → 0.00°**(block-path), 곡면(cylinder) 법선 오차 **0.0104 vs 0.0121**(중앙차분 대비 개선). 단위 테스트 `CurvedCylinderNormalsAreRadial`가 곡면에서 저장-gradient 경로를 판별.
 
-> **코너 보존 병합**(옵션, `merge=true`, [`MergeCandidates`](../src/Engine/Spatial/AdvancedTSDF.h)): 같은 voxel 버킷의 후보를 위치 0.6·voxel + 법선 30° 내에서 클러스터링하되, 60° 초과(코너)는 절대 병합 안 함.
+> **코너 보존 병합**(옵션, `merge=true`, [`MergeCandidates`](../src/TSDF/Backends/AdvancedTSDF.h)): 같은 voxel 버킷의 후보를 위치 0.6·voxel + 법선 30° 내에서 클러스터링하되, 60° 초과(코너)는 절대 병합 안 함.
 
 ---
 
 ## 5. 이동식 창 — 중심 정렬 기본값 (footgun 수정)
 
-**무엇:** 명시 창을 안 주면 $512^3$ 창을 **원점 중심**(originVoxel = −256)에 놓는다 — **voxelSize와 무관**([`Build`](../src/Engine/Spatial/AdvancedTSDF.cpp)).
+**무엇:** 명시 창을 안 주면 $512^3$ 창을 **원점 중심**(originVoxel = −256)에 놓는다 — **voxelSize와 무관**([`Build`](../src/TSDF/Backends/AdvancedTSDF.cpp)).
 
 **왜:** 선행 `CompactDirectionalTSDF`의 기본 corner `(-25.6,…)`는 `floor(-25.6/voxel)`이라 **voxel 0.1에서만** 창이 원점을 덮고, 0.05에서는 창이 $[-25.6,0)$로 치우쳐 **원점을 지나는 표면이 조용히 잘렸다**. AdvancedTSDF는 origin voxel을 −256로 고정해 어떤 해상도든 $[-256v,\,256v)$로 원점을 중심에 둔다. 단위 테스트 `DefaultWindowCentredAtAnyVoxelSize`가 검증.
 
@@ -149,6 +149,6 @@ $$
 | 코너 보존 merge | extract | 중복 dedup·코너 유지 | ✅ (옵션) |
 
 ## 9. 참조
-- 구현: [`AdvancedTSDF.{h,cpp}`](../src/Engine/Spatial/AdvancedTSDF.h), [`advanced_tsdf_{integrate,extract}.vert.glsl`](../src/shader/advanced_tsdf_integrate.vert.glsl), 테스트 [`test/test_advancedTsdf.cpp`](../test/test_advancedTsdf.cpp).
+- 구현: [`AdvancedTSDF.{h,cpp}`](../src/TSDF/Backends/AdvancedTSDF.h), [`advanced_tsdf_{integrate,extract}.vert.glsl`](../src/shader/advanced_tsdf_integrate.vert.glsl), 테스트 [`test/test_advancedTsdf.cpp`](../test/test_advancedTsdf.cpp).
 - 관련 문서: [`COMPACT_VS_DIRECTIONAL_TSDF.md`](COMPACT_VS_DIRECTIONAL_TSDF.md)(compact vs block 메모리), [`DIRECTIONAL_TSDF_INTEGRATION.md`](DIRECTIONAL_TSDF_INTEGRATION.md)(방향 적분 수식), [`DB_TSDF_VS_COMPACT_DIRECTIONAL.md`](DB_TSDF_VS_COMPACT_DIRECTIONAL.md)(투영거리 편향·occlusion 대조), 설계 [`superpowers/specs/2026-07-27-compact-best-tsdf-v1-design.md`](superpowers/specs/2026-07-27-compact-best-tsdf-v1-design.md).
 - 문헌: Splietker & Behnke, *Directional TSDF* (2019); Sommer et al., *Gradient-SDF* (CVPR 2022); Newcombe et al., *KinectFusion* (ISMAR 2011).

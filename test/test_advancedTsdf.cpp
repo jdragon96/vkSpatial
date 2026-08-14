@@ -7,8 +7,8 @@
 #include <cmath>
 #include <vector>
 
-using Engine::Spatial::AdvancedTSDF;
-using Engine::Spatial::AdvancedEntry;
+using TSDF::AdvancedTSDF;
+using TSDF::AdvancedEntry;
 using Eigen::Vector3f;
 
 namespace {
@@ -44,8 +44,8 @@ namespace {
 } // namespace
 
 TEST(AdvancedTSDF, LayoutIs24Bytes) {
-    static_assert(sizeof(Engine::Spatial::AdvDirEntry) == 24, "24B");
-    EXPECT_EQ(offsetof(Engine::Spatial::AdvDirEntry, sumNx), 12u);
+    static_assert(sizeof(TSDF::AdvDirEntry) == 24, "24B");
+    EXPECT_EQ(offsetof(TSDF::AdvDirEntry, sumNx), 12u);
 }
 
 // The window-default footgun fix: the 512^3 window is centred on the origin at ANY voxelSize

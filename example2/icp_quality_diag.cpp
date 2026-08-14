@@ -93,7 +93,7 @@ namespace {
         if (const std::shared_ptr<const ep::ModelSnapshot> model = pipe.LatestModel()) {
             r.entries = model->entries.size();
             r.reconPoints.reserve(model->entries.size());
-            for (const Engine::Spatial::AdvancedEntry &e: model->entries) r.reconPoints.push_back(e.center);
+            for (const TSDF::AdvancedEntry &e: model->entries) r.reconPoints.push_back(e.center);
         }
         pipe.Stop();
         return r;

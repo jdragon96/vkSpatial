@@ -14,7 +14,7 @@
 #include <memory>
 #include <vector>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     // Per-(voxel,direction) hash entry for AdvancedTSDF. 24 bytes: distance/weight
     // accumulators + a stored-gradient (observed normal) accumulator. Layout must match
@@ -129,7 +129,7 @@ namespace Engine::Spatial {
 
         // Mode-3 hybrid extraction → oriented point cloud. merge=true clusters/dedups the raw
         // candidates on the CPU (corner-preserving), via MergeCandidates.
-        OrientedPointCloud ExtractPointCloud(uint32_t maxCandidates = 1u << 19,
+        Engine::Core::OrientedPointCloud ExtractPointCloud(uint32_t maxCandidates = 1u << 19,
                                              bool merge = false) const;
 
         uint32_t FilledCount() const;
@@ -157,7 +157,7 @@ namespace Engine::Spatial {
         void Reset();
 
         // Corner-preserving cluster/dedup of raw {position,normal} candidates (shared utility).
-        static OrientedPointCloud MergeCandidates(const std::vector<Eigen::Vector3f> &points,
+        static Engine::Core::OrientedPointCloud MergeCandidates(const std::vector<Eigen::Vector3f> &points,
                                                   const std::vector<Eigen::Vector3f> &normals,
                                                   float voxelSize);
 
@@ -207,4 +207,4 @@ namespace Engine::Spatial {
         std::unique_ptr<Engine::Core::ComputePipeline> kernel_compactTable;
     };
 
-} // namespace Engine::Spatial
+} // namespace TSDF

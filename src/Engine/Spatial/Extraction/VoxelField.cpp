@@ -64,7 +64,7 @@ namespace Engine::Spatial::Extraction {
         return field;
     }
 
-    VoxelField FromAdvancedEntries(const std::vector<Engine::Spatial::AdvancedEntry> &entries, float cellSize) {
+    VoxelField FromAdvancedEntries(const std::vector<TSDF::AdvancedEntry> &entries, float cellSize) {
         VoxelField field;
         field.SetCellSize(cellSize);
         for (const auto &entry : entries) {

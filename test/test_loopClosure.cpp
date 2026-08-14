@@ -18,7 +18,7 @@ using Engine::Backend::RegistrationConfig;
 using Engine::Backend::SE3;
 using Engine::Backend::SE3Exp;
 using Engine::Backend::Vec6;
-using Engine::Spatial::OrientedPointCloud;
+using Engine::Core::OrientedPointCloud;
 
 namespace {
 
@@ -42,8 +42,8 @@ namespace {
         }
         return Eigen::Vector3f(-dx, -dy, 1.0f).normalized();
     }
-    OrientedPointCloud makeSurface(float x0, float x1, float y0, float y1, float step) {
-        OrientedPointCloud c;
+    Engine::Core::OrientedPointCloud makeSurface(float x0, float x1, float y0, float y1, float step) {
+        Engine::Core::OrientedPointCloud c;
         for (float x = x0; x <= x1 + 1e-4f; x += step)
             for (float y = y0; y <= y1 + 1e-4f; y += step) {
                 c.points.emplace_back(x, y, height(x, y));
@@ -52,9 +52,9 @@ namespace {
         return c;
     }
     // Same geometry, perturbed by independent noise (a fresh "observation").
-    OrientedPointCloud observe(float x0, float x1, float y0, float y1, float step,
+    Engine::Core::OrientedPointCloud observe(float x0, float x1, float y0, float y1, float step,
                                std::mt19937 &rng, float noiseStd) {
-        OrientedPointCloud c = makeSurface(x0, x1, y0, y1, step);
+        Engine::Core::OrientedPointCloud c = makeSurface(x0, x1, y0, y1, step);
         std::normal_distribution<float> nz(0.0f, noiseStd);
         for (auto &p : c.points) p += Eigen::Vector3f(nz(rng), nz(rng), nz(rng));
         return c;
@@ -87,9 +87,9 @@ TEST(LoopClosure, RecoversKnownTransform) {
 
     std::mt19937 rng(7);
     std::normal_distribution<float> nz(0.0f, 0.005f);
-    OrientedPointCloud src = makeSurface(-2.0f, 1.2f, -2.0f, 1.5f, step);
-    OrientedPointCloud raw = makeSurface(-1.2f, 2.0f, -1.5f, 2.0f, step); // shifted -> partial overlap
-    OrientedPointCloud tgt;
+    Engine::Core::OrientedPointCloud src = makeSurface(-2.0f, 1.2f, -2.0f, 1.5f, step);
+    Engine::Core::OrientedPointCloud raw = makeSurface(-1.2f, 2.0f, -1.5f, 2.0f, step); // shifted -> partial overlap
+    Engine::Core::OrientedPointCloud tgt;
     for (size_t i = 0; i < raw.size(); ++i) {
         Eigen::Vector3d p = Tgt * raw.points[i].cast<double>();
         p += Eigen::Vector3d(nz(rng), nz(rng), nz(rng));
@@ -113,8 +113,8 @@ TEST(LoopClosure, RecoversKnownTransform) {
 // Unrelated clouds must not be reported as a confident loop closure.
 TEST(LoopClosure, RejectsUnrelatedClouds) {
     const float step = 0.15f;
-    OrientedPointCloud src = makeSurface(-2.0f, 1.2f, -2.0f, 1.5f, step);
-    OrientedPointCloud flat = makeSurface(5.0f, 8.0f, 5.0f, 8.0f, step); // far, feature-poor
+    Engine::Core::OrientedPointCloud src = makeSurface(-2.0f, 1.2f, -2.0f, 1.5f, step);
+    Engine::Core::OrientedPointCloud flat = makeSurface(5.0f, 8.0f, 5.0f, 8.0f, step); // far, feature-poor
     for (auto &n : flat.normals) n = Eigen::Vector3f(0, 0, 1);
 
     RegistrationConfig cfg;
@@ -167,8 +167,8 @@ TEST(LoopClosure, EndToEndDriftRemoval) {
     std::mt19937 obsRng(99);
     int nLoops = 0;
     for (int k = perLap; k < N; ++k) {
-        OrientedPointCloud a = observe(-1.5f, 1.5f, -1.5f, 1.5f, step, obsRng, 0.004f); // frame k
-        OrientedPointCloud b = observe(-1.5f, 1.5f, -1.5f, 1.5f, step, obsRng, 0.004f); // frame k-perLap
+        Engine::Core::OrientedPointCloud a = observe(-1.5f, 1.5f, -1.5f, 1.5f, step, obsRng, 0.004f); // frame k
+        Engine::Core::OrientedPointCloud b = observe(-1.5f, 1.5f, -1.5f, 1.5f, step, obsRng, 0.004f); // frame k-perLap
         const auto r = RegisterPointClouds(a, b, cfg); // maps frame k -> frame (k-perLap)
         if (r.success) {
             g.addEdge(k - perLap, k, r.T_source_to_target); // Z_{(k-perLap)->k}

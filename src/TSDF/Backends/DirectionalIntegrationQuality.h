@@ -4,7 +4,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     struct IntegrationQuality {
         uint32_t maxDirections = 1;   // K; 1 = single dominant (current behavior)
@@ -46,4 +46,4 @@ namespace Engine::Spatial {
         return cnt;
     }
 
-} // namespace Engine::Spatial
+} // namespace TSDF

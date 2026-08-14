@@ -186,11 +186,11 @@ namespace {
     void Rebuild(ChairViewerState &state, Engine::Core::Context &ctx, PointCloudPass &pass,
                  const std::vector<Frame> &frames, const Eigen::Vector3f &center,
                  const Eigen::Vector3f &bbMin, float voxelSize, float truncation) {
-        using namespace Engine::Spatial;
+        using namespace TSDF;
 
         const auto t0 = std::chrono::steady_clock::now();
 
-        OrientedPointCloud recon;
+        Engine::Core::OrientedPointCloud recon;
         double memKB = 0.0;
 
         if (state.method == 0) {

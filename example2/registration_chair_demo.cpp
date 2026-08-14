@@ -2,7 +2,7 @@
 // that directional_tsdf_chair_benchmark.cpp relies on and instead RECOVERS the world pose
 // of each frame via Engine::Registration (FPFH + RANSAC + Ceres refine), composing an
 // accumulating pose from consecutive-frame relative registrations before feeding the
-// transformed points into Engine::Spatial::DirectionalTSDF.
+// transformed points into TSDF::DirectionalTSDF.
 //
 // Usage: registration_chair_demo <scanData_dir> [maxFrames=8]
 //
@@ -128,9 +128,9 @@ int main(int argc, char **argv) {
     const uint32_t poolCapacity = 1u << 18;  // all surface groups resident at once
 
     Engine::Core::Context ctx;
-    Engine::Spatial::DirectionalTSDF tsdf;
+    TSDF::DirectionalTSDF tsdf;
     tsdf.Build(ctx, voxelSize, truncation, poolCapacity, maxPoints, maxCandidates,
-               Engine::Spatial::ResidencyMode::Unified);
+               TSDF::ResidencyMode::Unified);
 
     Eigen::Matrix4f Tworld = Eigen::Matrix4f::Identity();
     for (size_t f = 0; f < frames.size(); ++f) {

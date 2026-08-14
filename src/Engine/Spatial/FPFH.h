@@ -1,9 +1,9 @@
 #pragma once
 
 // Fast Point Feature Histograms (Rusu, Blodow, Beetz 2009). Per-point 33-dim descriptor
-// (3 angular features x 11 bins) computed on an OrientedPointCloud. Pure CPU, header-only.
+// (3 angular features x 11 bins) computed on an Engine::Core::OrientedPointCloud. Pure CPU, header-only.
 //
-// Decoupled by design: consumes only OrientedPointCloud + a NeighborQuery, so the same code
+// Decoupled by design: consumes only Engine::Core::OrientedPointCloud + a NeighborQuery, so the same code
 // serves surfaces extracted from SimpleTSDF or DirectionalTSDF (or any other source). FPFH is a
 // post-extraction descriptor — it is NOT updated at TSDF integrate time.
 //
@@ -78,7 +78,7 @@ namespace Engine::Spatial {
     } // namespace fpfh_detail
 
     // Core: per-point FPFH using a caller-provided neighbourhood (built over cloud.points).
-    inline std::vector<FpfhSignature> ComputeFPFH(const OrientedPointCloud &cloud,
+    inline std::vector<FpfhSignature> ComputeFPFH(const Engine::Core::OrientedPointCloud &cloud,
                                                   const FpfhConfig &cfg,
                                                   const NeighborQuery &nn) {
         const size_t n = cloud.size();
@@ -134,7 +134,7 @@ namespace Engine::Spatial {
     }
 
     // Convenience: builds a CPU uniform-grid neighbourhood internally (cell size = radius).
-    inline std::vector<FpfhSignature> ComputeFPFH(const OrientedPointCloud &cloud,
+    inline std::vector<FpfhSignature> ComputeFPFH(const Engine::Core::OrientedPointCloud &cloud,
                                                   const FpfhConfig &cfg) {
         CpuGridNeighborhood nn(cloud.points, cfg.radius);
         return ComputeFPFH(cloud, cfg, nn);

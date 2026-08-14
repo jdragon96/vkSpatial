@@ -254,7 +254,7 @@ int main(int argc, char **argv) {
     {
         std::cout << "=== SimpleTSDF (normal-free baseline) ===\n";
         Engine::Core::Context ctx; // fresh Context per method -- see file header note
-        Engine::Spatial::SimpleTSDF tsdf;
+        TSDF::SimpleTSDF tsdf;
         tsdf.Build(ctx, voxelSize, truncation, 1u << 22, 1u << 17);
 
         const auto t0 = std::chrono::steady_clock::now();
@@ -263,7 +263,7 @@ int main(int argc, char **argv) {
             tsdf.Integrate(fr.points, cameraFor(fr));
             std::cout << "  [simple] frame " << f << ": in=" << fr.points.size() << "\n";
         }
-        const Engine::Spatial::OrientedPointCloud cloud = tsdf.ExtractPointCloud(2000000);
+        const Engine::Core::OrientedPointCloud cloud = tsdf.ExtractPointCloud(2000000);
         const auto t1 = std::chrono::steady_clock::now();
 
         MethodResult r;
@@ -285,14 +285,14 @@ int main(int argc, char **argv) {
     {
         std::cout << "=== DirectionalTSDF ===\n";
         Engine::Core::Context ctx; // fresh Context per method
-        Engine::Spatial::DirectionalTSDF tsdf;
+        TSDF::DirectionalTSDF tsdf;
         const uint32_t poolCapacity = 1u << 18, maxPoints = 1u << 17, maxCandidates = 1u << 21;
         // Unified (UMA) backend: the whole scan lives in one fixed window, so the first frame's
         // missing set covers most of the model at once -- exceeds the Streaming staging cap
         // (chunked upload is an unimplemented Phase-5 TODO). Same choice as
         // directional_tsdf_chair_benchmark.cpp's runScan.
         tsdf.Build(ctx, voxelSize, truncation, poolCapacity, maxPoints, maxCandidates,
-                   Engine::Spatial::ResidencyMode::Unified);
+                   TSDF::ResidencyMode::Unified);
         tsdf.SetIntegrationQuality({3, 4, true});
 
         uint32_t lastResident = 0;
@@ -311,7 +311,7 @@ int main(int argc, char **argv) {
         MethodResult r;
         r.name = "DirectionalTSDF";
         r.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        const std::vector<Engine::Spatial::ExtractedPoint> &cloud = tsdf.PointCloud();
+        const std::vector<TSDF::ExtractedPoint> &cloud = tsdf.PointCloud();
         r.nPoints = cloud.size();
         std::vector<Eigen::Vector3f> reconPts;
         reconPts.reserve(cloud.size());
@@ -329,7 +329,7 @@ int main(int argc, char **argv) {
         // [0,kLocalGroupGrid)) instead of a fixture-centered bounding box -- correct regardless
         // of the scene's absolute world position.
         {
-            using namespace Engine::Spatial;
+            using namespace TSDF;
             const std::vector<uint32_t> indexGrid = tsdf.DebugDownloadIndexGrid();
             const Eigen::Vector3i localBase = tsdf.LocalBase();
             for (uint32_t lz = 0; lz < kLocalGroupGrid; ++lz)
@@ -378,7 +378,7 @@ int main(int argc, char **argv) {
     {
         std::cout << "=== CompactDirectionalTSDF ===\n";
         Engine::Core::Context ctx; // fresh Context per method
-        Engine::Spatial::CompactDirectionalTSDF tsdf;
+        TSDF::CompactDirectionalTSDF tsdf;
         // margin: slack below bbMin so the negative side of the truncation band (and the
         // windowMinCorner's floor-to-voxel rounding) never falls outside the 512^3 window.
         // truncation + 1 voxel is comfortably enough given the ~164-voxel slack between
@@ -394,7 +394,7 @@ int main(int argc, char **argv) {
             tsdf.Integrate(fr.points, fr.normals, cameraFor(fr));
             std::cout << "  [compact] frame " << f << ": in=" << fr.points.size() << "\n";
         }
-        const Engine::Spatial::OrientedPointCloud cloud = tsdf.ExtractPointCloud(1u << 21);
+        const Engine::Core::OrientedPointCloud cloud = tsdf.ExtractPointCloud(1u << 21);
         const auto t1 = std::chrono::steady_clock::now();
 
         MethodResult r;
@@ -425,7 +425,7 @@ int main(int argc, char **argv) {
         // the raw row rather than re-measured.
         std::cout << "=== CompactDirectionalTSDF (merged) ===\n";
         const auto tm0 = std::chrono::steady_clock::now();
-        const Engine::Spatial::OrientedPointCloud mergedCloud =
+        const Engine::Core::OrientedPointCloud mergedCloud =
                 tsdf.ExtractPointCloud(1u << 21, /*merge=*/true);
         const auto tm1 = std::chrono::steady_clock::now();
 

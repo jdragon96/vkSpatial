@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <unordered_map>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     static constexpr uint32_t EMPTY_KEY = 0xFFFFFFFFu;
 
@@ -205,9 +205,9 @@ namespace Engine::Spatial {
             f << "3 " << i * 3 << ' ' << i * 3 + 1 << ' ' << i * 3 + 2 << '\n';
     }
 
-    OrientedPointCloud SimpleTSDF::ExtractPointCloud(uint32_t maxTris) const {
+    Engine::Core::OrientedPointCloud SimpleTSDF::ExtractPointCloud(uint32_t maxTris) const {
         const std::vector<Eigen::Vector3f> tri = downloadMCVertices(maxTris);
-        OrientedPointCloud cloud;
+        Engine::Core::OrientedPointCloud cloud;
         if (tri.empty()) return cloud;
 
         // Weld coincident MC vertices (3 emitted per triangle; shared edges duplicate a
@@ -251,4 +251,4 @@ namespace Engine::Spatial {
         return cloud;
     }
 
-} // namespace Engine::Spatial
+} // namespace TSDF

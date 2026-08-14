@@ -98,7 +98,7 @@ $K$ 가 맵 해상도와 무관하게 고정 → **$T_{\text{update}}$ 는 voxel
 
 ## Part B — 현재 CompactDirectionalTSDF 요약
 
-이 저장소의 구현(`src/Engine/Spatial/CompactDirectionalTSDF.{h,cpp}`, `src/shader/compact_directional_{integrate,extract}.comp`)은 **Splietker & Behnke(2019) DirectionalTSDF** 계열의 **GPU(Vulkan) 희소 해시** 버전이다. 자세한 대조는 [`COMPACT_VS_DIRECTIONAL_TSDF.md`](COMPACT_VS_DIRECTIONAL_TSDF.md), 적분 수식은 [`DIRECTIONAL_TSDF_INTEGRATION.md`](DIRECTIONAL_TSDF_INTEGRATION.md).
+이 저장소의 구현(`src/TSDF/Backends/CompactDirectionalTSDF.{h,cpp}`, `src/shader/compact_directional_{integrate,extract}.comp`)은 **Splietker & Behnke(2019) DirectionalTSDF** 계열의 **GPU(Vulkan) 희소 해시** 버전이다. 자세한 대조는 [`COMPACT_VS_DIRECTIONAL_TSDF.md`](COMPACT_VS_DIRECTIONAL_TSDF.md), 적분 수식은 [`DIRECTIONAL_TSDF_INTEGRATION.md`](DIRECTIONAL_TSDF_INTEGRATION.md).
 
 - **저장:** open-addressing 해시(`wangHash` + linear probing). 엔트리 `DirEntry{ key; weightedDistanceSum(int); weightSum(uint); pad }` = **16 B**. 관측된 (voxel, 방향) 칸만 저장(희소). 키는 이동식 $512^3$ 창의 local 좌표(축 9-bit) + 방향 3-bit.
 - **값:** 연속 **가중 평균 투영 부호거리**
@@ -195,5 +195,5 @@ DB-TSDF는 표면 뒤 hemispherical shadow에만 hit을 쌓고 $T$ 회 넘으면
 ## 참조
 - 논문 PDF: [`DB-TSDF.pdf`](DB-TSDF.pdf) (arXiv:2509.20081v1)
 - 현재 구현 대조: [`COMPACT_VS_DIRECTIONAL_TSDF.md`](COMPACT_VS_DIRECTIONAL_TSDF.md), 적분 수식: [`DIRECTIONAL_TSDF_INTEGRATION.md`](DIRECTIONAL_TSDF_INTEGRATION.md)
-- 구현: `src/Engine/Spatial/CompactDirectionalTSDF.{h,cpp}`, 셰이더: `src/shader/compact_directional_{integrate,extract}.comp`
+- 구현: `src/TSDF/Backends/CompactDirectionalTSDF.{h,cpp}`, 셰이더: `src/shader/compact_directional_{integrate,extract}.comp`
 - 관련 아이디어: [`VARIANCE_ADAPTIVE_VOXEL_GRID.md`](VARIANCE_ADAPTIVE_VOXEL_GRID.md)

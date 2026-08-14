@@ -5,7 +5,7 @@ Isosurface(등가면) 추출의 표준 알고리즘인 **Marching Cubes(MC)**를
 **서로 다른 voxel 크기(submap)에 MC를 적용할 수 있는가**(이 저장소의 실제 구현 포함)를 다룬다.
 
 - **관련 코드:** `src/Engine/Spatial/AdaptiveVoxelGrid.{h,cpp}`(다중해상도 MC 메시),
-  `src/Engine/Spatial/SubmapAdvancedTSDF.h`(2-레벨 detail submap, point-cloud 추출),
+  `src/TSDF/Backends/SubmapAdvancedTSDF.h`(2-레벨 detail submap, point-cloud 추출),
   `src/Engine/Spatial/MarchingCubesTables.h`
 - **관련 문서:** [ADAPTIVE_VOXEL_GRID_VS_COMPACT_DIRECTIONAL.md](ADAPTIVE_VOXEL_GRID_VS_COMPACT_DIRECTIONAL.md),
   [VARIANCE_ADAPTIVE_VOXEL_GRID.md](VARIANCE_ADAPTIVE_VOXEL_GRID.md), [TSDF_IMPLEMENTATION.md](TSDF_IMPLEMENTATION.md)

@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <type_traits>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     // Architecture constants from the DirectionalTSDF design doc (§3).
     constexpr uint32_t kGroupDim = 8;                                       // 8x8x8 voxels per group
@@ -123,4 +123,4 @@ namespace Engine::Spatial {
     static_assert(std::is_standard_layout_v<DirectionalCandidate>);
     static_assert(sizeof(DirectionalCandidate) == 40);
 
-} // namespace Engine::Spatial
+} // namespace TSDF

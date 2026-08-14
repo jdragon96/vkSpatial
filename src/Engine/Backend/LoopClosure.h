@@ -46,8 +46,8 @@ namespace Engine::Backend {
     };
 
     // Registers source onto target. Clouds must carry unit normals (FPFH needs them).
-    RegistrationResult RegisterPointClouds(const Engine::Spatial::OrientedPointCloud &source,
-                                           const Engine::Spatial::OrientedPointCloud &target,
+    RegistrationResult RegisterPointClouds(const Engine::Core::OrientedPointCloud &source,
+                                           const Engine::Core::OrientedPointCloud &target,
                                            const RegistrationConfig &cfg = RegistrationConfig{});
 
 } // namespace Engine::Backend

@@ -120,8 +120,8 @@ namespace {
     // so each rebuild constructs a fresh volume for a clean field. Prints the resulting stats
     // to stdout (the numeric cross-check oracle, since the visuals aren't capturable).
     void Rebuild(ViewerState &state, Engine::Core::Context &ctx,
-                 std::unique_ptr<Engine::Spatial::DirectionalTSDF> &tsdf, PointCloudPass &pass) {
-        using namespace Engine::Spatial;
+                 std::unique_ptr<TSDF::DirectionalTSDF> &tsdf, PointCloudPass &pass) {
+        using namespace TSDF;
 
         tsdf = std::make_unique<DirectionalTSDF>();
         tsdf->Build(ctx, kVoxelSize, kTruncation);
@@ -228,7 +228,7 @@ int main(int argc, char **argv) {
         state.scene = ParseSceneArg(argc, argv);
         state.maxDirections = std::clamp(ParseIntArg(argc, argv, "--maxdir", 1), 1, 2);
         state.viewAngle = ParseFlag(argc, argv, "--viewangle");
-        std::unique_ptr<Engine::Spatial::DirectionalTSDF> tsdf;
+        std::unique_ptr<TSDF::DirectionalTSDF> tsdf;
 
         const std::string shaderDir = VIEWER_SHADER_DIR;
         Engine::Render::RenderGraph graph;

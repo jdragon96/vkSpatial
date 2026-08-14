@@ -21,7 +21,7 @@ namespace Engine::Spatial {
         size_t CoarseCount() const;                   // Task 2
         AdaptiveMesh ExtractMesh();                   // Task 4
     private:
-        SimpleTSDF m_fine;
+        TSDF::SimpleTSDF m_fine;
         float m_h = 0.05f, m_trunc = 0.15f;
         float m_threshold = -1.0f;   // <0 => percentile mode
         float m_percentile = 0.5f;

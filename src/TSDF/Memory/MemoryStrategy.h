@@ -8,7 +8,7 @@ namespace TSDF {
     // first-fill stamp. Memory comparisons are only meaningful if every strategy charges the
     // same rate.
     inline constexpr uint64_t kBytesPerHashSlot =
-            sizeof(Engine::Spatial::AdvDirEntry) + sizeof(int32_t);
+            sizeof(TSDF::AdvDirEntry) + sizeof(int32_t);
 
     /// *********************************************
     /// Memory axis
@@ -37,7 +37,7 @@ namespace TSDF {
                             const Eigen::Vector3f &cameraPosition,
                             Engine::Compute::CommandBatch &batch) = 0;
 
-        virtual void Download(std::vector<Engine::Spatial::AdvancedEntry> &out) const = 0;
+        virtual void Download(std::vector<TSDF::AdvancedEntry> &out) const = 0;
 
         virtual VolumeStats Stats() const = 0;
         virtual const char *Name() const = 0;

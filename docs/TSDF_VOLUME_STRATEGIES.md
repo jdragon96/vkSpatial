@@ -86,7 +86,7 @@ volume->Integrate(points, normals, cameraPosition);   // 자체 배치로 즉시
 // 또는 여러 볼륨을 한 submit으로 묶고 싶으면:
 //   volume->Record(points, normals, cameraPosition, batch);
 
-std::vector<Engine::Spatial::AdvancedEntry> entries;
+std::vector<TSDF::AdvancedEntry> entries;
 volume->Download(entries);         // 재사용 형태 (프레임 루프용)
 
 const TSDF::VolumeStats stats = volume->Stats();

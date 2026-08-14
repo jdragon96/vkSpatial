@@ -15,7 +15,7 @@
 #include <utility>
 
 using Eigen::Vector3f;
-using Engine::Spatial::AdvancedEntry;
+using TSDF::AdvancedEntry;
 namespace ep = Engine::Pipeline;
 
 namespace {

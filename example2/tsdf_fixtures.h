@@ -20,10 +20,10 @@
 
 namespace tsdf_fixtures {
 
-using Engine::Spatial::DirectionalGroupKey;
-using Engine::Spatial::DirectionalGroupKeyHash;
-using Engine::Spatial::DirectionalTSDF;
-using Group = Engine::Spatial::DirectionalHostStore::Group;
+using TSDF::DirectionalGroupKey;
+using TSDF::DirectionalGroupKeyHash;
+using TSDF::DirectionalTSDF;
+using Group = TSDF::DirectionalHostStore::Group;
 using Cache = std::unordered_map<DirectionalGroupKey, Group, DirectionalGroupKeyHash>;
 
 struct Rgb {
@@ -60,7 +60,7 @@ inline float valueAt(DirectionalTSDF &tsdf, Cache &cache, uint8_t dir, float vox
     const int vy = int(std::floor(p.y() / voxelSize));
     const int vz = int(std::floor(p.z() / voxelSize));
     DirectionalGroupKey key{floorDiv8(vx), floorDiv8(vy), floorDiv8(vz), dir};
-    if (tsdf.DebugQueryPoolIndex(key) == Engine::Spatial::kInvalidPoolIndex) {
+    if (tsdf.DebugQueryPoolIndex(key) == TSDF::kInvalidPoolIndex) {
         occupied = false;
         return 0.f;
     }

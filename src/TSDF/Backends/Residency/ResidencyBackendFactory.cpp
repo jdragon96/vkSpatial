@@ -5,7 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     static bool hasUnifiedHeap(VkPhysicalDevice dev, VkDeviceSize needed) {
         VkPhysicalDeviceMemoryProperties mp{};
@@ -45,4 +45,4 @@ namespace Engine::Spatial {
         return b;
     }
 
-} // namespace Engine::Spatial
+} // namespace TSDF

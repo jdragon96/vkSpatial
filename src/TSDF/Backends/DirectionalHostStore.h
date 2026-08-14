@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <unordered_map>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     // Host-side authoritative sparse TSDF store (DirectionalTSDF design doc §11/§12).
     // Pure CPU data structure: the GPU active pool is a cache over this map.
@@ -26,4 +26,4 @@ namespace Engine::Spatial {
         std::unordered_map<DirectionalGroupKey, Group, DirectionalGroupKeyHash> m_groups;
     };
 
-} // namespace Engine::Spatial
+} // namespace TSDF

@@ -81,7 +81,7 @@
 
 using Engine::Spatial::AdaptiveMesh;
 using Engine::Spatial::AdaptiveVoxelGrid;
-using Engine::Spatial::SimpleTSDF;
+using TSDF::SimpleTSDF;
 using fixtures::Shape;
 
 namespace {
@@ -191,7 +191,7 @@ namespace {
     // collapse to the SAME escaped threshold -- so 0.3/0.5/0.7 can (and, as measured below, do)
     // produce identical FineCount/CoarseCount/mesh. Printed so that identical rows read as an
     // explained fixture property, not a silent demo bug.
-    void PrintVarianceDiagnostic(const std::vector<Engine::Spatial::VoxelStat> &voxels) {
+    void PrintVarianceDiagnostic(const std::vector<TSDF::VoxelStat> &voxels) {
         if (voxels.empty()) {
             std::printf("  [variance-diag] no occupied fine voxels\n");
             return;

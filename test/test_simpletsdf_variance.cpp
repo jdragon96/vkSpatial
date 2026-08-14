@@ -58,14 +58,14 @@ TEST(SimpleTSDFVariance, EdgeVarianceExceedsFlatVariance) {
     constexpr float voxel = 0.05f;
     constexpr float truncation = 0.3f;
 
-    Engine::Spatial::SimpleTSDF simple;
+    TSDF::SimpleTSDF simple;
     simple.Build(*h.ctx, voxel, truncation);
 
     const std::vector<fixtures::View> views = fixtures::SampleViews(Shape::Cube, voxel);
     ASSERT_FALSE(views.empty());
     for (const auto &v : views) simple.Integrate(v.points, v.camPos);
 
-    const std::vector<Engine::Spatial::VoxelStat> voxels = simple.DownloadVoxels();
+    const std::vector<TSDF::VoxelStat> voxels = simple.DownloadVoxels();
     ASSERT_FALSE(voxels.empty());
 
     double edgeSum = 0.0, flatSum = 0.0;

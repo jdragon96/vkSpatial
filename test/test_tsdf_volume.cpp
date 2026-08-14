@@ -52,14 +52,14 @@ namespace {
 
 TEST(TsdfAccessors, AdvancedReportsHashCapacity) {
     Engine::Core::Context context;
-    Engine::Spatial::AdvancedTSDF tsdf;
+    TSDF::AdvancedTSDF tsdf;
     tsdf.Build(context, 0.05f, 0.15f, 1u << 16, 1u << 15);
     EXPECT_EQ(tsdf.HashCapacity(), 1u << 16);
 }
 
 TEST(TsdfAccessors, TiledSlotCapacityScalesWithTiles) {
     Engine::Core::Context context;
-    Engine::Spatial::TiledAdvancedTSDF tsdf;
+    TSDF::TiledAdvancedTSDF tsdf;
     tsdf.Build(context, 0.05f, 0.15f, 1u << 16, 1u << 15);
     EXPECT_EQ(tsdf.SlotCapacity(), 0u) << "타일이 아직 없으면 용량도 0";
 
@@ -73,7 +73,7 @@ TEST(TsdfAccessors, TiledSlotCapacityScalesWithTiles) {
 
 TEST(TsdfAccessors, SubmapSumsBaseAndDetail) {
     Engine::Core::Context context;
-    Engine::Spatial::SubmapAdvancedTSDF tsdf;
+    TSDF::SubmapAdvancedTSDF tsdf;
     tsdf.Build(context, 0.05f, 0.15f, 32, 4.0f, 1u << 16, 1u << 15);
 
     std::vector<Vector3f> points, normals;
@@ -128,7 +128,7 @@ TEST(TsdfFlatStrategy, StatsTrackFillAndCapacity) {
     EXPECT_LT(stats.LoadFactor(), 1.0);
     EXPECT_EQ(stats.deviceMemoryBytes, stats.slotCapacity * TSDF::kBytesPerHashSlot);
 
-    std::vector<Engine::Spatial::AdvancedEntry> entries;
+    std::vector<TSDF::AdvancedEntry> entries;
     strategy.Download(entries);
     EXPECT_EQ(entries.size(), stats.occupiedEntryCount);
 }
@@ -165,7 +165,7 @@ TEST(TsdfTileStrategy, TableCountFollowsTiles) {
     EXPECT_GT(stats.occupiedEntryCount, 0u);
     EXPECT_EQ(stats.deviceMemoryBytes, stats.slotCapacity * TSDF::kBytesPerHashSlot);
 
-    std::vector<Engine::Spatial::AdvancedEntry> entries;
+    std::vector<TSDF::AdvancedEntry> entries;
     strategy.Download(entries);
     EXPECT_GT(entries.size(), 0u);
 }
@@ -237,7 +237,7 @@ TEST(TsdfVolumeSwitching, EveryStrategyIntegratesTheSameScan) {
         // evidence that nothing was dropped until a strategy actually reports probe failures.
         EXPECT_EQ(stats.insertFailureCount, 0u) << name << ": 복셀이 조용히 드롭되면 안 된다";
 
-        std::vector<Engine::Spatial::AdvancedEntry> entries;
+        std::vector<TSDF::AdvancedEntry> entries;
         volume->Download(entries);
         EXPECT_GT(entries.size(), 0u) << name;
 
@@ -292,11 +292,11 @@ TEST(TsdfVolumeSwitching, ConfigureReachesTheBackendOnEveryStrategy) {
         volume->Configure(options); // 첫 적분 전에 -- 지연 생성 타일은 소급 적용되지 않는다
         volume->Integrate(points, normals, Vector3f(0.0f, 0.0f, 1.0f));
 
-        std::vector<Engine::Spatial::AdvancedEntry> entries;
+        std::vector<TSDF::AdvancedEntry> entries;
         volume->Download(entries);
         // 먼저 비어 있지 않음을 확인해야 아래 루프가 공허하게 통과하지 않는다.
         ASSERT_GT(entries.size(), 0u) << name << ": 적분 결과가 비면 검사가 무의미하다";
-        for (const Engine::Spatial::AdvancedEntry &entry: entries)
+        for (const TSDF::AdvancedEntry &entry: entries)
             ASSERT_EQ(entry.firstFrame, kDistinctiveFrame)
                     << name << ": Configure의 currentFrame이 GPU까지 전달되지 않았다";
     }

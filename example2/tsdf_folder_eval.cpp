@@ -238,11 +238,11 @@ int main(int argc, char **argv) {
 
         // Integrate + extract (single window if it fits, else tiled).
         Engine::Core::Context ctx;
-        Engine::Spatial::OrientedPointCloud recon;
+        Engine::Core::OrientedPointCloud recon;
         if (arg.Has("--submap")) {
             const int blockVoxels = int(arg.ValueFloat("--block"));
             const float detailK = arg.ValueFloat("--detail-k");
-            Engine::Spatial::SubmapAdvancedTSDF s;
+            TSDF::SubmapAdvancedTSDF s;
             // Detail is at half voxel -> ~4-8x more entries/tile than base; use the (larger)
             // --tile-hash size for both levels so the detail hash doesn't overflow (holes).
             s.Build(ctx, voxel, trunc, blockVoxels, detailK, tileHash, maxPts);
@@ -262,7 +262,7 @@ int main(int argc, char **argv) {
             std::printf("path      : TILED (scene exceeds one 512^3 window); per-tile hash %u "
                         "(~%.0f MB/tile)\n",
                         tileHash, double(tileHash) * 24.0 / 1e6);
-            Engine::Spatial::TiledAdvancedTSDF tiled;
+            TSDF::TiledAdvancedTSDF tiled;
             tiled.Build(ctx, voxel, trunc, /*hashCapPerTile=*/tileHash, /*maxPtsPerFrame=*/maxPts);
             tiled.SetIntegrationQuality({3, 4, true});
             tiled.SetPointToPlane(p2p);
@@ -274,7 +274,7 @@ int main(int argc, char **argv) {
                         frames.size(), tiled.TileCount(), tiled.FilledCount());
         } else {
             std::printf("path      : SINGLE 512^3 window\n");
-            Engine::Spatial::AdvancedTSDF tsdf;
+            TSDF::AdvancedTSDF tsdf;
             tsdf.Build(ctx, voxel, trunc, hashCap, maxPts, windowMinCorner);
             tsdf.SetIntegrationQuality({3, 4, true});
             tsdf.SetPointToPlane(p2p);

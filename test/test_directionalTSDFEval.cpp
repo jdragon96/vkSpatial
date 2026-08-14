@@ -92,7 +92,7 @@ namespace {
         auto frames = GenerateOrbitScan(surface, params);
 
         Engine::Core::Context ctx;
-        Engine::Spatial::DirectionalTSDF tsdf;
+        TSDF::DirectionalTSDF tsdf;
         tsdf.Build(ctx, 0.1f, 0.3f);
         for (const auto &fr : frames)
             tsdf.Integrate(fr.points, fr.normals, fr.cameraPos, fr.aabbCenterHint);

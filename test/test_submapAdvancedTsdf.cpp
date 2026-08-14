@@ -10,8 +10,8 @@
 #include <limits>
 #include <vector>
 
-using Engine::Spatial::OrientedPointCloud;
-using Engine::Spatial::SubmapAdvancedTSDF;
+using Engine::Core::OrientedPointCloud;
+using TSDF::SubmapAdvancedTSDF;
 using Eigen::Vector3f;
 
 namespace {
@@ -54,7 +54,7 @@ TEST(SubmapAdvanced, DenseRegionGetsDetail) {
     EXPECT_GT(s.DenseBlockCount(), 0u);
     EXPECT_GT(s.DetailTileCount(), 0u);
 
-    const OrientedPointCloud cloud = s.ExtractPointCloud(/*merge=*/false);
+    const Engine::Core::OrientedPointCloud cloud = s.ExtractPointCloud(/*merge=*/false);
     ASSERT_GT(cloud.points.size(), 100u);
     EXPECT_LT(minSpacing(cloud.points), 0.035f); // detail (0.025) present
 }
@@ -71,7 +71,7 @@ TEST(SubmapAdvanced, SparseSceneNoDetail) {
     EXPECT_EQ(s.DenseBlockCount(), 0u);
     EXPECT_EQ(s.DetailTileCount(), 0u);
 
-    const OrientedPointCloud cloud = s.ExtractPointCloud(/*merge=*/false);
+    const Engine::Core::OrientedPointCloud cloud = s.ExtractPointCloud(/*merge=*/false);
     ASSERT_GT(cloud.points.size(), 100u);
     EXPECT_GT(minSpacing(cloud.points), 0.035f); // base-only ~0.05
 }

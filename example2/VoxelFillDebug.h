@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TSDF/Backends/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
+#include "TSDF/Backends/AdvancedTSDF.h" // TSDF::AdvancedEntry
 
 #include <Eigen/Core>
 #include <array>
@@ -34,7 +34,7 @@ namespace voxdbg {
         }
     };
 
-    inline VoxelKey keyOf(const Engine::Spatial::AdvancedEntry &e, float voxel) {
+    inline VoxelKey keyOf(const TSDF::AdvancedEntry &e, float voxel) {
         return VoxelKey{int(std::lround(e.center.x() / voxel)),
                         int(std::lround(e.center.y() / voxel)),
                         int(std::lround(e.center.z() / voxel)), uint8_t(e.direction)};
@@ -46,7 +46,7 @@ namespace voxdbg {
     public:
         explicit FillTracker(float voxel) : m_voxel(voxel) {}
         void reset() { m_firstFrame.clear(); }
-        std::vector<char> update(const std::vector<Engine::Spatial::AdvancedEntry> &entries,
+        std::vector<char> update(const std::vector<TSDF::AdvancedEntry> &entries,
                                  int frameIdx) {
             std::vector<char> isNew(entries.size(), 0);
             for (std::size_t i = 0; i < entries.size(); ++i) {

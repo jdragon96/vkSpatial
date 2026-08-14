@@ -210,7 +210,7 @@ namespace {
     // for continuity -- this one never actually builds a coarse grid, it only *estimates* what
     // an 8:1 per-voxel coarsening would save.
     void PrintVarianceAdaptiveSection(Shape shape, float voxel,
-                                      const std::vector<Engine::Spatial::VoxelStat> &voxels) {
+                                      const std::vector<TSDF::VoxelStat> &voxels) {
         if (voxels.empty()) {
             std::printf("  [variance-adaptive-projection] %s: no occupied voxels, skipping\n",
                         ShapeName(shape));
@@ -277,7 +277,7 @@ namespace {
     // Groups fine voxels into coarse cells (single source of truth, shared by the sigma
     // sweep and the Adaptive-Directional hybrid so both agree on the same cell statistics).
     std::map<CellKey, CellAgg> BuildCellStats(
-            const std::vector<Engine::Spatial::VoxelStat> &fineVoxels, float vc) {
+            const std::vector<TSDF::VoxelStat> &fineVoxels, float vc) {
         std::map<CellKey, CellAgg> cellStats;
         for (const auto &v : fineVoxels) {
             CellAgg &agg = cellStats[CellOf(v.center, vc)];
@@ -353,9 +353,9 @@ namespace {
     // cells), scoring it against the analytic ground truth.
     std::vector<SigmaRow> RunVarianceAdaptiveSweep(
             Shape shape, float classifyVoxel, float vc,
-            const std::vector<Engine::Spatial::VoxelStat> &fineVoxels,
-            const Engine::Spatial::OrientedPointCloud &fineCloud,
-            const Engine::Spatial::OrientedPointCloud &coarseCloud) {
+            const std::vector<TSDF::VoxelStat> &fineVoxels,
+            const Engine::Core::OrientedPointCloud &fineCloud,
+            const Engine::Core::OrientedPointCloud &coarseCloud) {
         std::vector<SigmaRow> out;
 
         std::map<CellKey, CellAgg> cellStats = BuildCellStats(fineVoxels, vc);
@@ -418,8 +418,8 @@ namespace {
     // ---- SimpleTSDF build/extract/score plumbing (shared by fine + coarse rows) -------------
 
     struct BuiltSimple {
-        Engine::Spatial::SimpleTSDF tsdf;
-        Engine::Spatial::OrientedPointCloud cloud;
+        TSDF::SimpleTSDF tsdf;
+        Engine::Core::OrientedPointCloud cloud;
         double buildMs = 0.0;
         double integrateMs = 0.0;
     };
@@ -529,9 +529,9 @@ namespace {
     // Adaptive-Directional hybrid memory term) -- in the SAME pass, avoiding a second
     // GPU-download sweep.
     DirStorageStats AnalyzeDirectionalStorage(
-            Engine::Spatial::DirectionalTSDF &dir, float voxel,
+            TSDF::DirectionalTSDF &dir, float voxel,
             const std::function<bool(const Eigen::Vector3f &)> &isEdgeCell) {
-        using namespace Engine::Spatial;
+        using namespace TSDF;
         DirStorageStats out;
         out.memBlockKB = double(dir.HostStore().Size()) * 4096.0 / 1024.0;
 
@@ -623,7 +623,7 @@ namespace {
         row.shape = ShapeName(shape);
         row.method = "Directional";
 
-        Engine::Spatial::DirectionalTSDF dir;
+        TSDF::DirectionalTSDF dir;
         dir.Build(ctx, voxel, kTruncation);
         dir.SetIntegrationQuality({maxDir, 4, true});
 
@@ -679,7 +679,7 @@ namespace {
     CompactDirectionalResult RunCompactDirectional(Engine::Core::Context &ctx, Shape shape,
                                                    float voxel, uint32_t maxDir,
                                                    const std::vector<fixtures::View> &views) {
-        Engine::Spatial::CompactDirectionalTSDF cd;
+        TSDF::CompactDirectionalTSDF cd;
         cd.Build(ctx, voxel, kTruncation);
         cd.SetPointToPlane(g_p2p);
         cd.SetIntegrationQuality({maxDir, 4, true});
@@ -687,7 +687,7 @@ namespace {
         const auto t0 = std::chrono::steady_clock::now();
         for (const auto &v : views) cd.Integrate(v.points, v.normals, v.camPos);
         const auto tm = std::chrono::steady_clock::now();
-        const Engine::Spatial::OrientedPointCloud cloud = cd.ExtractPointCloud();
+        const Engine::Core::OrientedPointCloud cloud = cd.ExtractPointCloud();
         const auto t1 = std::chrono::steady_clock::now();
 
         Row row;
@@ -696,7 +696,7 @@ namespace {
         row.integrateMs = std::chrono::duration<double, std::milli>(tm - t0).count();
         row.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         row.nPoints = cloud.points.size();
-        row.memKB = double(cd.FilledCount()) * double(sizeof(Engine::Spatial::DirEntry)) /
+        row.memKB = double(cd.FilledCount()) * double(sizeof(TSDF::DirEntry)) /
                     1024.0; // occupied entries * sizeof(DirEntry) (24B as of Compact Best-TSDF v1)
         ScoreAgainstGT(shape, voxel, cloud.points, row);
 
@@ -705,7 +705,7 @@ namespace {
         // Memory is unchanged (merge is extraction-only; FilledCount() reflects the SAME
         // storage), so memKB is copied from the raw row rather than re-measured.
         const auto t2 = std::chrono::steady_clock::now();
-        const Engine::Spatial::OrientedPointCloud mergedCloud =
+        const Engine::Core::OrientedPointCloud mergedCloud =
                 cd.ExtractPointCloud(1u << 19, /*merge=*/true);
         const auto t3 = std::chrono::steady_clock::now();
 
@@ -727,7 +727,7 @@ namespace {
     // shaders, with the centred default window). Confirms parity + honours --p2p.
     Row RunAdvanced(Engine::Core::Context &ctx, Shape shape, float voxel, uint32_t maxDir,
                     const std::vector<fixtures::View> &views) {
-        Engine::Spatial::AdvancedTSDF adv;
+        TSDF::AdvancedTSDF adv;
         adv.Build(ctx, voxel, kTruncation); // centred default window (voxelSize-independent)
         adv.SetPointToPlane(g_p2p);
         adv.SetConfidenceWeight(g_advConf); // A1
@@ -737,7 +737,7 @@ namespace {
         const auto t0 = std::chrono::steady_clock::now();
         for (const auto &v : views) adv.Integrate(v.points, v.normals, v.camPos);
         const auto tm = std::chrono::steady_clock::now();
-        const Engine::Spatial::OrientedPointCloud cloud = adv.ExtractPointCloud();
+        const Engine::Core::OrientedPointCloud cloud = adv.ExtractPointCloud();
         const auto t1 = std::chrono::steady_clock::now();
 
         Row row;
@@ -746,7 +746,7 @@ namespace {
         row.integrateMs = std::chrono::duration<double, std::milli>(tm - t0).count();
         row.buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
         row.nPoints = cloud.points.size();
-        row.memKB = double(adv.FilledCount()) * double(sizeof(Engine::Spatial::AdvDirEntry)) /
+        row.memKB = double(adv.FilledCount()) * double(sizeof(TSDF::AdvDirEntry)) /
                     1024.0;
         ScoreAgainstGT(shape, voxel, cloud.points, row);
         return row;
@@ -785,10 +785,10 @@ namespace {
     CompactAdaptiveEval EvalCompactAdaptiveSigma(
             Shape shape, float classifyVoxel, float vc, double sigma,
             const std::map<CellKey, CellAgg> &cellStats,
-            const Engine::Spatial::OrientedPointCloud &fineCloud,
-            const Engine::Spatial::OrientedPointCloud &coarseCloud,
-            const std::vector<Engine::Spatial::CompactEntry> &fineEntries,
-            const std::vector<Engine::Spatial::CompactEntry> &coarseEntries) {
+            const Engine::Core::OrientedPointCloud &fineCloud,
+            const Engine::Core::OrientedPointCloud &coarseCloud,
+            const std::vector<TSDF::CompactEntry> &fineEntries,
+            const std::vector<TSDF::CompactEntry> &coarseEntries) {
         CompactAdaptiveEval ev;
 
         auto isHighVar = [&](const Eigen::Vector3f &p) {
@@ -830,8 +830,8 @@ namespace {
                 pts.push_back(coarseCloud.points[i]);
                 nrms.push_back(coarseCloud.normals[i]);
             }
-        const Engine::Spatial::OrientedPointCloud adaptive =
-                Engine::Spatial::CompactDirectionalTSDF::MergeCandidates(pts, nrms, classifyVoxel);
+        const Engine::Core::OrientedPointCloud adaptive =
+                TSDF::CompactDirectionalTSDF::MergeCandidates(pts, nrms, classifyVoxel);
         ev.nPoints = adaptive.points.size();
 
         for (const auto &p : adaptive.points) {
@@ -860,8 +860,8 @@ namespace {
         CompactAdaptiveResult out;
         const float vc = 2.0f * voxel;
 
-        Engine::Spatial::CompactDirectionalTSDF cdFine;
-        Engine::Spatial::CompactDirectionalTSDF cdCoarse;
+        TSDF::CompactDirectionalTSDF cdFine;
+        TSDF::CompactDirectionalTSDF cdCoarse;
         cdFine.Build(ctx, voxel, kTruncation);
         cdFine.SetIntegrationQuality({maxDir, 4, true});
         cdCoarse.Build(ctx, vc, kTruncation);
@@ -873,14 +873,14 @@ namespace {
             cdCoarse.Integrate(v.points, v.normals, v.camPos);
         }
         const auto tm = std::chrono::steady_clock::now();
-        const Engine::Spatial::OrientedPointCloud fineCloud = cdFine.ExtractPointCloud();
-        const Engine::Spatial::OrientedPointCloud coarseCloud = cdCoarse.ExtractPointCloud();
+        const Engine::Core::OrientedPointCloud fineCloud = cdFine.ExtractPointCloud();
+        const Engine::Core::OrientedPointCloud coarseCloud = cdCoarse.ExtractPointCloud();
         const auto t1 = std::chrono::steady_clock::now();
         const double integrateMs = std::chrono::duration<double, std::milli>(tm - t0).count();
         const double buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-        const std::vector<Engine::Spatial::CompactEntry> fineEntries = cdFine.DownloadEntries();
-        const std::vector<Engine::Spatial::CompactEntry> coarseEntries = cdCoarse.DownloadEntries();
+        const std::vector<TSDF::CompactEntry> fineEntries = cdFine.DownloadEntries();
+        const std::vector<TSDF::CompactEntry> coarseEntries = cdCoarse.DownloadEntries();
 
         const std::array<double, 4> percentiles = {0.25, 0.50, 0.75, 0.90};
         for (double p : percentiles) {
@@ -947,7 +947,7 @@ namespace {
     // outDirFrac / the printed cell-split line for the actual split size.
     Row RunAdaptiveDirectional(Shape shape, float voxel, const Row &fineRow, const Row &dirRow,
                                const BuiltSimple &fine,
-                               const std::vector<Engine::Spatial::VoxelStat> &fineVoxels,
+                               const std::vector<TSDF::VoxelStat> &fineVoxels,
                                const std::vector<Eigen::Vector3f> &dirPoints,
                                const CellClassifier &classifier, const DirStorageStats &dirStorage,
                                double &outMemFlatKB, double &outMemEdgeKB, double &outDirCellFrac) {
@@ -1183,7 +1183,7 @@ int main(int argc, char **argv) {
         // pair with the new "coarse" baseline below.
         BuiltSimple fine = BuildSimpleTSDF(ctx, voxel, views);
         Row fineRow = ScoreSimpleRow(shape, "Simple(fine)", voxel, fine);
-        const std::vector<Engine::Spatial::VoxelStat> fineVoxels = fine.tsdf.DownloadVoxels();
+        const std::vector<TSDF::VoxelStat> fineVoxels = fine.tsdf.DownloadVoxels();
         PrintVarianceAdaptiveSection(shape, voxel, fineVoxels);
 
         // Same fine voxel size, but integrated with normal view-angle weighting

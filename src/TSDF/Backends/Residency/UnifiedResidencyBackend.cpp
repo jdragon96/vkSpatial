@@ -5,7 +5,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     UnifiedResidencyBackend::MappedBuffer
     UnifiedResidencyBackend::allocCoherent(VkDeviceSize bytes, VkBufferUsageFlags usage) {
@@ -154,4 +154,4 @@ namespace Engine::Spatial {
         return out;
     }
 
-} // namespace Engine::Spatial
+} // namespace TSDF

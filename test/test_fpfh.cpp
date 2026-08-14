@@ -15,16 +15,17 @@
 #include <set>
 #include <vector>
 
-using namespace Engine::Spatial;
+using namespace TSDF;
+using namespace Engine::Spatial; // FPFH stayed behind in Engine::Spatial
 
 namespace {
 
     // Random oriented cloud in [0,1]^3 with unit normals (deterministic seed).
-    OrientedPointCloud makeRandomCloud(size_t n, uint32_t seed) {
+    Engine::Core::OrientedPointCloud makeRandomCloud(size_t n, uint32_t seed) {
         std::mt19937 rng(seed);
         std::uniform_real_distribution<float> u(-1.0f, 1.0f);
         std::uniform_real_distribution<float> p(0.0f, 1.0f);
-        OrientedPointCloud c;
+        Engine::Core::OrientedPointCloud c;
         c.points.reserve(n);
         c.normals.reserve(n);
         for (size_t i = 0; i < n; ++i) {
@@ -52,7 +53,7 @@ namespace {
 
 // ── CPU: neighbourhood grid equals brute force ──────────────────────────────
 TEST(FpfhNeighborhoodTest, GridMatchesBruteForce) {
-    const OrientedPointCloud cloud = makeRandomCloud(400, 1);
+    const Engine::Core::OrientedPointCloud cloud = makeRandomCloud(400, 1);
     const float radius = 0.25f;
     CpuGridNeighborhood grid(cloud.points, radius);
 
@@ -75,7 +76,7 @@ TEST(FpfhNeighborhoodTest, GridMatchesBruteForce) {
 
 // ── CPU: FPFH is invariant to rigid transform (its defining property) ────────
 TEST(FpfhTest, RotationTranslationInvariant) {
-    const OrientedPointCloud cloud = makeRandomCloud(300, 2);
+    const Engine::Core::OrientedPointCloud cloud = makeRandomCloud(300, 2);
     const FpfhConfig cfg{0.4f};
     const auto base = ComputeFPFH(cloud, cfg);
 
@@ -83,7 +84,7 @@ TEST(FpfhTest, RotationTranslationInvariant) {
     const Eigen::Matrix3f R =
             Eigen::AngleAxisf(1.1f, Eigen::Vector3f(0.3f, -0.7f, 0.65f).normalized()).toRotationMatrix();
     const Eigen::Vector3f t(5.0f, -2.0f, 3.0f);
-    OrientedPointCloud moved;
+    Engine::Core::OrientedPointCloud moved;
     moved.points.reserve(cloud.size());
     moved.normals.reserve(cloud.size());
     for (size_t i = 0; i < cloud.size(); ++i) {
@@ -103,7 +104,7 @@ TEST(FpfhTest, RotationTranslationInvariant) {
 
 // ── CPU: determinism + PCL-style per-block normalisation ────────────────────
 TEST(FpfhTest, DeterministicAndBlocksNormalized) {
-    const OrientedPointCloud cloud = makeRandomCloud(250, 3);
+    const Engine::Core::OrientedPointCloud cloud = makeRandomCloud(250, 3);
     const FpfhConfig cfg{0.4f}; // large enough that every point has neighbours
     const auto a = ComputeFPFH(cloud, cfg);
     const auto b = ComputeFPFH(cloud, cfg);
@@ -134,7 +135,7 @@ TEST(FpfhTsdfTest, SimpleTSDFExtractAndDescribe) {
     }
     tsdf.Integrate(pts, Eigen::Vector3f(0, 0, 3));
 
-    const OrientedPointCloud cloud = tsdf.ExtractPointCloud();
+    const Engine::Core::OrientedPointCloud cloud = tsdf.ExtractPointCloud();
     ASSERT_FALSE(cloud.empty()) << "SimpleTSDF extracted no surface";
     EXPECT_EQ(cloud.points.size(), cloud.normals.size());
     for (const auto &nrm : cloud.normals)
@@ -169,7 +170,7 @@ TEST(FpfhTsdfTest, DirectionalTSDFOrientedCloudMatchesPointCloud) {
     }
     tsdf.Integrate(pts, nms, Eigen::Vector3f(0, 0, 3), Eigen::Vector3f::Zero());
 
-    const OrientedPointCloud cloud = tsdf.ExtractOrientedCloud();
+    const Engine::Core::OrientedPointCloud cloud = tsdf.ExtractOrientedCloud();
     ASSERT_EQ(cloud.points.size(), tsdf.PointCloud().size());
     ASSERT_EQ(cloud.normals.size(), cloud.points.size());
     for (size_t i = 0; i < cloud.points.size(); ++i) {

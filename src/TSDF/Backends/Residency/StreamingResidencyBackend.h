@@ -12,7 +12,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     // Streaming (discrete/PCIe) residency backend: an active GPU pool that caches a
     // window of directional groups over the authoritative host store, with
@@ -95,4 +95,4 @@ namespace Engine::Spatial {
         void fillIndexGridInvalid();
     };
 
-} // namespace Engine::Spatial
+} // namespace TSDF

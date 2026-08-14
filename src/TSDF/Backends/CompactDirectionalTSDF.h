@@ -12,7 +12,7 @@
 #include <memory>
 #include <vector>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     // Per-(voxel,direction) hash entry -- the compact-directional analogue of SimpleTSDF's
     // TSDFEntry. 24 bytes, keyed on (voxel, direction) so it stores DirectionalTSDF's 6
@@ -92,7 +92,7 @@ namespace Engine::Spatial {
                        const Eigen::Vector3f &cameraPos = Eigen::Vector3f::Zero());
 
         // Dispatch the extract kernel (one thread per hash slot) and download the emitted
-        // per-direction surface candidates into an OrientedPointCloud.
+        // per-direction surface candidates into an Engine::Core::OrientedPointCloud.
         //
         // merge=false (default): RAW candidates, one point per emitted (voxel,direction)
         // crossing -- byte-identical to the pre-merge behavior.
@@ -100,7 +100,7 @@ namespace Engine::Spatial {
         // DirectionalTSDF::mergeCandidates, see MergeCandidates below) to dedup redundant
         // candidates into averaged points while preserving sharp corners (a hard normal-angle
         // split prevents merging across a corner).
-        OrientedPointCloud ExtractPointCloud(uint32_t maxCandidates = 1u << 19,
+        Engine::Core::OrientedPointCloud ExtractPointCloud(uint32_t maxCandidates = 1u << 19,
                                              bool merge = false) const;
 
         uint32_t FilledCount() const;
@@ -118,7 +118,7 @@ namespace Engine::Spatial {
         // cosThresh (30 deg) of its mean, with a hard 60 deg strong-split so corners keep
         // separate points. Public static utility -- reusable on ANY oriented point set (e.g.
         // the variance-adaptive combine's assembled cloud), not just this instance's extraction.
-        static OrientedPointCloud MergeCandidates(const std::vector<Eigen::Vector3f> &points,
+        static Engine::Core::OrientedPointCloud MergeCandidates(const std::vector<Eigen::Vector3f> &points,
                                                   const std::vector<Eigen::Vector3f> &normals,
                                                   float voxelSize);
 
@@ -141,4 +141,4 @@ namespace Engine::Spatial {
         std::unique_ptr<Engine::Core::ComputePipeline> m_kernel;
     };
 
-} // namespace Engine::Spatial
+} // namespace TSDF

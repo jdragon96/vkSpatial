@@ -12,10 +12,10 @@
 #include <tuple>
 #include <vector>
 
-using Engine::Spatial::AdvancedEntry;
-using Engine::Spatial::AdvancedTSDF;
-using Engine::Spatial::OrientedPointCloud;
-using Engine::Spatial::TiledAdvancedTSDF;
+using TSDF::AdvancedEntry;
+using TSDF::AdvancedTSDF;
+using Engine::Core::OrientedPointCloud;
+using TSDF::TiledAdvancedTSDF;
 using Eigen::Vector3f;
 
 namespace {
@@ -55,12 +55,12 @@ TEST(TiledAdvanced, TilingMatchesSingleWindowWhereItFits) {
     TiledAdvancedTSDF tiled;
     tiled.Build(ctx, 0.05f, 0.15f);
     tiled.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
-    const OrientedPointCloud tiledCloud = tiled.ExtractPointCloud(/*merge=*/false);
+    const Engine::Core::OrientedPointCloud tiledCloud = tiled.ExtractPointCloud(/*merge=*/false);
 
     AdvancedTSDF single;
     single.Build(ctx, 0.05f, 0.15f); // default centered window covers [-12.8, 12.8)
     single.Integrate(pts, nrm, Vector3f(6.0f, 6.0f, 7.0f));
-    const OrientedPointCloud singleCloud = single.ExtractPointCloud(1u << 18, /*merge=*/false);
+    const Engine::Core::OrientedPointCloud singleCloud = single.ExtractPointCloud(1u << 18, /*merge=*/false);
 
     ASSERT_GT(tiledCloud.points.size(), 100u);
     ASSERT_GT(singleCloud.points.size(), 100u);
@@ -80,7 +80,7 @@ TEST(TiledAdvanced, PlaneSpanningTilesIsSeamFree) {
     TiledAdvancedTSDF tiled;
     tiled.Build(ctx, 0.05f, 0.15f);
     tiled.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, 1.0f));
-    const OrientedPointCloud cloud = tiled.ExtractPointCloud(/*merge=*/false);
+    const Engine::Core::OrientedPointCloud cloud = tiled.ExtractPointCloud(/*merge=*/false);
 
     ASSERT_GT(cloud.points.size(), 1000u);
     EXPECT_GE(tiled.TileCount(), 2u);
@@ -148,16 +148,16 @@ TEST(TiledAdvanced, A1A2SettersReachTiles) {
 
     // A1: projective mode makes each voxel's tsdf view-dependent, so confidence weighting shifts
     // the fused surface measurably.
-    const OrientedPointCloud confOff = run(/*p2p=*/false, 0.0f, false);
-    const OrientedPointCloud confOn = run(/*p2p=*/false, 0.8f, false);
+    const Engine::Core::OrientedPointCloud confOff = run(/*p2p=*/false, 0.0f, false);
+    const Engine::Core::OrientedPointCloud confOn = run(/*p2p=*/false, 0.8f, false);
     ASSERT_GT(confOff.points.size(), 100u);
     ASSERT_GT(confOn.points.size(), 100u);
     EXPECT_GT(maxNearest(confOff.points, confOn.points), 1e-4f)
             << "SetConfidenceWeight had no effect -> A1 not reaching tiles";
 
     // A2: Hermite moves the sub-voxel zero-crossing on the curved surface.
-    const OrientedPointCloud hermOff = run(/*p2p=*/true, 0.5f, false);
-    const OrientedPointCloud hermOn = run(/*p2p=*/true, 0.5f, true);
+    const Engine::Core::OrientedPointCloud hermOff = run(/*p2p=*/true, 0.5f, false);
+    const Engine::Core::OrientedPointCloud hermOn = run(/*p2p=*/true, 0.5f, true);
     ASSERT_GT(hermOff.points.size(), 100u);
     ASSERT_GT(hermOn.points.size(), 100u);
     EXPECT_GT(maxNearest(hermOff.points, hermOn.points), 1e-4f)

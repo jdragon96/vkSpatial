@@ -13,7 +13,7 @@ namespace Engine::Pipeline {
         src.normals = frame.nrm;
         tgt.points.reserve(model->entries.size());
         tgt.normals.reserve(model->entries.size());
-        for (const Engine::Spatial::AdvancedEntry &e: model->entries) {
+        for (const TSDF::AdvancedEntry &e: model->entries) {
             tgt.points.push_back(e.center);
             tgt.normals.push_back(e.normal);
         }

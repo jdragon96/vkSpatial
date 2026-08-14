@@ -36,10 +36,10 @@ int main() {
         }
     std::cout << "surface samples: " << surface.size() << "\n";
 
-    Engine::Spatial::DirectionalTSDF tsdf;
+    TSDF::DirectionalTSDF tsdf;
     tsdf.Build(ctx, voxelSize, truncation);
 
-    Engine::Spatial::SimpleTSDF simple;
+    TSDF::SimpleTSDF simple;
     simple.Build(ctx, voxelSize, truncation, 1u << 20, 1u << 15);
 
     std::ofstream csv("directional_tsdf_stats.csv");

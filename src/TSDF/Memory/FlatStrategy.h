@@ -19,7 +19,7 @@ namespace TSDF {
                     const Eigen::Vector3f &cameraPosition,
                     Engine::Compute::CommandBatch &batch) override;
 
-        void Download(std::vector<Engine::Spatial::AdvancedEntry> &out) const override;
+        void Download(std::vector<TSDF::AdvancedEntry> &out) const override;
 
         VolumeStats Stats() const override;
         const char *Name() const override { return "flat"; }
@@ -27,7 +27,7 @@ namespace TSDF {
 
     private:
         Engine::Core::Context *m_context = nullptr;
-        Engine::Spatial::AdvancedTSDF m_tsdf;
+        TSDF::AdvancedTSDF m_tsdf;
     };
 
 } // namespace TSDF

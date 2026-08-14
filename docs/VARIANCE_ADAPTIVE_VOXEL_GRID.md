@@ -50,7 +50,7 @@ $$
 $$
 
 **노출 API:** `SimpleTSDF::DownloadVoxels()` → `VoxelStat { center, tsdf, weight, variance }`
-(`src/Engine/Spatial/SimpleTSDF.h:23,33,84`)
+(`src/TSDF/Backends/SimpleTSDF.h:23,33,84`)
 
 > 이게 개념의 **측정 프리미티브**입니다 — 여기서 나온 voxel별 $\sigma^2$ 가 이후 모든 적응의 근거.
 
@@ -143,4 +143,4 @@ $$
 - 논문: `docs/Variance-Adaptive Voxel Grids.pdf`
 - 분석/비교: `docs/MRHASH_VS_DIRECTIONAL_TSDF.md`
 - 관련: `docs/COMPACT_VS_DIRECTIONAL_TSDF.md`, `docs/DIRECTIONAL_TSDF_INTEGRATION.md`
-- 구현: `src/shader/voxel_tsdf_integrate.comp`, `src/Engine/Spatial/SimpleTSDF.{h,cpp}`, `example2/tsdf_benchmark.cpp`
+- 구현: `src/shader/voxel_tsdf_integrate.comp`, `src/TSDF/Backends/SimpleTSDF.{h,cpp}`, `example2/tsdf_benchmark.cpp`

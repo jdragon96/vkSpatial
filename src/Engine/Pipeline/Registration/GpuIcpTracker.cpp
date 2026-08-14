@@ -33,7 +33,7 @@ namespace Engine::Pipeline {
         Engine::Registration::PointCloud tgt;
         tgt.points.reserve(model->entries.size());
         tgt.normals.reserve(model->entries.size());
-        for (const Engine::Spatial::AdvancedEntry &entry: model->entries)
+        for (const TSDF::AdvancedEntry &entry: model->entries)
             if ((entry.center.array() >= mn.array()).all() && (entry.center.array() <= mx.array()).all()) {
                 const Eigen::Vector3f surfacePoint = entry.center - entry.tsdf * truncationDistance * entry.normal;
                 tgt.points.push_back(surfacePoint);

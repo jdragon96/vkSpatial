@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cstring>
 
-namespace Engine::Spatial {
+namespace TSDF {
 
     class TiledAdvancedTSDF : public TiledDirectionalTSDF<AdvancedTSDF> {
     public:
@@ -84,4 +84,4 @@ namespace Engine::Spatial {
         }
     };
 
-} // namespace Engine::Spatial
+} // namespace TSDF

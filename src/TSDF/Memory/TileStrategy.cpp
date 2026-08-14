@@ -41,7 +41,7 @@ namespace TSDF {
         m_tsdf.RecordIntegrateGPU(points, normals, cameraPosition, batch);
     }
 
-    void TileStrategy::Download(std::vector<Engine::Spatial::AdvancedEntry> &out) const {
+    void TileStrategy::Download(std::vector<TSDF::AdvancedEntry> &out) const {
         if (m_context == nullptr) {
             out.clear();
             return;

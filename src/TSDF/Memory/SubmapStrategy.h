@@ -38,7 +38,7 @@ namespace TSDF {
                     const Eigen::Vector3f &cameraPosition,
                     Engine::Compute::CommandBatch &batch) override;
 
-        void Download(std::vector<Engine::Spatial::AdvancedEntry> &out) const override;
+        void Download(std::vector<TSDF::AdvancedEntry> &out) const override;
 
         VolumeStats Stats() const override;
         const char *Name() const override { return "submap"; }
@@ -49,7 +49,7 @@ namespace TSDF {
         static constexpr float kDetailPointsPerVoxel = 4.0f;
 
         Engine::Core::Context *m_context = nullptr;
-        Engine::Spatial::SubmapAdvancedTSDF m_tsdf;
+        TSDF::SubmapAdvancedTSDF m_tsdf;
     };
 
 } // namespace TSDF

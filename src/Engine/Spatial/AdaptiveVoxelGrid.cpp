@@ -233,7 +233,7 @@ namespace Engine::Spatial {
     // either the fixed m_threshold (>=0) or, in percentile mode (m_threshold < 0), the
     // m_percentile-th quantile of the observed per-voxel variances.
     void AdaptiveVoxelGrid::buildMixed() {
-        const std::vector<VoxelStat> vox = m_fine.DownloadVoxels();
+        const std::vector<TSDF::VoxelStat> vox = m_fine.DownloadVoxels();
 
         auto vcoord = [&](const Eigen::Vector3f &c) {
             return Eigen::Vector3i(
