@@ -196,3 +196,79 @@ TEST(TsdfHashStrategy, BucketedGrowsLaterThanLinear) {
             << "버킷은 임계값 0.8이라 선형탐사(0.5)보다 늦게 자라야 한다";
     EXPECT_EQ(bucketed.insertFailureCount, 0u);
 }
+
+// Fix round 1: AdvancedTSDF.rehash.comp.glsl used to hard-code linear-probe addressing for the
+// GROWN table regardless of hash strategy, so a bucketed table's entries survived a grow at
+// wangHash(key) % capacity -- a linear-probe slot -- instead of their bucketed
+// wangHash(key) % bucketCount address. That slot generally sits outside every bucket a later
+// bucketed findSlot/findOrInsert would ever probe for that key, so the entry becomes invisible to
+// lookup: an integrate that later touches the same voxel cannot find it and inserts a duplicate.
+// This test grows a bucketed table for real and then re-touches pre-grow voxels, which is exactly
+// the scenario that trips the bug.
+//
+// Growth is driven by many small, spatially separated patches rather than one big plane so no
+// single Record call ever needs more room than the table currently has: bucketed's 0.8 threshold
+// sits comfortably below full capacity (1638 of 2048), so even the largest possible per-patch
+// contribution cannot push occupancy past capacity before maybeGrow gets a chance to grow it
+// first. Each patch keeps camera and points at the same relative offset (translated together) so
+// every patch behaves identically regardless of its position in the sequence.
+TEST(TsdfHashStrategy, BucketedSurvivesAGrowIntact) {
+    Engine::Core::Context context;
+    TSDF::FlatStrategy strategy;
+    TSDF::VolumeParams params;
+    params.voxelSize = 0.05f;
+    params.truncation = 0.15f;
+    params.hashCapacity = 1u << 11; // 2048 slots -> bucketed's grow threshold is 1638 (0.8 * 2048)
+    params.hashStrategy = "bucketed";
+    strategy.Build(context, params);
+
+    auto patch = [](float offsetX, std::vector<Eigen::Vector3f> &points,
+                    std::vector<Eigen::Vector3f> &normals) {
+        for (int i = -2; i <= 2; ++i)
+            for (int j = -2; j <= 2; ++j) {
+                points.emplace_back(offsetX + float(i) * 0.0375f, float(j) * 0.0375f, 0.0f);
+                normals.emplace_back(0.0f, 0.0f, 1.0f);
+            }
+    };
+
+    constexpr int kMaxPatches = 40;
+    int patchIndex = 0;
+    while (patchIndex < kMaxPatches && strategy.Stats().growCount == 0) {
+        // 0.3 apart -- comfortably beyond truncation (0.15) + voxelSize (0.05), so patches never
+        // share a voxel and every call's points are genuinely new entries.
+        const float offsetX = float(patchIndex) * 0.3f;
+        std::vector<Eigen::Vector3f> points, normals;
+        patch(offsetX, points, normals);
+        Engine::Compute::CommandBatch batch(context);
+        strategy.Record(points, normals, Eigen::Vector3f(offsetX, 0.0f, 1.0f), batch);
+        batch.Submit();
+        ++patchIndex;
+    }
+
+    ASSERT_GT(strategy.Stats().growCount, 0u)
+            << "이 픽스처는 실제로 성장을 강제해야 한다 (버킷 임계값 0.8을 넘겨야 함)";
+    const uint64_t occupiedAfterGrow = strategy.Stats().occupiedEntryCount;
+
+    // Re-touch the FIRST patch -- it predates the grow, so its entries were the ones the rehash
+    // moved. Correctly addressed, findOrInsert recognizes the existing keys and accumulates onto
+    // them: occupiedEntryCount must not move. With the pre-fix kernel this re-integration cannot
+    // find them and inserts brand-new duplicate slots instead.
+    {
+        std::vector<Eigen::Vector3f> points, normals;
+        patch(0.0f, points, normals);
+        Engine::Compute::CommandBatch batch(context);
+        strategy.Record(points, normals, Eigen::Vector3f(0.0f, 0.0f, 1.0f), batch);
+        batch.Submit();
+    }
+
+    const TSDF::VolumeStats stats = strategy.Stats();
+    EXPECT_EQ(stats.insertFailureCount, 0u);
+    EXPECT_EQ(stats.occupiedEntryCount, occupiedAfterGrow)
+            << "재통합이 occupiedEntryCount를 늘렸다면, 그로우 이후 버킷 주소로 기존 엔트리를 찾지 못해 "
+               "중복 삽입한 것이다";
+
+    std::vector<TSDF::AdvancedEntry> downloaded;
+    strategy.Download(downloaded);
+    EXPECT_EQ(downloaded.size(), stats.occupiedEntryCount)
+            << "다운로드된 엔트리 수와 occupiedEntryCount가 어긋나면 그로우 이후 테이블이 일관성을 잃은 것";
+}

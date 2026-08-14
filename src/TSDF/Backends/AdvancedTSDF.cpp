@@ -101,6 +101,7 @@ namespace TSDF {
         m_statBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
         m_firstFrameBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
         m_insertFailureBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
+        m_rehashScratchStat = std::make_unique<Engine::Core::Buffer>(ctx);
 
         m_hashBuffer->Allocate(hashCapacity * sizeof(AdvDirEntry));
         m_pointBuffer->AllocateHostVisible(maxPoints * 3u * sizeof(float));
@@ -108,6 +109,7 @@ namespace TSDF {
         m_statBuffer->AllocateHostVisibleReadback(sizeof(uint32_t));
         m_firstFrameBuffer->Allocate(hashCapacity * sizeof(int32_t));
         m_insertFailureBuffer->AllocateHostVisibleReadback(sizeof(uint32_t));
+        m_rehashScratchStat->Allocate(sizeof(uint32_t)); // discarded -- see member comment
 
         kernel_integratePoints = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         if (m_hash->macroName) kernel_integratePoints->Define(m_hash->macroName);
@@ -126,6 +128,7 @@ namespace TSDF {
         kernel_clearVoxel->Build("TSDF/Backends/AdvancedTSDF.clear.comp.glsl").Bind(0, *m_hashBuffer);
 
         kernel_rehashTable = std::make_unique<Engine::Core::ComputePipeline>(ctx);
+        if (m_hash->macroName) kernel_rehashTable->Define(m_hash->macroName);
         kernel_rehashTable->Build("TSDF/Backends/AdvancedTSDF.rehash.comp.glsl");
 
         Reset();
@@ -292,15 +295,20 @@ namespace TSDF {
         kernel_clearVoxel->Bind(0, *newHash).Args(ClearPC{newCapacity});
         kernel_clearVoxel->DispatchElements(newCapacity); // synchronous: clear before rehash reads it
 
+        // Field names match the shader's push_constant block: g_hashCapacity (not g_newCapacity) is
+        // the NEW table's capacity, addressed through the same findOrInsert the integrate kernel
+        // uses -- see the shader for why g_currentFrame's value does not matter here.
         struct RehashPC {
             uint32_t oldCapacity;
-            uint32_t newCapacity;
+            uint32_t hashCapacity;
+            int32_t currentFrame;
         };
         kernel_rehashTable->Bind(0, *m_hashBuffer)
                 .Bind(1, *m_firstFrameBuffer)
                 .Bind(2, *newHash)
                 .Bind(3, *newFirst)
-                .Args(RehashPC{m_hashCapacity, newCapacity});
+                .Bind(4, *m_rehashScratchStat)
+                .Args(RehashPC{m_hashCapacity, newCapacity, 0});
         kernel_rehashTable->DispatchElements(m_hashCapacity); // synchronous
 
         m_hashBuffer = std::move(newHash);

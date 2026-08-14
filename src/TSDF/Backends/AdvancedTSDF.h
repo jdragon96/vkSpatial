@@ -209,6 +209,10 @@ namespace TSDF {
         std::unique_ptr<Engine::Core::Buffer> m_statBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_firstFrameBuffer; // per-slot first-fill frame (int32)
         std::unique_ptr<Engine::Core::Buffer> m_insertFailureBuffer;
+        // Throwaway g_filledCount for kernel_rehashTable's findOrInsert: a rehash MOVES entries, it
+        // creates none, so the real occupancy in m_statBuffer must not see these claims. Allocated
+        // once and reused every grow -- never read back, so it is never reset either.
+        std::unique_ptr<Engine::Core::Buffer> m_rehashScratchStat;
         uint32_t m_growCount = 0;
         mutable std::unique_ptr<Engine::Core::Buffer> m_compactBuffer;
         mutable std::unique_ptr<Engine::Core::Buffer> m_compactCountBuffer;
