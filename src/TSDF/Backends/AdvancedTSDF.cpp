@@ -100,12 +100,14 @@ namespace TSDF {
         m_normalBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
         m_statBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
         m_firstFrameBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
+        m_insertFailureBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
 
         m_hashBuffer->Allocate(hashCapacity * sizeof(AdvDirEntry));
         m_pointBuffer->AllocateHostVisible(maxPoints * 3u * sizeof(float));
         m_normalBuffer->AllocateHostVisible(maxPoints * 3u * sizeof(float));
         m_statBuffer->AllocateHostVisibleReadback(sizeof(uint32_t));
         m_firstFrameBuffer->Allocate(hashCapacity * sizeof(int32_t));
+        m_insertFailureBuffer->AllocateHostVisibleReadback(sizeof(uint32_t));
 
         kernel_integratePoints = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         if (m_hash->macroName) kernel_integratePoints->Define(m_hash->macroName);
@@ -114,7 +116,8 @@ namespace TSDF {
                 .Bind(1, *m_pointBuffer)
                 .Bind(2, *m_normalBuffer)
                 .Bind(3, *m_statBuffer)
-                .Bind(4, *m_firstFrameBuffer);
+                .Bind(4, *m_firstFrameBuffer)
+                .Bind(5, *m_insertFailureBuffer);
 
         kernel_compactTable = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         kernel_compactTable->Build("TSDF/Backends/AdvancedTSDF.compact.comp.glsl").Bind(3, *m_firstFrameBuffer);
@@ -141,6 +144,9 @@ namespace TSDF {
         m_statBuffer->MakeVisibleToGPU(sizeof(uint32_t));
         // firstFrame is stamped on each slot's first fill, so empty slots' stale values never surface
         // (compaction only reads occupied slots) -- no explicit clear needed.
+        *static_cast<uint32_t *>(m_insertFailureBuffer->MappedPtr()) = 0;
+        m_insertFailureBuffer->MakeVisibleToGPU(sizeof(uint32_t));
+        m_growCount = 0; // otherwise a second scene reusing this instance would inherit the first's count
     }
 
     void AdvancedTSDF::Integrate(const std::vector<Eigen::Vector3f> &points,
@@ -257,6 +263,12 @@ namespace TSDF {
         return *static_cast<const uint32_t *>(m_statBuffer->MappedPtr());
     }
 
+    uint32_t AdvancedTSDF::InsertFailureCount() const {
+        if (!m_insertFailureBuffer) return 0;
+        m_insertFailureBuffer->MakeVisibleToCPU(sizeof(uint32_t));
+        return *static_cast<const uint32_t *>(m_insertFailureBuffer->MappedPtr());
+    }
+
     void AdvancedTSDF::maybeGrow() {
         if (!m_hashBuffer || m_hashCapacity == 0) return;
         const uint32_t filled = FilledCount();
@@ -294,11 +306,14 @@ namespace TSDF {
         m_hashBuffer = std::move(newHash);
         m_firstFrameBuffer = std::move(newFirst);
         m_hashCapacity = newCapacity;
+        // binding 5 (m_insertFailureBuffer) is untouched by a grow -- it never gets reallocated,
+        // so it does not need re-binding here.
         kernel_integratePoints->Bind(0, *m_hashBuffer).Bind(4, *m_firstFrameBuffer);
         kernel_compactTable->Bind(3, *m_firstFrameBuffer);
         kernel_clearVoxel->Bind(0, *m_hashBuffer);
         m_compactBuffer.reset(); // standalone-download scratch was hash-sized -> re-alloc on next use
         m_compactCountBuffer.reset();
+        ++m_growCount;
     }
 
     void AdvancedTSDF::RecordCompact(Engine::Core::Buffer &out,

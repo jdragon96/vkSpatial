@@ -63,6 +63,12 @@ layout(std430, set = 0, binding = 4) buffer FirstFrame
 {
 	int g_firstFrame[];
 };
+// Observations dropped because probing gave up. Must stay 0 in a healthy run -- a non-zero value
+// means the table's load factor limit is set too high for this hash strategy.
+layout(std430, set = 0, binding = 5) buffer InsertFailures
+{
+	uint g_insertFailureCount;
+};
 
 /// *********************************************
 /// Hashing
@@ -205,7 +211,7 @@ void Integrate(
 			if (!packDirKey(voxel, descDirection[di], key)) continue;
 
 			uint slot = findOrInsert(key);
-			if (slot == HASH_INSERT_FAILED) continue;
+			if (slot == HASH_INSERT_FAILED) { atomicAdd(g_insertFailureCount, 1u); continue; }
 			atomicAdd(g_hash[slot].sumDW, int(tsdf * w * TSDF_SCALE));
 			atomicAdd(g_hash[slot].sumW,  uint(w * TSDF_SCALE));
 			atomicAdd(g_hash[slot].sumNx, int(unitNormal.x * w * TSDF_SCALE));

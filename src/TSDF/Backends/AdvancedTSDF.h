@@ -140,6 +140,13 @@ namespace TSDF {
         // capacity would report a stale load factor -- read it here instead.
         uint32_t HashCapacity() const { return m_hashCapacity; }
 
+        // Observations the integrate kernel dropped because probing gave up. Zero in a healthy
+        // run; non-zero means this strategy's load factor limit is too high.
+        uint32_t InsertFailureCount() const;
+
+        // Rehashes performed since Build. Each one doubled the table.
+        uint32_t GrowCount() const { return m_growCount; }
+
         // Unpack every occupied, sufficiently-observed entry (world centre, direction, tsdf,
         // weight, stored-gradient normal). GPU-compacts the hash so only filled entries cross back.
         std::vector<AdvancedEntry> DownloadEntries() const;
@@ -201,6 +208,8 @@ namespace TSDF {
         std::unique_ptr<Engine::Core::Buffer> m_normalBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_statBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_firstFrameBuffer; // per-slot first-fill frame (int32)
+        std::unique_ptr<Engine::Core::Buffer> m_insertFailureBuffer;
+        uint32_t m_growCount = 0;
         mutable std::unique_ptr<Engine::Core::Buffer> m_compactBuffer;
         mutable std::unique_ptr<Engine::Core::Buffer> m_compactCountBuffer;
 

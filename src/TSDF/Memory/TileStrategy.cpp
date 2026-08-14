@@ -56,6 +56,8 @@ namespace TSDF {
         stats.slotCapacity = m_tsdf.SlotCapacity();
         stats.deviceMemoryBytes = stats.slotCapacity * kBytesPerHashSlot;
         stats.tableCount = m_tsdf.TileCount();
+        stats.insertFailureCount = m_tsdf.InsertFailureCount();
+        stats.growCount = m_tsdf.GrowCount();
         return stats;
     }
 

@@ -156,6 +156,12 @@ namespace TSDF {
         uint32_t BaseTileCount() const { return m_base.TileCount(); }
         uint32_t DetailTileCount() const { return m_detail.TileCount(); }
 
+        uint32_t InsertFailureCount() const {
+            return m_base.InsertFailureCount() + m_detail.InsertFailureCount();
+        }
+
+        uint32_t GrowCount() const { return m_base.GrowCount() + m_detail.GrowCount(); }
+
         void DownloadEntries(std::vector<AdvancedEntry> &out) const {
             if (m_dense.empty()) {
                 m_base.DownloadEntries(out);

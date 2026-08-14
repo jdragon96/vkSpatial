@@ -46,7 +46,8 @@ namespace TSDF {
         stats.slotCapacity = m_tsdf.HashCapacity();
         stats.deviceMemoryBytes = stats.slotCapacity * kBytesPerHashSlot;
         stats.tableCount = 1;
-        // insertFailureCount and growCount stay 0 until the hash axis lands in the next plan.
+        stats.insertFailureCount = m_tsdf.InsertFailureCount();
+        stats.growCount = m_tsdf.GrowCount();
         return stats;
     }
 

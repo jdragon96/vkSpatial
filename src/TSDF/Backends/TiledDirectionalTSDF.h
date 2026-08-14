@@ -170,6 +170,19 @@ namespace TSDF {
 
         uint32_t TileCount() const { return static_cast<uint32_t>(m_tiles.size()); }
 
+        // Summed across live tiles, mirroring FilledCount()/SlotCapacity().
+        uint32_t InsertFailureCount() const {
+            uint32_t total = 0;
+            for (const auto &kv: m_tiles) total += kv.second->InsertFailureCount();
+            return total;
+        }
+
+        uint32_t GrowCount() const {
+            uint32_t total = 0;
+            for (const auto &kv: m_tiles) total += kv.second->GrowCount();
+            return total;
+        }
+
         void Reset() { m_tiles.clear(); }
 
         std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> CoreBoxes() const {
