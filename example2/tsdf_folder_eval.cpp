@@ -260,7 +260,12 @@ int main(int argc, char **argv) {
         TSDF::VolumeParams params;
         params.voxelSize = voxel;
         params.truncation = trunc;
-        params.hashCapacity = arg.Has("--tile-hash") && tsdfName != "flat" ? tileHash : hashCap;
+        // flat owns ONE table sized to the whole scene (hashCap); tile/submap own MANY tables, each
+        // sized to a single tile (tileHash, default 1<<21, overridden by --tile-hash exactly as
+        // before this task). Using hashCap as a PER-TILE budget -- as an earlier version of this
+        // harness briefly did -- multiplies a whole-scene-sized table by every tile and can exhaust
+        // device memory on a real scan (see task-6-report.md's fix-round-1 note).
+        params.hashCapacity = tsdfName == "flat" ? hashCap : tileHash;
         params.maxPointsPerFrame = maxPts;
         params.hashStrategy = hashName;
         if (tsdfName == "flat") params.windowMinCorner = windowMinCorner;
