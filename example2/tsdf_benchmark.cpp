@@ -723,7 +723,7 @@ namespace {
     }
 
     // AdvancedTSDF — the canonical best-of-all class (same compact + stored-gradient +
-    // point-to-plane recipe as Compact-Directional, over the user-style advanced_tsdf_*
+    // point-to-plane recipe as Compact-Directional, over the src/TSDF/Backends/AdvancedTSDF.*.comp.glsl
     // shaders, with the centred default window). Confirms parity + honours --p2p.
     Row RunAdvanced(Engine::Core::Context &ctx, Shape shape, float voxel, uint32_t maxDir,
                     const std::vector<fixtures::View> &views) {

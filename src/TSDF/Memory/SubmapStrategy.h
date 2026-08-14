@@ -49,6 +49,12 @@ namespace TSDF {
     private:
         static constexpr int kBlockVoxels = 32;
         static constexpr float kDetailPointsPerVoxel = 4.0f;
+        // Detail-level truncation, in DETAIL voxels (half the base voxel). SubmapAdvancedTSDF
+        // clamps the detail truncation to detailVoxel * this, so it decides how thick the
+        // half-resolution band is. Named here rather than left as a bare argument so the value the
+        // A/B run actually measured is pinned to this call site: SubmapAdvancedTSDF::Build's own
+        // default is a separate decision that may move without a comparison run behind it.
+        static constexpr float kDetailTruncationVoxels = 3.0f;
 
         Engine::Core::Context *m_context = nullptr;
         TSDF::SubmapAdvancedTSDF m_tsdf;

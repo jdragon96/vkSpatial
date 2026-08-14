@@ -8,13 +8,13 @@
 namespace TSDF {
 
     static constexpr uint32_t EMPTY_KEY = 0xFFFFFFFFu;
-    // Matches #define TSDF_SCALE 10000.0 in advanced_tsdf_integrate.vert.glsl /
-    // advanced_tsdf_extract.vert.glsl (extract's MIN_WEIGHT gate = TSDF_SCALE/2).
+    // Matches #define TSDF_SCALE 10000.0 in AdvancedTSDF.integrate.comp.glsl /
+    // AdvancedTSDF.extract.comp.glsl (extract's MIN_WEIGHT gate = TSDF_SCALE/2).
     static constexpr int32_t kTsdfScale = 10000;
     static constexpr size_t kMaxClustersPerVoxel = 6; // max distinct orientations per voxel
 
     namespace {
-        // Must match the push_constant block in advanced_tsdf_integrate.vert.glsl (all 4-byte
+        // Must match the push_constant block in AdvancedTSDF.integrate.comp.glsl (all 4-byte
         // scalars -> tightly packed). g_pointToPlane is the last field.
         struct IntegratePC {
             uint32_t numPoints;
@@ -35,7 +35,7 @@ namespace TSDF {
             int32_t currentFrame;
         };
 
-        // Must match the push_constant block in advanced_tsdf_extract.vert.glsl.
+        // Must match the push_constant block in AdvancedTSDF.extract.comp.glsl.
         struct ExtractPC {
             float voxelSize;
             uint32_t hashCapacity;
@@ -47,7 +47,7 @@ namespace TSDF {
             uint32_t hermite;
         };
 
-        // Must match the push_constant block in advanced_tsdf_compact.comp.glsl. The kernel decodes on
+        // Must match the push_constant block in AdvancedTSDF.compact.comp.glsl. The kernel decodes on
         // the GPU (local key -> world centre), so it needs this tile's origin + voxel size + the core
         // bounds (in LOCAL voxel coords) that gate which voxels it appends.
         struct CompactPC {

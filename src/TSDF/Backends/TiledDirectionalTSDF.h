@@ -186,15 +186,18 @@ namespace TSDF {
 
         uint32_t TileCount() const { return static_cast<uint32_t>(m_tiles.size()); }
 
-        // Summed across live tiles, mirroring FilledCount()/SlotCapacity().
-        uint32_t InsertFailureCount() const {
-            uint32_t total = 0;
+        // Summed across live tiles, mirroring FilledCount()/SlotCapacity(). Accumulated in 64 bits
+        // (each tile's own counter is 32-bit): a fine-voxel scan runs thousands of tiles, so a
+        // 32-bit total could wrap and report a healthy 0 for a volume that dropped billions of
+        // observations. VolumeStats stores both as 64-bit for the same reason.
+        uint64_t InsertFailureCount() const {
+            uint64_t total = 0;
             for (const auto &kv: m_tiles) total += kv.second->InsertFailureCount();
             return total;
         }
 
-        uint32_t GrowCount() const {
-            uint32_t total = 0;
+        uint64_t GrowCount() const {
+            uint64_t total = 0;
             for (const auto &kv: m_tiles) total += kv.second->GrowCount();
             return total;
         }

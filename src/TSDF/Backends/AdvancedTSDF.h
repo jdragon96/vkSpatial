@@ -19,7 +19,7 @@ namespace TSDF {
 
     // Per-(voxel,direction) hash entry for AdvancedTSDF. 24 bytes: distance/weight
     // accumulators + a stored-gradient (observed normal) accumulator. Layout must match
-    // DirEntry in advanced_tsdf_{integrate,extract}.vert.glsl exactly.
+    // DirEntry in AdvancedTSDF.{integrate,extract}.comp.glsl exactly.
     struct AdvDirEntry {
         uint32_t key;  // packDirKey(voxel, dir); 0xFFFFFFFF = empty
         int32_t sumDW; // Σ tsdf · w · 10000
@@ -50,7 +50,7 @@ namespace TSDF {
     //   - point-to-plane integration (near-exact on flat surfaces, better edges — measured),
     //   - stored-gradient mode-3 extraction (denoised normals + legacy sub-voxel zero-crossing
     //     position),
-    // implemented over the user-style advanced_tsdf_{integrate,extract}.vert.glsl shaders.
+    // implemented over the AdvancedTSDF.{integrate,extract}.comp.glsl kernels beside this header.
     //
     // 32-bit key => a movable 512^3-voxel window. Unlike CompactDirectionalTSDF's fixed-corner
     // default (only correct at voxelSize=0.1), the default window here is CENTRED on the world

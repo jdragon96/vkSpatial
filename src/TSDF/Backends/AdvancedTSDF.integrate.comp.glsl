@@ -11,7 +11,7 @@ layout(local_size_x = 256) in;
 #include "voxel_common.glsl"   // EMPTY_KEY, MAX_PROBE, wangHash
 
 // 24 bytes: distance/weight accumulators + stored-gradient (observed normal) accumulators.
-// Layout must match DirEntry in advanced_tsdf_extract.vert.glsl and AdvancedTSDFTypes.h.
+// Layout must match DirEntry in AdvancedTSDF.extract.comp.glsl and AdvancedTSDF.h.
 struct DirEntry
 {
 	uint key;

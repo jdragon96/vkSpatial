@@ -2,7 +2,7 @@
 
 > "복셀이 몇 개일 때 linear probe를 몇 번 하는가"에 대한 문헌 조사.
 >
-> 대상 코드: [`AdvancedTSDF.cpp`](../src/TSDF/Backends/AdvancedTSDF.cpp) + [`advanced_tsdf_integrate.comp.glsl`](../src/shader/advanced_tsdf_integrate.comp.glsl)
+> 대상 코드: [`AdvancedTSDF.cpp`](../src/TSDF/Backends/AdvancedTSDF.cpp) + [`AdvancedTSDF.integrate.comp.glsl`](../src/TSDF/Backends/AdvancedTSDF.integrate.comp.glsl) + [`LinearProbe.glsl`](../src/TSDF/Memory/Hash/LinearProbe.glsl)
 > — open addressing + linear probing(`MAX_PROBE = 128`), load factor 50%에서 리해시.
 >
 > 관련 문서: [`ADVANCED_TSDF.md`](ADVANCED_TSDF.md) · [`MRHASH_VS_DIRECTIONAL_TSDF.md`](MRHASH_VS_DIRECTIONAL_TSDF.md)
@@ -194,7 +194,7 @@ MrHash. 충돌은 Nießner식 offset 필드(`o_j ∈ N`)로 처리하며, 탐사
 ## 5. 우리 구현에 대한 함의
 
 현재 상태 — [`AdvancedTSDF.cpp:257-302`](../src/TSDF/Backends/AdvancedTSDF.cpp#L257-L302),
-[`advanced_tsdf_integrate.comp.glsl:87-101`](../src/shader/advanced_tsdf_integrate.comp.glsl#L87-L101):
+[`LinearProbe.glsl`](../src/TSDF/Memory/Hash/LinearProbe.glsl) (probing now lives in a swappable fragment; see [`HashStrategy.h`](../src/TSDF/Memory/Hash/HashStrategy.h)):
 
 - open addressing + **linear probing**, `MAX_PROBE = 128`, 실패 시 조용한 드롭
 - `maybeGrow()`가 **α ≥ 0.5**에서 용량 2배 리해시

@@ -3,6 +3,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cstddef>
+#include <vector>
+
 TEST(ComputePipelineDefines, DefinitionsReachTheCompilerAndKeyTheCache) {
     Engine::Core::Context context;
 
@@ -140,11 +144,32 @@ TEST(TsdfHashStrategy, BucketedIsRegisteredWithItsOwnThreshold) {
     EXPECT_FLOAT_EQ(bucketed.loadFactorLimit, 0.8f);
 }
 
-// 같은 스캔을 두 해시로 적분하면 저장된 엔트리 집합이 같아야 한다. 주소 지정만 다를 뿐
-// 무엇을 저장하는지는 동일하기 때문이다. 다르면 버킷 구현이 키를 잃고 있다는 뜻이다.
+// 같은 스캔을 두 해시로 적분하면 저장된 엔트리 집합이 같아야 하고, 거기서 추출한 표면도 같아야 한다.
+// 주소 지정만 다를 뿐 무엇을 저장하는지는 동일하기 때문이다.
+//
+// Fix round 3: occupiedEntryCount alone was NOT enough. That counter is produced entirely by
+// findOrInsert (integrate) and by Download, which goes through the compact kernel -- a full sweep
+// of every slot that never probes at all. findSlot, bucketed's LOOKUP half, is reached from
+// exactly one place in the repo: AdvancedTSDF.extract.comp.glsl's neighbour lookups. So a
+// findSlot that returned HASH_NOT_FOUND for keys that are present (a wrong bucketCount, a probe
+// budget shorter than insertion's, a mis-ordered sawEmpty early-out) would leave every assertion
+// in the old version of this test byte-identical while silently degrading the extracted surface.
+// Comparing the EXTRACTION under both hashes is what actually exercises it, and it is what the
+// spec (§8) asked for.
+//
+// merge=false so the comparison sees the raw per-(voxel,direction) extraction output, not the
+// CPU-side merge on top of it: the merge would average neighbouring candidates together and could
+// mask a handful of missing ones. The two runs' entry accumulators are integer sums (atomicAdd on
+// ints, order-independent), so identical entries give identical extracted floats -- the tolerance
+// below is slack for the comparison, not room for a real difference.
 TEST(TsdfHashStrategy, BucketedStoresTheSameEntriesAsLinear) {
     std::vector<Eigen::Vector3f> points, normals;
     SeventeenBySeventeenPlane(points, normals);
+
+    struct Run {
+        TSDF::VolumeStats stats;
+        Engine::Core::OrientedPointCloud cloud;
+    };
 
     auto runWith = [&](const char *hashName) {
         Engine::Core::Context context;
@@ -159,15 +184,53 @@ TEST(TsdfHashStrategy, BucketedStoresTheSameEntriesAsLinear) {
         Engine::Compute::CommandBatch batch(context);
         strategy.Record(points, normals, Eigen::Vector3f(0.0f, 0.0f, 1.0f), batch);
         batch.Submit();
-        return strategy.Stats();
+
+        Run run;
+        run.stats = strategy.Stats();
+        run.cloud = strategy.Extract(/*merge=*/false);
+        return run;
     };
 
-    const TSDF::VolumeStats linear = runWith("linear");
-    const TSDF::VolumeStats bucketed = runWith("bucketed");
+    const Run linear = runWith("linear");
+    const Run bucketed = runWith("bucketed");
 
-    EXPECT_EQ(bucketed.occupiedEntryCount, linear.occupiedEntryCount);
-    EXPECT_EQ(bucketed.insertFailureCount, 0u);
-    EXPECT_GT(linear.occupiedEntryCount, 0u);
+    EXPECT_EQ(bucketed.stats.occupiedEntryCount, linear.stats.occupiedEntryCount);
+    EXPECT_EQ(bucketed.stats.insertFailureCount, 0u);
+    EXPECT_GT(linear.stats.occupiedEntryCount, 0u);
+
+    // The extraction comparison. Point count first: findSlot failing on present keys drops
+    // zero-crossings, which shows up here as a shorter cloud.
+    ASSERT_GT(linear.cloud.points.size(), 0u) << "픽스처가 표면을 하나도 추출하지 못하면 비교가 무의미하다";
+    ASSERT_EQ(bucketed.cloud.points.size(), linear.cloud.points.size())
+            << "버킷 추출 점 수가 다르다면 findSlot이 저장된 키를 찾지 못하고 있다는 뜻이다";
+
+    // The extract kernel appends through an atomic counter, so output ORDER is not deterministic
+    // even between two runs of the same hash. Sort both clouds before comparing positions.
+    auto sortedPositions = [](const Engine::Core::OrientedPointCloud &cloud) {
+        std::vector<Eigen::Vector3f> sorted = cloud.points;
+        std::sort(sorted.begin(), sorted.end(), [](const Eigen::Vector3f &a, const Eigen::Vector3f &b) {
+            if (a.x() != b.x()) return a.x() < b.x();
+            if (a.y() != b.y()) return a.y() < b.y();
+            return a.z() < b.z();
+        });
+        return sorted;
+    };
+    const std::vector<Eigen::Vector3f> linearSorted = sortedPositions(linear.cloud);
+    const std::vector<Eigen::Vector3f> bucketedSorted = sortedPositions(bucketed.cloud);
+
+    // 1e-5 world units against a 0.05 voxel: 0.02% of a voxel, far tighter than any real
+    // addressing defect could hide behind, and slack enough for float ordering noise.
+    constexpr float kPositionTolerance = 1e-5f;
+    size_t mismatches = 0;
+    float worstDelta = 0.0f;
+    for (size_t i = 0; i < linearSorted.size(); ++i) {
+        const float delta = (bucketedSorted[i] - linearSorted[i]).cwiseAbs().maxCoeff();
+        worstDelta = std::max(worstDelta, delta);
+        if (delta > kPositionTolerance) ++mismatches;
+    }
+    EXPECT_EQ(mismatches, 0u)
+            << "추출 위치가 " << mismatches << "개 어긋났다 (최대 편차 " << worstDelta
+            << ") -- 두 해시는 같은 엔트리를 저장하므로 추출 표면도 같아야 한다";
 }
 
 // Ruling 2 (progress.md): the plan's 81x81 plane at voxel 0.01 with hashCapacity = 1u << 12 would

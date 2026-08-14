@@ -7,7 +7,7 @@ layout(local_size_x = 256) in;
 
 #include "voxel_common.glsl"   // EMPTY_KEY
 
-// 24 bytes. Layout must match DirEntry in advanced_tsdf_integrate.comp.glsl / AdvDirEntry.
+// 24 bytes. Layout must match DirEntry in AdvancedTSDF.integrate.comp.glsl / AdvDirEntry.
 struct DirEntry
 {
 	uint key;

@@ -62,8 +62,10 @@ namespace TSDF {
         // download, and submap owns two such levels, while flat's scratch tracks its hash size).
         // So compare this only as table cost -- it is not the strategy's total GPU footprint.
         uint64_t deviceMemoryBytes = 0;
-        uint32_t tableCount = 1;         // 1 for a single window; tile count for tiled strategies
-        uint32_t growCount = 0;          // rehashes performed since Build
+        uint32_t tableCount = 1; // 1 for a single window; tile count for tiled strategies
+        // Rehashes performed since Build, summed over every table the volume owns. 64-bit for the
+        // same reason as insertFailureCount: a tiled volume adds up thousands of per-tile counters.
+        uint64_t growCount = 0;
 
         // n/m. Undefined-free: returns 0 for an unbuilt volume.
         double LoadFactor() const {

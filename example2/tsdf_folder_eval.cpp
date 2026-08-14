@@ -4,7 +4,11 @@
 //
 //   ./tsdf_folder_eval --dir scans/bunny [--voxel v] [--trunc t] [--gt path.ply]
 //        [--out extracted.ply] [--no-p2p] [--conf lambda] [--hermite]
-//        [--tsdf flat|tile|submap] [--hash linear|bucketed]
+//        [--tsdf flat|tile|submap] [--hash linear|bucketed] [--tile-hash n]
+//
+// --tsdf defaults BY SCENE SIZE: `flat` (one 512^3 window) while the object fits in 512
+// voxels/axis, `tile` otherwise. A single window silently discards every voxel outside it, so an
+// explicit `--tsdf flat` on an oversized scene is honoured but warned about on stderr.
 //
 // Per-frame camera position is ESTIMATED from each cloud (centroid + k·mean-normal), so this
 // works on any folder of oriented-point PLYs, not just object_scan_viewer output.
@@ -136,7 +140,9 @@ int main(int argc, char **argv) {
                         .Option("--out")
                         .Option("--conf", 0.5)
                         .Option("--tile-hash", 1 << 21)
-                        .Option("--tsdf", "flat")
+                        // No declared default: --tsdf defaults to flat/tile by scene size, decided
+                        // once axisVox is known (see defaultTsdfName below).
+                        .Option("--tsdf")
                         .Option("--hash", "linear");
         if (!arg) return 2;
         const std::string dir = arg.Value("--dir");
@@ -201,13 +207,20 @@ int main(int argc, char **argv) {
         const float maxSpan = span.maxCoeff();
         const int margin = int(std::ceil(trunc / voxel)) + 2;            // truncation ghost band
         const long axisVox = long(std::ceil(maxSpan / voxel)) + 2L * margin;
+        // A scene wider than 512 voxels/axis does NOT fit one AdvancedTSDF window, and the overflow
+        // is silent: packDirKey's bounds check simply discards every voxel outside the window, so
+        // `flat` would print a full stats table for whatever sliver happened to land inside. Pick
+        // the tiled layout for such a scene unless the operator overrides --tsdf explicitly.
+        const bool fitsOneWindow = axisVox <= 512;
+        const char *const defaultTsdfName = fitsOneWindow ? "flat" : "tile";
         const bool forceSingle = arg.Has("--single");
-        if (axisVox > 512 && forceSingle) {
+        if (!fitsOneWindow && forceSingle) {
             const float minVoxel = maxSpan / float(512 - 2 * margin);
             std::fprintf(stderr,
                          "error: voxel %.4f too fine — object spans %ld voxels/axis but a single "
                          "AdvancedTSDF window is 512^3 (--single).\n"
-                         "  drop --single to auto-tile, or use --voxel >= %.4f.\n",
+                         "  drop --single (this scene then defaults to --tsdf tile), or use "
+                         "--voxel >= %.4f.\n",
                          voxel, axisVox, minVoxel);
             return 3;
         }
@@ -238,8 +251,20 @@ int main(int argc, char **argv) {
         // Integrate + extract through the registry, so --tsdf/--hash pick the strategy without
         // recompiling. This is the axis the whole plan exists to measure (Task 6).
         Engine::Core::Context ctx;
-        const std::string tsdfName = arg.Value("--tsdf");
+        // Runtime default, not a declared one: `flat` only makes sense while the scene fits one
+        // 512^3 window, and the harness cannot know that until it has read the frames.
+        const std::string tsdfName = arg.Value("--tsdf", defaultTsdfName);
         const std::string hashName = arg.Value("--hash");
+        // An explicit `--tsdf flat` on an oversized scene is the operator's call, but it must not
+        // be quiet: every voxel outside the window is dropped without any counter recording it, so
+        // the table below would describe a fraction of the scene while looking perfectly healthy.
+        if (!fitsOneWindow && tsdfName == "flat")
+            std::fprintf(stderr,
+                         "warning: --tsdf flat on a %ld-voxel/axis scene — a single AdvancedTSDF "
+                         "window covers only 512 voxels/axis (%.1f%% of one axis) and everything "
+                         "outside it is silently discarded. The stats below describe that sliver, "
+                         "not the scene. Use --tsdf tile (the default here) for the whole scene.\n",
+                         axisVox, 100.0 * 512.0 / double(axisVox));
 
         const TSDF::VolumeRegistry registry = TSDF::VolumeRegistry::Default();
         std::unique_ptr<TSDF::Volume> volume = registry.Create(tsdfName);
@@ -289,7 +314,7 @@ int main(int argc, char **argv) {
         std::printf("\n%-10s %-8s %10s %10s %7s %7s %9s %6s %6s\n",
                     "hash", "tsdf", "occupied", "slots", "load", "tables", "tableMB",
                     "drops", "grows");
-        std::printf("%-10s %-8s %10llu %10llu %7.3f %7u %9.1f %6llu %6u\n",
+        std::printf("%-10s %-8s %10llu %10llu %7.3f %7u %9.1f %6llu %6llu\n",
                     resolvedHashName.c_str(), tsdfName.c_str(),
                     (unsigned long long) stats.occupiedEntryCount,
                     (unsigned long long) stats.slotCapacity,
@@ -297,7 +322,7 @@ int main(int argc, char **argv) {
                     stats.tableCount,
                     double(stats.deviceMemoryBytes) / (1024.0 * 1024.0),
                     (unsigned long long) stats.insertFailureCount,
-                    stats.growCount);
+                    (unsigned long long) stats.growCount);
         if (stats.insertFailureCount > 0)
             std::printf("WARNING: %llu observations were dropped -- this hash's load factor limit "
                         "is too high for this scene; the numbers above understate occupancy.\n",

@@ -10,7 +10,7 @@ layout(local_size_x = 64) in;
 
 #include "voxel_common.glsl"   // EMPTY_KEY, MAX_PROBE, wangHash
 
-// 24 bytes. Layout must match DirEntry in advanced_tsdf_integrate.vert.glsl and AdvancedTSDFTypes.h.
+// 24 bytes. Layout must match DirEntry in AdvancedTSDF.integrate.comp.glsl and AdvancedTSDF.h.
 struct DirEntry
 {
 	uint key;
