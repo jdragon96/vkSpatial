@@ -43,6 +43,21 @@ TEST(TsdfHashStrategy, UnknownNameFallsBackToLinear) {
 
 #include <vector>
 
+namespace {
+    // Shared by every test in this file that wants "the 17x17 plane at voxel 0.05 / truncation
+    // 0.15" -- measured at roughly 1045 entries once integrated (see the growth-fixture comments
+    // below). A single generator keeps the geometry byte-identical across tests instead of four
+    // copies of the same loop drifting apart.
+    void SeventeenBySeventeenPlane(std::vector<Eigen::Vector3f> &points,
+                                   std::vector<Eigen::Vector3f> &normals) {
+        for (int i = -8; i <= 8; ++i)
+            for (int j = -8; j <= 8; ++j) {
+                points.emplace_back(float(i) * 0.0375f, float(j) * 0.0375f, 0.0f);
+                normals.emplace_back(0.0f, 0.0f, 1.0f);
+            }
+    }
+} // namespace
+
 TEST(TsdfHashCounters, NormalIntegrationDropsNothing) {
     Engine::Core::Context context;
     TSDF::FlatStrategy strategy;
@@ -53,11 +68,7 @@ TEST(TsdfHashCounters, NormalIntegrationDropsNothing) {
     strategy.Build(context, params);
 
     std::vector<Eigen::Vector3f> points, normals;
-    for (int i = -8; i <= 8; ++i)
-        for (int j = -8; j <= 8; ++j) {
-            points.emplace_back(float(i) * 0.0375f, float(j) * 0.0375f, 0.0f);
-            normals.emplace_back(0.0f, 0.0f, 1.0f);
-        }
+    SeventeenBySeventeenPlane(points, normals);
 
     Engine::Compute::CommandBatch batch(context);
     strategy.Record(points, normals, Eigen::Vector3f(0.0f, 0.0f, 1.0f), batch);
@@ -84,11 +95,7 @@ TEST(TsdfHashCounters, GrowCountRisesWhenTheTableIsTooSmall) {
     strategy.Build(context, params);
 
     std::vector<Eigen::Vector3f> points, normals;
-    for (int i = -8; i <= 8; ++i)
-        for (int j = -8; j <= 8; ++j) {
-            points.emplace_back(float(i) * 0.0375f, float(j) * 0.0375f, 0.0f);
-            normals.emplace_back(0.0f, 0.0f, 1.0f);
-        }
+    SeventeenBySeventeenPlane(points, normals);
 
     {
         Engine::Compute::CommandBatch batch(context);
@@ -118,11 +125,7 @@ TEST(TsdfHashStrategy, BucketedIsRegisteredWithItsOwnThreshold) {
 // 무엇을 저장하는지는 동일하기 때문이다. 다르면 버킷 구현이 키를 잃고 있다는 뜻이다.
 TEST(TsdfHashStrategy, BucketedStoresTheSameEntriesAsLinear) {
     std::vector<Eigen::Vector3f> points, normals;
-    for (int i = -8; i <= 8; ++i)
-        for (int j = -8; j <= 8; ++j) {
-            points.emplace_back(float(i) * 0.0375f, float(j) * 0.0375f, 0.0f);
-            normals.emplace_back(0.0f, 0.0f, 1.0f);
-        }
+    SeventeenBySeventeenPlane(points, normals);
 
     auto runWith = [&](const char *hashName) {
         Engine::Core::Context context;
@@ -157,13 +160,16 @@ TEST(TsdfHashStrategy, BucketedStoresTheSameEntriesAsLinear) {
 // CommandBatch. The first Record sees occupancy 0 and does not grow, inserting ~1045
 // (alpha ~= 0.51). The second sees 1045 >= 1024 (linear's 0.5 * 2048) and grows linear to 4096,
 // while bucketed's 0.8 * 2048 = 1638 threshold is not crossed and it stays at 2048.
+//
+// Fix round 2: EXPECT_LE(bucketed, linear) alone cannot fail for the reason this test exists --
+// it passes for ANY threshold that is >= linear's, including the stub case where bucketed's
+// threshold is ignored entirely and both grow to 4096 (4096 <= 4096 still holds). The strict
+// EXPECT_LT plus EXPECT_EQ(bucketed.growCount, 0u) below are what actually prove the threshold is
+// wired through to the runtime decision -- not merely stored in the HashStrategy struct (that is
+// BucketedIsRegisteredWithItsOwnThreshold's job, and it never runs maybeGrow at all).
 TEST(TsdfHashStrategy, BucketedGrowsLaterThanLinear) {
     std::vector<Eigen::Vector3f> points, normals;
-    for (int i = -8; i <= 8; ++i)
-        for (int j = -8; j <= 8; ++j) {
-            points.emplace_back(float(i) * 0.0375f, float(j) * 0.0375f, 0.0f);
-            normals.emplace_back(0.0f, 0.0f, 1.0f);
-        }
+    SeventeenBySeventeenPlane(points, normals);
 
     auto capacityAfter = [&](const char *hashName) {
         Engine::Core::Context context;
@@ -192,8 +198,9 @@ TEST(TsdfHashStrategy, BucketedGrowsLaterThanLinear) {
     const TSDF::VolumeStats bucketed = capacityAfter("bucketed");
 
     EXPECT_GT(linear.growCount, 0u) << "이 픽스처는 성장을 강제해야 한다";
-    EXPECT_LE(bucketed.slotCapacity, linear.slotCapacity)
+    EXPECT_LT(bucketed.slotCapacity, linear.slotCapacity)
             << "버킷은 임계값 0.8이라 선형탐사(0.5)보다 늦게 자라야 한다";
+    EXPECT_EQ(bucketed.growCount, 0u) << "이 픽스처(~1045)는 버킷의 0.8*2048=1638 임계값을 넘지 않는다";
     EXPECT_EQ(bucketed.insertFailureCount, 0u);
 }
 
@@ -271,4 +278,60 @@ TEST(TsdfHashStrategy, BucketedSurvivesAGrowIntact) {
     strategy.Download(downloaded);
     EXPECT_EQ(downloaded.size(), stats.occupiedEntryCount)
             << "다운로드된 엔트리 수와 occupiedEntryCount가 어긋나면 그로우 이후 테이블이 일관성을 잃은 것";
+}
+
+#include "TSDF/Memory/SubmapStrategy.h"
+#include "TSDF/Memory/TileStrategy.h"
+
+// Fix round 2: promoted from a throwaway smoke test. TiledDirectionalTSDF::GetTSDF picks between
+// AdvancedTSDF's hash-aware Build and its plain 6-argument fallback via
+// if constexpr (HasHashStrategyBuild<Backend>::value) -- and that trait fails SILENTLY. Every
+// AdvancedTSDF::Build parameter is defaulted, so if the trait ever evaluated false the
+// 6-argument call would still compile clean and quietly build LINEAR tables while
+// params.hashStrategy == "bucketed": no compile error, no failing assertion, healthy-looking
+// counters throughout. Task 6 measures tile and submap specifically under bucketed, so a
+// silently-linear tiled/submap build would corrupt that headline number with no symptom
+// anywhere else. This is regression protection for that branch, not a behavioural claim about
+// bucketed's addressing -- BucketedStoresTheSameEntriesAsLinear and BucketedSurvivesAGrowIntact
+// already cover that through FlatStrategy.
+TEST(TsdfHashStrategy, TileAndSubmapBuildAndRunWithBucketed) {
+    std::vector<Eigen::Vector3f> points, normals;
+    SeventeenBySeventeenPlane(points, normals);
+
+    {
+        Engine::Core::Context context;
+        TSDF::TileStrategy strategy;
+        TSDF::VolumeParams params;
+        params.voxelSize = 0.05f;
+        params.truncation = 0.15f;
+        params.hashCapacity = 1u << 16;
+        params.hashStrategy = "bucketed";
+        strategy.Build(context, params);
+
+        Engine::Compute::CommandBatch batch(context);
+        strategy.Record(points, normals, Eigen::Vector3f(0.0f, 0.0f, 1.0f), batch);
+        batch.Submit();
+
+        const TSDF::VolumeStats stats = strategy.Stats();
+        EXPECT_GT(stats.occupiedEntryCount, 0u);
+        EXPECT_EQ(stats.insertFailureCount, 0u);
+    }
+    {
+        Engine::Core::Context context;
+        TSDF::SubmapStrategy strategy;
+        TSDF::VolumeParams params;
+        params.voxelSize = 0.05f;
+        params.truncation = 0.15f;
+        params.hashCapacity = 1u << 16;
+        params.hashStrategy = "bucketed";
+        strategy.Build(context, params);
+
+        Engine::Compute::CommandBatch batch(context);
+        strategy.Record(points, normals, Eigen::Vector3f(0.0f, 0.0f, 1.0f), batch);
+        batch.Submit();
+
+        const TSDF::VolumeStats stats = strategy.Stats();
+        EXPECT_GT(stats.occupiedEntryCount, 0u);
+        EXPECT_EQ(stats.insertFailureCount, 0u);
+    }
 }
