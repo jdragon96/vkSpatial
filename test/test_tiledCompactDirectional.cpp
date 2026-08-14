@@ -1,6 +1,6 @@
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/CompactDirectionalTSDF.h"
-#include "Engine/Spatial/TiledCompactDirectionalTSDF.h"
+#include "TSDF/Backends/CompactDirectionalTSDF.h"
+#include "TSDF/Backends/TiledCompactDirectionalTSDF.h"
 
 #include <gtest/gtest.h>
 

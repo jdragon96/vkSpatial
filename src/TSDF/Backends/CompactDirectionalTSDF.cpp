@@ -1,4 +1,4 @@
-#include "Engine/Spatial/CompactDirectionalTSDF.h"
+#include "TSDF/Backends/CompactDirectionalTSDF.h"
 
 #include <algorithm>
 #include <cmath>

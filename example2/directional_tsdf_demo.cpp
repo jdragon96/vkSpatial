@@ -3,8 +3,8 @@
 // as CSV, then exports the directional point cloud and a single-SDF (SimpleTSDF)
 // marching-cubes mesh of the same data for visual comparison.
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/DirectionalTSDF.h"
-#include "Engine/Spatial/SimpleTSDF.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
+#include "TSDF/Backends/SimpleTSDF.h"
 
 #include <Eigen/Core>
 #include <cmath>

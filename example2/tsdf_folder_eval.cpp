@@ -9,10 +9,10 @@
 // works on any folder of oriented-point PLYs, not just object_scan_viewer output.
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/AdvancedTSDF.h"
-#include "Engine/Spatial/SubmapAdvancedTSDF.h"
-#include "Engine/Spatial/OrientedPointCloud.h"
-#include "Engine/Spatial/TiledAdvancedTSDF.h"
+#include "TSDF/Backends/AdvancedTSDF.h"
+#include "TSDF/Backends/SubmapAdvancedTSDF.h"
+#include "Engine/Core/OrientedPointCloud.h"
+#include "TSDF/Backends/TiledAdvancedTSDF.h"
 
 #include "utilities/ArgParser.h"
 #include "utilities/PointCloudIO.h"

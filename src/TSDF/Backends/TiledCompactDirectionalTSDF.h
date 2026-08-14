@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Engine/Spatial/CompactDirectionalTSDF.h"
-#include "Engine/Spatial/TiledDirectionalTSDF.h"
+#include "TSDF/Backends/CompactDirectionalTSDF.h"
+#include "TSDF/Backends/TiledDirectionalTSDF.h"
 
 namespace Engine::Spatial {
 

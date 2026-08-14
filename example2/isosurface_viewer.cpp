@@ -44,7 +44,7 @@
 #include "Engine/Render/Camera.h"
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
-#include "Engine/Spatial/AdvancedTSDF.h"
+#include "TSDF/Backends/AdvancedTSDF.h"
 #include "Engine/Spatial/Extraction/ExtractorRegistry.h"
 #include "Engine/Spatial/Extraction/MeshConnectivity.h"
 #include "Engine/Spatial/Extraction/VoxelField.h"

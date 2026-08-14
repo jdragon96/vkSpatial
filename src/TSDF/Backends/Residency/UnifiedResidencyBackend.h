@@ -2,7 +2,7 @@
 
 #include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/IResidencyBackend.h"
+#include "TSDF/Backends/Residency/IResidencyBackend.h"
 
 #include <cstdint>
 #include <unordered_map>

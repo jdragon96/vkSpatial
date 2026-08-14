@@ -12,7 +12,7 @@
 #include "shape_fixtures.h"
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/CompactDirectionalTSDF.h"
+#include "TSDF/Backends/CompactDirectionalTSDF.h"
 
 #include <Eigen/Core>
 

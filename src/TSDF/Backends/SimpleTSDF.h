@@ -3,7 +3,7 @@
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/OrientedPointCloud.h"
+#include "Engine/Core/OrientedPointCloud.h"
 
 #include <Eigen/Core>
 #include <memory>

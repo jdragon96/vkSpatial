@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/DirectionalHostStore.h"
-#include "Engine/Spatial/DirectionalTSDF.h"
-#include "Engine/Spatial/DirectionalTSDFTypes.h"
+#include "TSDF/Backends/DirectionalHostStore.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDFTypes.h"
 
 #include <algorithm>
 #include <stdexcept>

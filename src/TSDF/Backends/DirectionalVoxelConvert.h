@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Spatial/DirectionalTSDFTypes.h"
+#include "TSDF/Backends/DirectionalTSDFTypes.h"
 
 #include <cmath>
 

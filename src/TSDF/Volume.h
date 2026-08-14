@@ -2,8 +2,8 @@
 
 #include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/AdvancedTSDF.h"
-#include "Engine/Spatial/DirectionalIntegrationQuality.h"
+#include "TSDF/Backends/AdvancedTSDF.h"
+#include "TSDF/Backends/DirectionalIntegrationQuality.h"
 
 #include <Eigen/Core>
 #include <cstdint>

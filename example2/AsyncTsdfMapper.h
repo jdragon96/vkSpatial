@@ -3,8 +3,8 @@
 #include "VoxelFillDebug.h" // voxdbg::FillTracker
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/AdvancedTSDF.h" // AdvancedEntry
-#include "Engine/Spatial/SubmapAdvancedTSDF.h"
+#include "TSDF/Backends/AdvancedTSDF.h" // AdvancedEntry
+#include "TSDF/Backends/SubmapAdvancedTSDF.h"
 #include "utilities/Mailbox.h"
 #include "utilities/StageProfiler.h"
 

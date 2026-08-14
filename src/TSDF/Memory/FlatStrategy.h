@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Spatial/AdvancedTSDF.h"
+#include "TSDF/Backends/AdvancedTSDF.h"
 #include "TSDF/Memory/MemoryStrategy.h"
 
 namespace TSDF {

@@ -20,7 +20,7 @@
 // place recognition is weak; this geometric matcher is the recommended detector.
 
 #include "Engine/Backend/Lie.h"
-#include "Engine/Spatial/OrientedPointCloud.h"
+#include "Engine/Core/OrientedPointCloud.h"
 
 namespace Engine::Backend {
 

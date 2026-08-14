@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Spatial/SubmapAdvancedTSDF.h"
+#include "TSDF/Backends/SubmapAdvancedTSDF.h"
 #include "TSDF/Memory/MemoryStrategy.h"
 
 namespace TSDF {

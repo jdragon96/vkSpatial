@@ -1,6 +1,6 @@
-#include "Engine/Spatial/UnifiedResidencyBackend.h"
+#include "TSDF/Backends/Residency/UnifiedResidencyBackend.h"
 
-#include "Engine/Spatial/DirectionalVoxelConvert.h"
+#include "TSDF/Backends/DirectionalVoxelConvert.h"
 
 #include <cstring>
 #include <stdexcept>

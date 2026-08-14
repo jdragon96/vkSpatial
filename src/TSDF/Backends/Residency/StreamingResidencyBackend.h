@@ -5,7 +5,7 @@
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/IResidencyBackend.h"
+#include "TSDF/Backends/Residency/IResidencyBackend.h"
 
 #include <memory>
 #include <unordered_map>

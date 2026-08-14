@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Engine/Spatial/AdvancedTSDF.h"
-#include "Engine/Spatial/TiledDirectionalTSDF.h"
+#include "TSDF/Backends/AdvancedTSDF.h"
+#include "TSDF/Backends/TiledDirectionalTSDF.h"
 
 #include <algorithm>
 #include <cstring>

@@ -2,11 +2,11 @@
 // CPU-only correctness (no GPU) + integration through SimpleTSDF / DirectionalTSDF.
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
 #include "Engine/Spatial/FPFH.h"
 #include "Engine/Spatial/NeighborQuery.h"
-#include "Engine/Spatial/OrientedPointCloud.h"
-#include "Engine/Spatial/SimpleTSDF.h"
+#include "Engine/Core/OrientedPointCloud.h"
+#include "TSDF/Backends/SimpleTSDF.h"
 
 #include <Eigen/Geometry>
 #include <cmath>

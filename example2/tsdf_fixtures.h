@@ -7,9 +7,9 @@
 
 #include "PointCloudPass.h" // PointVertex (slice/point-set builders return these directly)
 
-#include "Engine/Spatial/DirectionalHostStore.h"
-#include "Engine/Spatial/DirectionalTSDF.h"
-#include "Engine/Spatial/DirectionalTSDFTypes.h"
+#include "TSDF/Backends/DirectionalHostStore.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDFTypes.h"
 
 #include <Eigen/Core>
 #include <algorithm>

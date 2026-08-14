@@ -1,5 +1,5 @@
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/SubmapAdvancedTSDF.h"
+#include "TSDF/Backends/SubmapAdvancedTSDF.h"
 
 #include <gtest/gtest.h>
 

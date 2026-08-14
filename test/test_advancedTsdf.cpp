@@ -1,6 +1,6 @@
 #include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/AdvancedTSDF.h"
+#include "TSDF/Backends/AdvancedTSDF.h"
 
 #include <gtest/gtest.h>
 

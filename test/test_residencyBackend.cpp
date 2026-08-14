@@ -1,4 +1,4 @@
-#include "Engine/Spatial/IResidencyBackend.h"
+#include "TSDF/Backends/Residency/IResidencyBackend.h"
 #include <gtest/gtest.h>
 
 using namespace Engine::Spatial;
@@ -51,7 +51,7 @@ TEST(ResidencyBackend, InterfaceIsImplementable) {
 }
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/StreamingResidencyBackend.h"
+#include "TSDF/Backends/Residency/StreamingResidencyBackend.h"
 
 TEST(ResidencyBackend, StreamingBuildsAndClassifiesEmpty) {
     Engine::Core::Context ctx;
@@ -64,7 +64,7 @@ TEST(ResidencyBackend, StreamingBuildsAndClassifiesEmpty) {
     EXPECT_EQ(be.FrameStats().missingCount, 0u);
 }
 
-#include "Engine/Spatial/UnifiedResidencyBackend.h"
+#include "TSDF/Backends/Residency/UnifiedResidencyBackend.h"
 
 TEST(ResidencyBackend, UnifiedKeepsGroupsResidentZeroCopy) {
     Engine::Core::Context ctx;
@@ -87,7 +87,7 @@ TEST(ResidencyBackend, UnifiedKeepsGroupsResidentZeroCopy) {
     EXPECT_EQ(be.DebugQueryPoolIndex(k), slot);
 }
 
-#include "Engine/Spatial/IResidencyBackend.h"
+#include "TSDF/Backends/Residency/IResidencyBackend.h"
 #include <cstdlib>
 
 TEST(ResidencyBackend, FactoryHonorsOverride) {
@@ -105,7 +105,7 @@ TEST(ResidencyBackend, FactoryHonorsOverride) {
 #endif
 }
 
-#include "Engine/Spatial/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
 #include <algorithm>
 
 namespace {
@@ -169,7 +169,7 @@ TEST(ResidencyBackend, CrossBackendReconstructionMatches) {
     }
 }
 
-#include "Engine/Spatial/DirectionalVoxelConvert.h"
+#include "TSDF/Backends/DirectionalVoxelConvert.h"
 
 TEST(DirectionalVoxelConvert, RoundTripPreservesValueWeightNormal) {
     using namespace Engine::Spatial;

@@ -14,7 +14,7 @@
 #include "Engine/Render/Camera.h"
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
-#include "Engine/Spatial/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
 
 #include "imgui.h"
 

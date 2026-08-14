@@ -5,11 +5,13 @@ file(GLOB_RECURSE TSDF_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 add_library(TSDF STATIC ${TSDF_SOURCES})
 add_library(TSDF::TSDF ALIAS TSDF)
 
+# Deliberately does NOT link Engine::Spatial. The dependency runs the other way now: the TSDF
+# data structures live here, and Engine::Spatial's Extraction/AdaptiveVoxelGrid consume them.
+# Linking back would make the two libraries circular.
 target_link_libraries(TSDF
-        PUBLIC 
-        Engine::Core 
-        Engine::Compute 
-        Engine::Spatial 
+        PUBLIC
+        Engine::Core
+        Engine::Compute
         Vulkan::Vulkan)
 
 target_include_directories(TSDF

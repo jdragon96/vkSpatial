@@ -12,7 +12,7 @@
 // can be cross-checked against Open3D/PCL.
 
 #include "Engine/Spatial/NeighborQuery.h"
-#include "Engine/Spatial/OrientedPointCloud.h"
+#include "Engine/Core/OrientedPointCloud.h"
 
 #include <Eigen/Core>
 #include <Eigen/Geometry> // Vector3f::cross

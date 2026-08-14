@@ -1,6 +1,6 @@
 #pragma once
 #include "Engine/Spatial/Extraction/SurfaceMesh.h"
-#include "Engine/Spatial/SimpleTSDF.h"
+#include "TSDF/Backends/SimpleTSDF.h"
 #include <Eigen/Core>
 #include <vector>
 namespace Engine::Spatial {

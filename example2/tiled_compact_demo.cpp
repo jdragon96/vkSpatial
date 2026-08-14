@@ -22,9 +22,9 @@
 //
 // Usage: tiled_compact_demo [scanData_dir=scanData] [maxFrames=12]
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/CompactDirectionalTSDF.h"
-#include "Engine/Spatial/OrientedPointCloud.h"
-#include "Engine/Spatial/TiledCompactDirectionalTSDF.h"
+#include "TSDF/Backends/CompactDirectionalTSDF.h"
+#include "Engine/Core/OrientedPointCloud.h"
+#include "TSDF/Backends/TiledCompactDirectionalTSDF.h"
 
 #include <Eigen/Core>
 

@@ -1,7 +1,7 @@
-#include "Engine/Spatial/StreamingResidencyBackend.h"
+#include "TSDF/Backends/Residency/StreamingResidencyBackend.h"
 
 #include "Engine/Core/OneShotCommands.h"
-#include "Engine/Spatial/DirectionalVoxelConvert.h"
+#include "TSDF/Backends/DirectionalVoxelConvert.h"
 
 #include <algorithm>
 #include <cmath>

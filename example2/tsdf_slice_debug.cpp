@@ -27,9 +27,9 @@
 // Overlay in CloudCompare / MeshLab. Divergences localize the bug:
 //   slice zero-crossing wrong => integrate; slice right but extracted points off => extract.
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/DirectionalHostStore.h"
-#include "Engine/Spatial/DirectionalTSDF.h"
-#include "Engine/Spatial/DirectionalTSDFTypes.h"
+#include "TSDF/Backends/DirectionalHostStore.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDFTypes.h"
 
 #include <Eigen/Core>
 #include <algorithm>

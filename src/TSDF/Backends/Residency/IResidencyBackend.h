@@ -2,8 +2,8 @@
 
 #include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/DirectionalHostStore.h"
-#include "Engine/Spatial/DirectionalTSDFTypes.h"
+#include "TSDF/Backends/DirectionalHostStore.h"
+#include "TSDF/Backends/DirectionalTSDFTypes.h"
 
 #include <Eigen/Core>
 #include <memory>

@@ -1,6 +1,6 @@
-#include "Engine/Spatial/IResidencyBackend.h"
-#include "Engine/Spatial/StreamingResidencyBackend.h"
-#include "Engine/Spatial/UnifiedResidencyBackend.h"
+#include "TSDF/Backends/Residency/IResidencyBackend.h"
+#include "TSDF/Backends/Residency/StreamingResidencyBackend.h"
+#include "TSDF/Backends/Residency/UnifiedResidencyBackend.h"
 
 #include <cstdlib>
 #include <cstring>

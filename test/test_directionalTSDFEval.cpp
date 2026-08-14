@@ -4,7 +4,7 @@
 #include "Engine/Eval/RmseMetrics.h"
 #include "Engine/Eval/ScanSampler.h"
 #include "Engine/Eval/SyntheticSurface.h"
-#include "Engine/Spatial/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
 
 #include <cmath>
 #include <limits>

@@ -1,7 +1,7 @@
 #include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/AdvancedTSDF.h"
-#include "Engine/Spatial/TiledAdvancedTSDF.h"
+#include "TSDF/Backends/AdvancedTSDF.h"
+#include "TSDF/Backends/TiledAdvancedTSDF.h"
 
 #include <gtest/gtest.h>
 

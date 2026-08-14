@@ -1,5 +1,5 @@
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/SimpleTSDF.h"
+#include "TSDF/Backends/SimpleTSDF.h"
 
 #include <Eigen/Core>
 #include <cmath>

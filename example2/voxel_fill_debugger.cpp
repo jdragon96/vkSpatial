@@ -6,7 +6,7 @@
 #include "Engine/Pipeline/Reconstruction/FrameLoader.h" // LoadFrames / ComputeBounds
 #include "Engine/Pipeline/Registration/Tracker.h"       // TrackerRegistry / Tracker
 #include "Engine/Pipeline/Render/RenderThread.h"        // RenderThread
-#include "Engine/Spatial/SubmapAdvancedTSDF.h"          // headless --dump map
+#include "TSDF/Backends/SubmapAdvancedTSDF.h"          // headless --dump map
 
 #include "utilities/ArgParser.h"
 #include "utilities/StageProfiler.h"

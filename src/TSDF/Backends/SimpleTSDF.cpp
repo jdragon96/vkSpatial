@@ -1,4 +1,4 @@
-#include "Engine/Spatial/SimpleTSDF.h"
+#include "TSDF/Backends/SimpleTSDF.h"
 
 #include <Eigen/Geometry> // Vector3f::cross
 #include <algorithm>

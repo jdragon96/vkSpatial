@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Spatial/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
+#include "TSDF/Backends/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
 
 #include <Eigen/Core>
 #include <array>

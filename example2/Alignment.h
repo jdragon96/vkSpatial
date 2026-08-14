@@ -5,7 +5,7 @@
 #include "Engine/Pipeline/Registration/GlobalRegistration.h"
 #include "Engine/Pipeline/Registration/PointToPlaneIcp.h"
 #include "Engine/Pipeline/Registration/RegistrationTypes.h"
-#include "Engine/Spatial/AdvancedTSDF.h" // AdvancedEntry
+#include "TSDF/Backends/AdvancedTSDF.h" // AdvancedEntry
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>

@@ -1,5 +1,5 @@
 #include "Engine/Spatial/Extraction/VoxelField.h"
-#include "Engine/Spatial/AdvancedTSDF.h" // AdvancedEntry (full definition, forward-declared in VoxelField.h)
+#include "TSDF/Backends/AdvancedTSDF.h" // AdvancedEntry (full definition, forward-declared in VoxelField.h)
 
 #include <cmath>
 

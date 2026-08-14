@@ -11,7 +11,7 @@
 // not clinical resolution. Per-frame camera is estimated as centroid + D*meanNormal (the
 // PLY carries no pose; normals face the sensor).
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
 
 #include <Eigen/Core>
 #include <chrono>

@@ -16,7 +16,7 @@
 #include "Engine/Core/Context.h"
 #include "Engine/Pipeline/Registration/GlobalRegistration.h"
 #include "Engine/Pipeline/Registration/RegistrationTypes.h"
-#include "Engine/Spatial/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>

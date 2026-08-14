@@ -5,7 +5,7 @@
 #include "VoxelFillDebug.h" // voxdbg::FillTracker
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/SubmapAdvancedTSDF.h"
+#include "TSDF/Backends/SubmapAdvancedTSDF.h"
 #include "utilities/Channel.h"
 #include "utilities/Mailbox.h"
 #include "utilities/StageProfiler.h"

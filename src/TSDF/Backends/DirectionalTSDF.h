@@ -5,11 +5,11 @@
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/DirectionalHostStore.h"
-#include "Engine/Spatial/DirectionalIntegrationQuality.h"
-#include "Engine/Spatial/DirectionalTSDFTypes.h"
-#include "Engine/Spatial/IResidencyBackend.h"
-#include "Engine/Spatial/OrientedPointCloud.h"
+#include "TSDF/Backends/DirectionalHostStore.h"
+#include "TSDF/Backends/DirectionalIntegrationQuality.h"
+#include "TSDF/Backends/DirectionalTSDFTypes.h"
+#include "TSDF/Backends/Residency/IResidencyBackend.h"
+#include "Engine/Core/OrientedPointCloud.h"
 
 #include <Eigen/Core>
 #include <memory>

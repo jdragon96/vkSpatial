@@ -1,9 +1,9 @@
-#include "Engine/Spatial/DirectionalIntegrationQuality.h"
+#include "TSDF/Backends/DirectionalIntegrationQuality.h"
 #include <gtest/gtest.h>
 using namespace Engine::Spatial;
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
 
 TEST(IntegrationQuality, K1MatchesDominantAxis) {
     IntegrationQuality q; // {1,4,false}

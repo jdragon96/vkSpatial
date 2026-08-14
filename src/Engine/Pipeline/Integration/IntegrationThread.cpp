@@ -3,7 +3,7 @@
 #include "Engine/Pipeline/CommunicationModule.h"
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/SubmapAdvancedTSDF.h"
+#include "TSDF/Backends/SubmapAdvancedTSDF.h"
 #include "utilities/StageProfiler.h"
 
 #include <Eigen/Geometry>

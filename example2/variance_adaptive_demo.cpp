@@ -26,7 +26,7 @@
 #include "shape_fixtures.h"
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/SimpleTSDF.h"
+#include "TSDF/Backends/SimpleTSDF.h"
 
 #include <Eigen/Core>
 

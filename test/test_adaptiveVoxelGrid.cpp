@@ -14,7 +14,7 @@
 // Mirrors test_simpletsdf_variance.cpp's Context-skip pattern and example2/shape_fixtures.h
 // reuse (see docs/superpowers/plans/2026-07-26-adaptive-voxel-grid.md, Tasks 1-3).
 #include "Engine/Spatial/AdaptiveVoxelGrid.h"
-#include "Engine/Spatial/SimpleTSDF.h"
+#include "TSDF/Backends/SimpleTSDF.h"
 #include "Engine/Core/Context.h"
 #include "shape_fixtures.h"
 #include <gtest/gtest.h>

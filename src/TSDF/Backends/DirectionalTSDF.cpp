@@ -1,8 +1,8 @@
-#include "Engine/Spatial/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
 
 #include "Engine/Core/OneShotCommands.h"
-#include "Engine/Spatial/DirectionalIntegrationQuality.h" // TopKDirections (shared direction selector)
-#include "Engine/Spatial/IResidencyBackend.h" // MakeResidencyBackend (backend selection: Task 5)
+#include "TSDF/Backends/DirectionalIntegrationQuality.h" // TopKDirections (shared direction selector)
+#include "TSDF/Backends/Residency/IResidencyBackend.h" // MakeResidencyBackend (backend selection: Task 5)
 
 #include <algorithm>
 #include <chrono>

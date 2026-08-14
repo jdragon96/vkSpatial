@@ -36,10 +36,10 @@
 //                       frame's residentCount.)
 #include "Engine/Core/Context.h"
 #include "Engine/Eval/RmseMetrics.h"
-#include "Engine/Spatial/CompactDirectionalTSDF.h"
-#include "Engine/Spatial/DirectionalTSDF.h"
-#include "Engine/Spatial/DirectionalTSDFTypes.h"
-#include "Engine/Spatial/SimpleTSDF.h"
+#include "TSDF/Backends/CompactDirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDF.h"
+#include "TSDF/Backends/DirectionalTSDFTypes.h"
+#include "TSDF/Backends/SimpleTSDF.h"
 
 #include <Eigen/Core>
 

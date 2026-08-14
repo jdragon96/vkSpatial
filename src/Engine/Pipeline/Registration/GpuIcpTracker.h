@@ -4,7 +4,7 @@
 #include "Engine/Pipeline/Registration/GpuPointToPlaneIcp.h"
 #include "Engine/Pipeline/Registration/RegistrationTypes.h"
 #include "Engine/Pipeline/Registration/Tracker.h"
-#include "Engine/Spatial/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
+#include "TSDF/Backends/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
 
 #include <memory>
 

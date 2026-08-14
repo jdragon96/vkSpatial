@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Engine/Spatial/AdvancedTSDF.h"                  // Engine::Spatial::AdvancedEntry
-#include "Engine/Spatial/DirectionalIntegrationQuality.h" // Engine::Spatial::IntegrationQuality
+#include "TSDF/Backends/AdvancedTSDF.h"                  // Engine::Spatial::AdvancedEntry
+#include "TSDF/Backends/DirectionalIntegrationQuality.h" // Engine::Spatial::IntegrationQuality
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>

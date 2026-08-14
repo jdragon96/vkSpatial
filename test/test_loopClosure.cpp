@@ -5,7 +5,7 @@
 #include "Engine/Backend/Lie.h"
 #include "Engine/Backend/LoopClosure.h"
 #include "Engine/Backend/PoseGraph.h"
-#include "Engine/Spatial/OrientedPointCloud.h"
+#include "Engine/Core/OrientedPointCloud.h"
 
 #include <cmath>
 #include <random>

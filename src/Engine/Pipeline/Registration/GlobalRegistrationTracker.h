@@ -3,7 +3,7 @@
 #include "Engine/Pipeline/Registration/GlobalRegistration.h"
 #include "Engine/Pipeline/Registration/RegistrationTypes.h"
 #include "Engine/Pipeline/Registration/Tracker.h"
-#include "Engine/Spatial/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
+#include "TSDF/Backends/AdvancedTSDF.h" // Engine::Spatial::AdvancedEntry
 
 namespace Engine::Pipeline {
 
