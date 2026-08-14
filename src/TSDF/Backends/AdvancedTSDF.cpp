@@ -106,7 +106,7 @@ namespace TSDF {
         m_firstFrameBuffer->Allocate(hashCapacity * sizeof(int32_t));
 
         kernel_integratePoints = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        kernel_integratePoints->Build("advanced_tsdf_integrate.comp.glsl")
+        kernel_integratePoints->Build("TSDF/Backends/AdvancedTSDF.integrate.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, *m_pointBuffer)
                 .Bind(2, *m_normalBuffer)
@@ -114,13 +114,13 @@ namespace TSDF {
                 .Bind(4, *m_firstFrameBuffer);
 
         kernel_compactTable = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        kernel_compactTable->Build("advanced_tsdf_compact.comp.glsl").Bind(3, *m_firstFrameBuffer);
+        kernel_compactTable->Build("TSDF/Backends/AdvancedTSDF.compact.comp.glsl").Bind(3, *m_firstFrameBuffer);
 
         kernel_clearVoxel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        kernel_clearVoxel->Build("advanced_tsdf_clear.comp.glsl").Bind(0, *m_hashBuffer);
+        kernel_clearVoxel->Build("TSDF/Backends/AdvancedTSDF.clear.comp.glsl").Bind(0, *m_hashBuffer);
 
         kernel_rehashTable = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        kernel_rehashTable->Build("advanced_tsdf_rehash.comp.glsl");
+        kernel_rehashTable->Build("TSDF/Backends/AdvancedTSDF.rehash.comp.glsl");
 
         Reset();
     }
@@ -369,7 +369,7 @@ namespace TSDF {
                      m_truncation, uint32_t(m_hermite ? 1u : 0u)};
 
         Engine::Core::ComputePipeline kernel(*m_ctx);
-        kernel.Build("advanced_tsdf_extract.comp.glsl")
+        kernel.Build("TSDF/Backends/AdvancedTSDF.extract.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, candBuf)
                 .Bind(2, countBuf)

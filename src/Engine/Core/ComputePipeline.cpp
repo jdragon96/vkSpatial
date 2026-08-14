@@ -12,38 +12,42 @@
 #define VKBVH_SHADER_DIR "."
 #endif
 
+#ifndef VKBVH_SRC_DIR
+#define VKBVH_SRC_DIR "."
+#endif
+
 namespace Engine::Core {
 
     class FilesystemIncluder : public shaderc::CompileOptions::IncluderInterface {
     public:
-        explicit FilesystemIncluder(std::string dir) : m_dir(std::move(dir)) {}
+        explicit FilesystemIncluder(std::vector<std::string> dirs) : m_dirs(std::move(dirs)) {}
 
         shaderc_include_result *GetInclude(const char *requested,
                                            shaderc_include_type,
                                            const char * /*requesting*/,
                                            size_t) override {
-            std::string fullPath = m_dir + "/" + requested;
-            std::ifstream f(fullPath, std::ios::binary);
-
-            auto *r = new shaderc_include_result{};
-            if (f.is_open()) {
-                auto *content = new std::string(
-                        std::istreambuf_iterator<char>(f),
-                        std::istreambuf_iterator<char>());
+            for (const std::string &dir: m_dirs) {
+                std::string fullPath = dir + "/" + requested;
+                std::ifstream f(fullPath, std::ios::binary);
+                if (!f.is_open()) continue;
+                auto *r = new shaderc_include_result{};
+                auto *content = new std::string(std::istreambuf_iterator<char>(f),
+                                                std::istreambuf_iterator<char>());
                 auto *name = new std::string(fullPath);
                 r->source_name = name->c_str();
                 r->source_name_length = name->size();
                 r->content = content->c_str();
                 r->content_length = content->size();
                 r->user_data = new std::pair<std::string *, std::string *>(name, content);
-            } else {
-                static const char kErr[] = "file not found";
-                r->source_name = "";
-                r->source_name_length = 0;
-                r->content = kErr;
-                r->content_length = sizeof(kErr) - 1;
-                r->user_data = nullptr;
+                return r;
             }
+            auto *r = new shaderc_include_result{};
+            static const char kErr[] = "file not found";
+            r->source_name = "";
+            r->source_name_length = 0;
+            r->content = kErr;
+            r->content_length = sizeof(kErr) - 1;
+            r->user_data = nullptr;
             return r;
         }
 
@@ -58,7 +62,7 @@ namespace Engine::Core {
         }
 
     private:
-        std::string m_dir;
+        std::vector<std::string> m_dirs;
     };
 
     class InMemoryIncluder : public shaderc::CompileOptions::IncluderInterface {
@@ -144,6 +148,26 @@ namespace Engine::Core {
     }
 
     namespace {
+        // Ordered roots for resolving a kernel path and an #include. The shader directory comes
+        // first so every pre-existing call site -- which passes a bare filename -- resolves exactly
+        // as before; the source root lets a kernel that lives beside its calling .cpp be named by
+        // its path from src/.
+        const std::vector<std::string> &shaderRoots() {
+            static const std::vector<std::string> roots = {VKBVH_SHADER_DIR, VKBVH_SRC_DIR};
+            return roots;
+        }
+
+        // First root that actually holds the file wins. Returns the untouched relative path when
+        // none do, so the caller's error message still names what was asked for.
+        std::string resolveShaderPath(const std::string &relative) {
+            for (const std::string &root: shaderRoots()) {
+                std::string candidate = root + "/" + relative;
+                std::ifstream probe(candidate);
+                if (probe.good()) return candidate;
+            }
+            return relative;
+        }
+
         // Process-wide SPIR-V cache keyed by shader path: compile each shader file ONCE, then reuse
         // across every ComputePipeline that Builds it. Without this, a fine-voxel TiledAdvancedTSDF
         // pays hundreds of redundant shaderc compilations on its first frame (each of its ~100 tiles
@@ -183,7 +207,9 @@ namespace Engine::Core {
             shaderc::Compiler compiler;
             shaderc::CompileOptions opts;
             opts.SetOptimizationLevel(shaderc_optimization_level_performance);
-            opts.SetIncluder(std::make_unique<FilesystemIncluder>(dir));
+            std::vector<std::string> includeDirs = {dir};
+            for (const std::string &root: shaderRoots()) includeDirs.push_back(root);
+            opts.SetIncluder(std::make_unique<FilesystemIncluder>(includeDirs));
             for (const auto &entry: defines)
                 opts.AddMacroDefinition(entry.first, entry.second);
 
@@ -202,7 +228,7 @@ namespace Engine::Core {
     ComputePipeline &ComputePipeline::Build(const std::string &filename) {
         destroyShaderResources();
 
-        const std::string fullPath = std::string(VKBVH_SHADER_DIR) + "/" + filename;
+        const std::string fullPath = resolveShaderPath(filename);
         const std::vector<uint32_t> spv = compileFileCached(fullPath, m_defines);
 
         VkShaderModuleCreateInfo smci{};

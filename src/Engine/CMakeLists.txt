@@ -17,7 +17,8 @@ target_include_directories(EngineCore
             "${VULKAN_SDK}/include")
 
 target_compile_definitions(EngineCore PRIVATE
-        VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")
+        VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\"
+        VKBVH_SRC_DIR=\"${CMAKE_SOURCE_DIR}/src\")
 
 file(GLOB_RECURSE ENGINE_RENDER_SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/Render/*.cpp"
