@@ -6,6 +6,7 @@
 #include "Engine/Core/Context.h"
 #include "TSDF/Backends/DirectionalIntegrationQuality.h"
 #include "Engine/Core/OrientedPointCloud.h"
+#include "TSDF/Memory/Hash/HashStrategy.h"
 
 #include <Eigen/Core>
 #include <cstddef>
@@ -65,7 +66,8 @@ namespace TSDF {
                    uint32_t hashCapacity = 1u << 20,
                    uint32_t maxPoints = 1u << 15,
                    const Eigen::Vector3f &windowMinCorner =
-                           Eigen::Vector3f::Constant(std::numeric_limits<float>::quiet_NaN()));
+                           Eigen::Vector3f::Constant(std::numeric_limits<float>::quiet_NaN()),
+                   const HashStrategy &hash = LinearProbeStrategy());
 
         // Voxel-space origin of the movable window (exposed for tests/diagnostics).
         Eigen::Vector3i OriginVoxel() const { return m_originVoxel; }
@@ -192,6 +194,7 @@ namespace TSDF {
         float m_confWeight = 0.5f;  // A1: adopted (measured cube RMSE -29%); 0 disables
         bool m_hermite = false;     // A2: off by default (no measured gain on synthetic fixtures)
         int m_currentFrame = 0;     // stamped into a slot on its first fill (see SetCurrentFrame)
+        const HashStrategy *m_hash = &LinearProbeStrategy();
 
         std::unique_ptr<Engine::Core::Buffer> m_hashBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_pointBuffer;

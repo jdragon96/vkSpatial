@@ -84,22 +84,8 @@ bool packDirKey(ivec3 voxel, uint direction, out uint key)
 	return true;
 }
 
-uint findOrInsert(uint key)
-{
-	uint slot = wangHash(key) % g_hashCapacity;
-	for (uint p = 0u; p < MAX_PROBE; p++) {
-		uint index = (slot + p) % g_hashCapacity;
-		uint prev = atomicCompSwap(g_hash[index].key, EMPTY_KEY, key);
-		if (prev == EMPTY_KEY)
-		{
-			atomicAdd(g_filledCount, 1u);
-			g_firstFrame[index] = g_currentFrame; // slot filled for the first time -> stamp the frame
-			return index;
-		}
-		if (prev == key) return index;
-	}
-	return ~0u;
-}
+#define HASH_WITH_INSERT
+#include "TSDF/Memory/Hash/HashStrategy.glsl"
 
 /// *********************************************
 /// Direction weighting
@@ -219,7 +205,7 @@ void Integrate(
 			if (!packDirKey(voxel, descDirection[di], key)) continue;
 
 			uint slot = findOrInsert(key);
-			if (slot == ~0u) continue;
+			if (slot == HASH_INSERT_FAILED) continue;
 			atomicAdd(g_hash[slot].sumDW, int(tsdf * w * TSDF_SCALE));
 			atomicAdd(g_hash[slot].sumW,  uint(w * TSDF_SCALE));
 			atomicAdd(g_hash[slot].sumNx, int(unitNormal.x * w * TSDF_SCALE));

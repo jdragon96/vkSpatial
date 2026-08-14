@@ -79,12 +79,14 @@ namespace TSDF {
                              float truncation,
                              uint32_t hashCapacity,
                              uint32_t maxPoints,
-                             const Eigen::Vector3f &windowMinCorner) {
+                             const Eigen::Vector3f &windowMinCorner,
+                             const HashStrategy &hash) {
         m_ctx = &ctx;
         m_voxelSize = voxelSize;
         m_truncation = truncation;
         m_hashCapacity = hashCapacity;
         m_maxPoints = maxPoints;
+        m_hash = &hash;
 
         // Default (NaN corner) => centre the 512^3 window on the world origin at ANY voxelSize
         // (originVoxel = -256), fixing CompactDirectionalTSDF's voxelSize-0.1-only default.
@@ -106,6 +108,7 @@ namespace TSDF {
         m_firstFrameBuffer->Allocate(hashCapacity * sizeof(int32_t));
 
         kernel_integratePoints = std::make_unique<Engine::Core::ComputePipeline>(ctx);
+        if (m_hash->macroName) kernel_integratePoints->Define(m_hash->macroName);
         kernel_integratePoints->Build("TSDF/Backends/AdvancedTSDF.integrate.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, *m_pointBuffer)
@@ -257,7 +260,9 @@ namespace TSDF {
     void AdvancedTSDF::maybeGrow() {
         if (!m_hashBuffer || m_hashCapacity == 0) return;
         const uint32_t filled = FilledCount();
-        if (uint64_t(filled) * 2u < m_hashCapacity) return;
+        // The threshold belongs to the hash strategy: linear probing collapses well before a
+        // bucketed table does, so a shared constant would either waste memory or drop voxels.
+        if (double(filled) < double(m_hashCapacity) * double(m_hash->loadFactorLimit)) return;
         growHash(m_hashCapacity * 2u);
     }
 
@@ -369,6 +374,7 @@ namespace TSDF {
                      m_truncation, uint32_t(m_hermite ? 1u : 0u)};
 
         Engine::Core::ComputePipeline kernel(*m_ctx);
+        if (m_hash->macroName) kernel.Define(m_hash->macroName);
         kernel.Build("TSDF/Backends/AdvancedTSDF.extract.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, candBuf)

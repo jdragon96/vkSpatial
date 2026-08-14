@@ -66,49 +66,39 @@ void unpackDirKey(uint key, out ivec3 voxel, out uint direction)
 	voxel = localVoxel + ivec3(g_originX, g_originY, g_originZ);
 }
 
-// Hash probe for (voxel, direction): MAX_PROBE linear probes from wangHash(key);
-// false on EMPTY_KEY, weight below MIN_WEIGHT, or voxel outside the movable window.
+#include "TSDF/Memory/Hash/HashStrategy.glsl"
+
+// Hash lookup for (voxel, direction); false on HASH_NOT_FOUND, weight below MIN_WEIGHT, or
+// voxel outside the movable window.
 bool fetchDirectionalValue(ivec3 voxel, uint direction, out float value)
 {
 	value = 0.0;
 	uint key;
 	if (!packDirKey(voxel, direction, key)) return false;
-	uint slot = wangHash(key) % g_hashCapacity;
-	for (uint probe = 0u; probe < MAX_PROBE; probe++) {
-		DirEntry entry = g_hash[(slot + probe) % g_hashCapacity];
-		if (entry.key == EMPTY_KEY) return false;
-		if (entry.key == key)
-		{
-			if (entry.sumW < uint(MIN_WEIGHT)) return false;
-			value = float(entry.sumDW) / float(entry.sumW);
-			return true;
-		}
-	}
-	return false;
+	uint slot = findSlot(key);
+	if (slot == HASH_NOT_FOUND) return false;
+	DirEntry entry = g_hash[slot];
+	if (entry.sumW < uint(MIN_WEIGHT)) return false;
+	value = float(entry.sumDW) / float(entry.sumW);
+	return true;
 }
 
-// A2: hash probe returning both value and stored-gradient normal (for Hermite interpolation).
+// A2: hash lookup returning both value and stored-gradient normal (for Hermite interpolation).
 bool fetchDirectionalValueAndNormal(ivec3 voxel, uint direction, out float value, out vec3 normal)
 {
 	value = 0.0;
 	normal = vec3(0.0);
 	uint key;
 	if (!packDirKey(voxel, direction, key)) return false;
-	uint slot = wangHash(key) % g_hashCapacity;
-	for (uint probe = 0u; probe < MAX_PROBE; probe++) {
-		DirEntry entry = g_hash[(slot + probe) % g_hashCapacity];
-		if (entry.key == EMPTY_KEY) return false;
-		if (entry.key == key)
-		{
-			if (entry.sumW < uint(MIN_WEIGHT)) return false;
-			value = float(entry.sumDW) / float(entry.sumW);
-			vec3 sumN = vec3(float(entry.sumNx), float(entry.sumNy), float(entry.sumNz));
-			float len = length(sumN);
-			normal = (len > 1e-6) ? sumN / len : vec3(0.0);
-			return true;
-		}
-	}
-	return false;
+	uint slot = findSlot(key);
+	if (slot == HASH_NOT_FOUND) return false;
+	DirEntry entry = g_hash[slot];
+	if (entry.sumW < uint(MIN_WEIGHT)) return false;
+	value = float(entry.sumDW) / float(entry.sumW);
+	vec3 sumN = vec3(float(entry.sumNx), float(entry.sumNy), float(entry.sumNz));
+	float len = length(sumN);
+	normal = (len > 1e-6) ? sumN / len : vec3(0.0);
+	return true;
 }
 
 // A2: root of the cubic Hermite through endpoints (0: value c0, slope g0) and (1: c1, g1),
