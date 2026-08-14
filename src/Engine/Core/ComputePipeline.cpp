@@ -2,6 +2,7 @@
 
 #include "SPIRV-Reflect/spirv_reflect.h"
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <shaderc/shaderc.hpp>
 #include <sstream>
@@ -97,6 +98,11 @@ namespace Engine::Core {
         return *this;
     }
 
+    ComputePipeline &ComputePipeline::Define(const std::string &name, const std::string &value) {
+        m_defines[name] = value;
+        return *this;
+    }
+
     std::vector<uint32_t> ComputePipeline::compileGlslToSpv(const std::string &src) const {
         shaderc::Compiler compiler;
         shaderc::CompileOptions opts;
@@ -143,13 +149,26 @@ namespace Engine::Core {
         // pays hundreds of redundant shaderc compilations on its first frame (each of its ~100 tiles
         // builds the same integrate + compact kernels). SPIR-V is device-independent, so the cache is
         // shared across Contexts; only the (cheap) VkShaderModule is per-pipeline.
-        std::vector<uint32_t> compileFileCached(const std::string &fullPath) {
+        std::vector<uint32_t> compileFileCached(const std::string &fullPath,
+                                                const std::map<std::string, std::string> &defines) {
             static std::unordered_map<std::string, std::vector<uint32_t>> cache;
             static std::mutex mutex;
-            std::lock_guard<std::mutex> lock(mutex);
 
-            const auto hit = cache.find(fullPath);
-            if (hit != cache.end()) return hit->second;
+            // Cache key = path + every definition. Keyed on the path alone, a second build of the
+            // same kernel with a different definition set would silently reuse the first module.
+            std::string cacheKey = fullPath;
+            for (const auto &entry: defines) {
+                cacheKey += '|';
+                cacheKey += entry.first;
+                cacheKey += '=';
+                cacheKey += entry.second;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                const auto hit = cache.find(cacheKey);
+                if (hit != cache.end()) return hit->second;
+            }
 
             std::ifstream f(fullPath, std::ios::binary);
             if (!f.is_open())
@@ -165,13 +184,17 @@ namespace Engine::Core {
             shaderc::CompileOptions opts;
             opts.SetOptimizationLevel(shaderc_optimization_level_performance);
             opts.SetIncluder(std::make_unique<FilesystemIncluder>(dir));
+            for (const auto &entry: defines)
+                opts.AddMacroDefinition(entry.first, entry.second);
 
             auto result = compiler.CompileGlslToSpv(src, shaderc_compute_shader, fullPath.c_str(), opts);
             if (result.GetCompilationStatus() != shaderc_compilation_status_success)
                 throw std::runtime_error("ComputePipeline::Build: " + result.GetErrorMessage());
 
             std::vector<uint32_t> spv(result.cbegin(), result.cend());
-            cache.emplace(fullPath, spv);
+
+            std::lock_guard<std::mutex> lock(mutex);
+            cache.emplace(cacheKey, spv);
             return spv;
         }
     } // namespace
@@ -180,7 +203,7 @@ namespace Engine::Core {
         destroyShaderResources();
 
         const std::string fullPath = std::string(VKBVH_SHADER_DIR) + "/" + filename;
-        const std::vector<uint32_t> spv = compileFileCached(fullPath);
+        const std::vector<uint32_t> spv = compileFileCached(fullPath, m_defines);
 
         VkShaderModuleCreateInfo smci{};
         smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;

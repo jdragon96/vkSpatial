@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -27,6 +28,11 @@ namespace Engine::Core {
         ComputePipeline &operator=(const ComputePipeline &) = delete;
 
         ComputePipeline &AddInclude(const std::string &name, const std::string &src);
+
+        // Preprocessor definition applied to the next Build(path). Repeated calls accumulate;
+        // re-defining a name replaces it. Definitions are part of the compile cache key, so the
+        // same file built with different definitions yields different modules.
+        ComputePipeline &Define(const std::string &name, const std::string &value = "1");
 
         ComputePipeline &Build(const std::string &source, ShaderInput inputType);
         ComputePipeline &Build(const std::string &path);
@@ -83,6 +89,10 @@ namespace Engine::Core {
         VkExtent3D m_localSize{};
 
         std::unordered_map<std::string, std::string> m_includes;
+
+        // std::map, not unordered: the cache key is built by walking this container, so the
+        // iteration order must be deterministic across runs.
+        std::map<std::string, std::string> m_defines;
 
         void destroyShaderResources();
         void ensurePipeline();
