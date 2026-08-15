@@ -1,7 +1,7 @@
 #version 450
 
 /// *********************************************************************************************
-/// AdvancedTSDF.rehash.comp.glsl
+/// kernel_AdvancedTSDF.rehash.comp.glsl
 ///
 /// Re-insert every occupied slot of an OLD (smaller) hash into a NEW (larger, pre-cleared) hash,
 /// through findOrInsert -- the SAME addressing the integrate kernel uses for whichever hash
@@ -22,7 +22,7 @@
 
 layout(local_size_x = 256) in;
 
-/// Must match AdvDirEntry (AdvancedTSDF.h) / DirEntry in AdvancedTSDF.integrate.comp.glsl.
+/// Must match AdvDirEntry (AdvancedTSDF.h) / DirEntry in kernel_AdvancedTSDF.integrate.comp.glsl.
 struct DirEntry
 {
 	uint key;

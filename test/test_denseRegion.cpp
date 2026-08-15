@@ -858,7 +858,7 @@ TEST(DenseRegionPartition, EmptyFrameDoesNotReplayThePreviousPartition) {
     EXPECT_EQ(detail.size(), 0u) << "an empty frame must not replay the previous frame's partition";
 }
 
-// The HASH_INSERT_FAILED -> base branch (partition.comp.glsl's `blockSlot != EMPTY_KEY` guard) has
+// The HASH_INSERT_FAILED -> base branch (kernel_DenseRegionClassifier.partition.comp.glsl's `blockSlot != EMPTY_KEY` guard) has
 // no coverage unless a fixture actually overflows the block table -- both other fixtures here touch
 // only a handful of blocks against kBlockCapacity's 8192 slots. blockWorld = 0.01 * 32 = 0.32 m, so
 // a 0.4 m lattice spacing (> blockWorld) guarantees every lattice point's floor() lands in its OWN
@@ -1005,9 +1005,9 @@ TEST(DenseRegionPartition, RebuildWithALargerHintReallocatesThePointBuffers) {
 }
 
 // LargeFrameGrowsInsteadOfTruncating (above) guards the point/normal/blockIndex/base/detail buffer
-// group, but is structurally blind to the cell hashes: accumulate.comp.glsl's pointCount/blockIndex
+// group, but is structurally blind to the cell hashes: kernel_DenseRegionClassifier.accumulate.comp.glsl's pointCount/blockIndex
 // writes (lines 124-130) happen unconditionally once a block slot is found, BEFORE the fine/coarse
-// cell claim (lines 132-142) ever runs, and partition.comp.glsl only routes an already-counted point
+// cell claim (lines 132-142) ever runs, and kernel_DenseRegionClassifier.partition.comp.glsl only routes an already-counted point
 // to a different LIST (base vs. detail) -- it never drops one. So Task 1's Critical 1 (cellCapacity
 // silently drifting past the cell hashes' true allocation) would leave that test, and every other
 // DenseRegion* fixture in this suite, green. 10 of the 12 pre-existing fixtures Build with 1<<15 and

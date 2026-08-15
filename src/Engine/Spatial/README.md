@@ -62,10 +62,10 @@ compact flat hash(블록 낭비 없이 block-TSDF 정확도), point-to-plane 통
 
 | 커널       | 셰이더                              | 역할                                                     |
 | ---------- | ----------------------------------- | -------------------------------------------------------- |
-| integrate  | `AdvancedTSDF.integrate.comp.glsl`  | 포인트 → band 복셀 findOrInsert + 누적                   |
-| compact    | `AdvancedTSDF.compact.comp.glsl`    | 점유 슬롯만 core-filter + world-decode → `AdvancedEntry` |
-| clear      | `AdvancedTSDF.clear.comp.glsl`      | 슬롯당 1스레드로 EMPTY 초기화 (24MB 호스트 업로드 대체)  |
-| **rehash** | `AdvancedTSDF.rehash.comp.glsl`     | auto-grow 시 점유 슬롯을 더 큰 해시로 재삽입             |
+| integrate  | `kernel_AdvancedTSDF.integrate.comp.glsl`  | 포인트 → band 복셀 findOrInsert + 누적                   |
+| compact    | `kernel_AdvancedTSDF.compact.comp.glsl`    | 점유 슬롯만 core-filter + world-decode → `AdvancedEntry` |
+| clear      | `kernel_AdvancedTSDF.clear.comp.glsl`      | 슬롯당 1스레드로 EMPTY 초기화 (24MB 호스트 업로드 대체)  |
+| **rehash** | `kernel_AdvancedTSDF.rehash.comp.glsl`     | auto-grow 시 점유 슬롯을 더 큰 해시로 재삽입             |
 
 ### 2.4 첫-채움 프레임 스탬프 (`firstFrame`)
 

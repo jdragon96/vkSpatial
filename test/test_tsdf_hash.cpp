@@ -11,18 +11,18 @@ TEST(ComputePipelineDefines, DefinitionsReachTheCompilerAndKeyTheCache) {
     Engine::Core::Context context;
 
     Engine::Core::ComputePipeline withDefinition(context);
-    withDefinition.Define("PROBE_LOCAL_SIZE", "8").Build("define_probe.comp.glsl");
+    withDefinition.Define("PROBE_LOCAL_SIZE", "8").Build("kernel_define_probe.comp.glsl");
     EXPECT_EQ(withDefinition.GetLocalSize().width, 8u);
 
     // Same file, no definition. A cache keyed on the path alone would return the module built
     // above and report 8 -- that is the failure this test exists to catch.
     Engine::Core::ComputePipeline withoutDefinition(context);
-    withoutDefinition.Build("define_probe.comp.glsl");
+    withoutDefinition.Build("kernel_define_probe.comp.glsl");
     EXPECT_EQ(withoutDefinition.GetLocalSize().width, 1u);
 
     // And the definition still applies after the undefined build populated the cache.
     Engine::Core::ComputePipeline again(context);
-    again.Define("PROBE_LOCAL_SIZE", "4").Build("define_probe.comp.glsl");
+    again.Define("PROBE_LOCAL_SIZE", "4").Build("kernel_define_probe.comp.glsl");
     EXPECT_EQ(again.GetLocalSize().width, 4u);
 }
 
@@ -150,7 +150,7 @@ TEST(TsdfHashStrategy, BucketedIsRegisteredWithItsOwnThreshold) {
 // Fix round 3: occupiedEntryCount alone was NOT enough. That counter is produced entirely by
 // findOrInsert (integrate) and by Download, which goes through the compact kernel -- a full sweep
 // of every slot that never probes at all. findSlot, bucketed's LOOKUP half, is reached from
-// exactly one place in the repo: AdvancedTSDF.extract.comp.glsl's neighbour lookups. So a
+// exactly one place in the repo: kernel_AdvancedTSDF.extract.comp.glsl's neighbour lookups. So a
 // findSlot that returned HASH_NOT_FOUND for keys that are present (a wrong bucketCount, a probe
 // budget shorter than insertion's, a mis-ordered sawEmpty early-out) would leave every assertion
 // in the old version of this test byte-identical while silently degrading the extracted surface.
@@ -286,7 +286,7 @@ TEST(TsdfHashStrategy, BucketedGrowsLaterThanLinear) {
     EXPECT_EQ(bucketed.insertFailureCount, 0u);
 }
 
-// Fix round 1: AdvancedTSDF.rehash.comp.glsl used to hard-code linear-probe addressing for the
+// Fix round 1: kernel_AdvancedTSDF.rehash.comp.glsl used to hard-code linear-probe addressing for the
 // GROWN table regardless of hash strategy, so a bucketed table's entries survived a grow at
 // wangHash(key) % capacity -- a linear-probe slot -- instead of their bucketed
 // wangHash(key) % bucketCount address. That slot generally sits outside every bucket a later

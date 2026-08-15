@@ -92,13 +92,13 @@ namespace TSDF {
         growPointBuffers(maxPointPerFrame);
 
         kernel_clearCells = std::make_unique<Engine::Core::ComputePipeline>(context);
-        kernel_clearCells->Build("TSDF/Structure/DenseRegionClassifier.clear.comp.glsl")
+        kernel_clearCells->Build("TSDF/Structure/kernel_DenseRegionClassifier.clear.comp.glsl")
                 .Bind(0, *m_fineCells)
                 .Bind(1, *m_coarseCells)
                 .Bind(2, *m_blockRecords);
 
         kernel_accumulate = std::make_unique<Engine::Core::ComputePipeline>(context);
-        kernel_accumulate->Build("TSDF/Structure/DenseRegionClassifier.accumulate.comp.glsl")
+        kernel_accumulate->Build("TSDF/Structure/kernel_DenseRegionClassifier.accumulate.comp.glsl")
                 .Bind(2, *m_blockRecords)
                 .Bind(3, *m_blockCount)
                 .Bind(4, *m_blockIndex)
@@ -113,7 +113,7 @@ namespace TSDF {
         m_totals->AllocateHostVisibleReadback(2u * sizeof(uint32_t));
 
         kernel_classify = std::make_unique<Engine::Core::ComputePipeline>(context);
-        kernel_classify->Build("TSDF/Structure/DenseRegionClassifier.classify.comp.glsl")
+        kernel_classify->Build("TSDF/Structure/kernel_DenseRegionClassifier.classify.comp.glsl")
                 .Bind(0, *m_blockRecords)
                 .Bind(1, *m_denseFlags)
                 .Bind(2, *m_totals);
@@ -124,7 +124,7 @@ namespace TSDF {
         // m_baseIndex/m_detailIndex were already (re)created by the growPointBuffers() call above,
         // so they and m_blockIndex are all valid to bind here.
         kernel_partition = std::make_unique<Engine::Core::ComputePipeline>(context);
-        kernel_partition->Build("TSDF/Structure/DenseRegionClassifier.partition.comp.glsl")
+        kernel_partition->Build("TSDF/Structure/kernel_DenseRegionClassifier.partition.comp.glsl")
                 .Bind(0, *m_blockIndex)
                 .Bind(1, *m_denseFlags)
                 .Bind(2, *m_baseIndex)

@@ -95,7 +95,7 @@ namespace Engine::Pipeline {
         m_partials = std::make_unique<Engine::Core::Buffer>(ctx);
         m_sourceNormals = std::make_unique<Engine::Core::Buffer>(ctx);
         m_kernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_kernel->Build("icp_iterate.comp.glsl");
+        m_kernel->Build("kernel_icp_iterate.comp.glsl");
     }
 
     GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::Accumulate(

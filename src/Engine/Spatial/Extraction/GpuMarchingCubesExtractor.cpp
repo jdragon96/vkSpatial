@@ -14,7 +14,7 @@ namespace Engine::Spatial::Extraction {
 
         // Mirrors extract_mc.comp's PushConstants block field-for-field: SCALAR fields only (no
         // vec3/ivec3 -- a push-constant vec3/ivec3 pads to 16 bytes in GLSL and would desync from
-        // this tightly-packed C++ struct; see icp_iterate.comp.glsl's doc comment for the same
+        // this tightly-packed C++ struct; see kernel_icp_iterate.comp.glsl's doc comment for the same
         // reasoning applied to GpuPointToPlaneIcp).
         struct ExtractMarchingCubesPushConstants {
             int32_t originX, originY, originZ;

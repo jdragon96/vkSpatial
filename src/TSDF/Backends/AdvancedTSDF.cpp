@@ -8,13 +8,13 @@
 namespace TSDF {
 
     static constexpr uint32_t EMPTY_KEY = 0xFFFFFFFFu;
-    // Matches #define TSDF_SCALE 10000.0 in AdvancedTSDF.integrate.comp.glsl /
-    // AdvancedTSDF.extract.comp.glsl (extract's MIN_WEIGHT gate = TSDF_SCALE/2).
+    // Matches #define TSDF_SCALE 10000.0 in kernel_AdvancedTSDF.integrate.comp.glsl /
+    // kernel_AdvancedTSDF.extract.comp.glsl (extract's MIN_WEIGHT gate = TSDF_SCALE/2).
     static constexpr int32_t kTsdfScale = 10000;
     static constexpr size_t kMaxClustersPerVoxel = 6; // max distinct orientations per voxel
 
     namespace {
-        // Must match the push_constant block in AdvancedTSDF.integrate.comp.glsl (all 4-byte
+        // Must match the push_constant block in kernel_AdvancedTSDF.integrate.comp.glsl (all 4-byte
         // scalars -> tightly packed). g_pointToPlane is the last field.
         struct IntegratePC {
             uint32_t numPoints;
@@ -35,7 +35,7 @@ namespace TSDF {
             int32_t currentFrame;
         };
 
-        // Must match the push_constant block in AdvancedTSDF.extract.comp.glsl.
+        // Must match the push_constant block in kernel_AdvancedTSDF.extract.comp.glsl.
         struct ExtractPC {
             float voxelSize;
             uint32_t hashCapacity;
@@ -47,7 +47,7 @@ namespace TSDF {
             uint32_t hermite;
         };
 
-        // Must match the push_constant block in AdvancedTSDF.compact.comp.glsl. The kernel decodes on
+        // Must match the push_constant block in kernel_AdvancedTSDF.compact.comp.glsl. The kernel decodes on
         // the GPU (local key -> world centre), so it needs this tile's origin + voxel size + the core
         // bounds (in LOCAL voxel coords) that gate which voxels it appends.
         struct CompactPC {
@@ -113,7 +113,7 @@ namespace TSDF {
 
         kernel_integratePoints = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         if (m_hash->macroName) kernel_integratePoints->Define(m_hash->macroName);
-        kernel_integratePoints->Build("TSDF/Backends/AdvancedTSDF.integrate.comp.glsl")
+        kernel_integratePoints->Build("TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, *m_pointBuffer)
                 .Bind(2, *m_normalBuffer)
@@ -122,14 +122,14 @@ namespace TSDF {
                 .Bind(5, *m_insertFailureBuffer);
 
         kernel_compactTable = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        kernel_compactTable->Build("TSDF/Backends/AdvancedTSDF.compact.comp.glsl").Bind(3, *m_firstFrameBuffer);
+        kernel_compactTable->Build("TSDF/Backends/kernel_AdvancedTSDF.compact.comp.glsl").Bind(3, *m_firstFrameBuffer);
 
         kernel_clearVoxel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        kernel_clearVoxel->Build("TSDF/Backends/AdvancedTSDF.clear.comp.glsl").Bind(0, *m_hashBuffer);
+        kernel_clearVoxel->Build("TSDF/Backends/kernel_AdvancedTSDF.clear.comp.glsl").Bind(0, *m_hashBuffer);
 
         kernel_rehashTable = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         if (m_hash->macroName) kernel_rehashTable->Define(m_hash->macroName);
-        kernel_rehashTable->Build("TSDF/Backends/AdvancedTSDF.rehash.comp.glsl");
+        kernel_rehashTable->Build("TSDF/Backends/kernel_AdvancedTSDF.rehash.comp.glsl");
 
         Reset();
     }
@@ -398,7 +398,7 @@ namespace TSDF {
 
         Engine::Core::ComputePipeline kernel(*m_ctx);
         if (m_hash->macroName) kernel.Define(m_hash->macroName);
-        kernel.Build("TSDF/Backends/AdvancedTSDF.extract.comp.glsl")
+        kernel.Build("TSDF/Backends/kernel_AdvancedTSDF.extract.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, candBuf)
                 .Bind(2, countBuf)

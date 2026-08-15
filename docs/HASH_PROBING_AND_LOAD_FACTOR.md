@@ -2,7 +2,7 @@
 
 > "복셀이 몇 개일 때 linear probe를 몇 번 하는가"에 대한 문헌 조사.
 >
-> 대상 코드: [`AdvancedTSDF.cpp`](../src/TSDF/Backends/AdvancedTSDF.cpp) + [`AdvancedTSDF.integrate.comp.glsl`](../src/TSDF/Backends/AdvancedTSDF.integrate.comp.glsl) + [`LinearProbe.glsl`](../src/TSDF/Memory/Hash/LinearProbe.glsl)
+> 대상 코드: [`AdvancedTSDF.cpp`](../src/TSDF/Backends/AdvancedTSDF.cpp) + [`kernel_AdvancedTSDF.integrate.comp.glsl`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl) + [`LinearProbe.glsl`](../src/TSDF/Memory/Hash/LinearProbe.glsl)
 > — open addressing + linear probing(`MAX_PROBE = 128`), load factor 50%에서 리해시.
 >
 > 관련 문서: [`ADVANCED_TSDF.md`](ADVANCED_TSDF.md) · [`MRHASH_VS_DIRECTIONAL_TSDF.md`](MRHASH_VS_DIRECTIONAL_TSDF.md)

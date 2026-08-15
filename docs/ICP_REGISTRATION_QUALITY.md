@@ -5,7 +5,7 @@
 
 - **브랜치:** `feature/icp-registration-quality`
 - **커밋 범위:** `fc19da3..0a56fa5` (baseline + Tier 1~3 + 측정체계 + 최종 보강)
-- **적용 대상:** GPU 경로(`GpuPointToPlaneIcp` + `icp_iterate.comp.glsl`)와 CPU 경로
+- **적용 대상:** GPU 경로(`GpuPointToPlaneIcp` + `kernel_icp_iterate.comp.glsl`)와 CPU 경로
   (`AlignPointToPlaneIcp`) **양쪽 모두**, 그리고 두 경로가 공유하는 `RegistrationThread`
 - **플랫폼:** macOS / MoltenVK / Apple M4 Max (UMA). GPU float atomic이 없어 정수 고정소수점 리덕션 사용
 - **관련 문서:** [ICP_LOCAL_VS_GLOBAL.md](ICP_LOCAL_VS_GLOBAL.md), [ICP_METHODS.md](ICP_METHODS.md)
@@ -44,7 +44,7 @@
 `RegistrationResult`에 `float rmse` 추가. `sqrt(sumOfSquaredResiduals / numInliers)`이며 각 잔차는
 point-to-plane 거리 `(변환된_소스점 − 타깃점) · 타깃노멀`.
 
-- **GPU** (`icp_iterate.comp.glsl`): 워크그룹당 고정소수점 리덕션이 기존 28 슬롯
+- **GPU** (`kernel_icp_iterate.comp.glsl`): 워크그룹당 고정소수점 리덕션이 기존 28 슬롯
   (21 상삼각 정규행렬 + 6 우변 + 1 inlier)이었는데, **29번째 슬롯**에 `Σ residual²`를 누적
   (동일 SCALE=10000; centred 프레임에서 크기가 작아 int32 오버플로 없음).
 - **CPU** (`AlignPointToPlaneIcp`): inlier 카운트 옆에 `sumOfSquaredResiduals`를 함께 누적.
@@ -159,7 +159,7 @@ per-iteration grid 재생성을 다시 만들지 않도록 hoist와 조화:
 | 파일 | 변경 |
 |---|---|
 | `src/Engine/Pipeline/Registration/RegistrationTypes.h` | `RegistrationResult.rmse`; `RegistrationParam`에 `huberScale`, `normalCompatibilityCosine`, `minCorrespondenceDistance`; 공유 `AnnealIcpIteration` |
-| `src/shader/icp_iterate.comp.glsl` | 29-slot 리덕션(Σe² slot 28); 소스 노멀 binding 6; `g_huberScale`/`g_normalCompatibilityCosine`/per-iter `g_maxCorr` push constant |
+| `src/shader/kernel_icp_iterate.comp.glsl` | 29-slot 리덕션(Σe² slot 28); 소스 노멀 binding 6; `g_huberScale`/`g_normalCompatibilityCosine`/per-iter `g_maxCorr` push constant |
 | `src/Engine/Pipeline/Registration/GpuPointToPlaneIcp.{h,cpp}` | annealed 거리로 `dispatchCentred`; `IterOut.sumOfSquaredResiduals`; 소스 노멀 버퍼 |
 | `src/Engine/Pipeline/Registration/PointToPlaneIcp.h` | `AlignPointToPlaneIcp(src, sourceNormals, tgt, priorT, params)` — Huber + rejection + annealing; grid 1회 생성 |
 | `src/Engine/Pipeline/Registration/GpuIcpTracker.cpp`, `PointToPlaneIcpTracker.cpp` | sub-voxel 타깃 구성; `frame.nrm` 전달; `huberScale = model->voxel`; annealing opt-in 주석 |

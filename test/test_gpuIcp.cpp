@@ -171,7 +171,7 @@ TEST(GpuIcp, ResidualRmseMatchesCpu) {
     perturb.rotate(Eigen::AngleAxisf(0.03f, Vector3f::UnitZ()));
     // This corner is an EXACT rigid map of tgt (no noise), so ICP's Newton iterations converge the
     // point-to-plane residual to ~machine epsilon -- far below the GPU accumulator's fixed-point
-    // resolution (SCALE=10000 needs |e| >~ 0.007 to register a nonzero int32; see icp_iterate.comp.glsl).
+    // resolution (SCALE=10000 needs |e| >~ 0.007 to register a nonzero int32; see kernel_icp_iterate.comp.glsl).
     // Add small deterministic per-point jitter so the least-squares optimum has a genuine nonzero
     // residual floor (comfortably above that resolution, still well inside maxCorrDist below).
     std::mt19937 jitterRng(7);
