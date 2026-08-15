@@ -177,7 +177,10 @@ namespace TSDF {
 
     void DenseRegionClassifier::Classify(Engine::Compute::CommandBatch &batch) {
         if (!m_context) return;
-        // The two totals are recomputed from scratch every call, not accumulated across calls.
+        // The two totals are recomputed from scratch every call, not accumulated across calls. Safe
+        // to reset unconditionally on the host: CommandBatch already forbids dispatching the same
+        // ComputePipeline twice in one batch, so Classify() can never run twice against a
+        // not-yet-submitted dispatch of its own kernel_classify.
         auto *totals = static_cast<uint32_t *>(m_totals->MappedPtr());
         totals[0] = 0;
         totals[1] = 0;

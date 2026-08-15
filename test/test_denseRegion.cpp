@@ -205,3 +205,61 @@ TEST(DenseRegionClassify, SparseCurvedSurfaceIsNotRefined) {
 
     EXPECT_EQ(classifier.DenseBlockCount(), 0u) << "spacing must veto refinement";
 }
+
+namespace {
+
+    // A small paraboloid patch z = curvature*(x^2+y^2), centred in the middle of block (0,0,0) (see
+    // MakePlane's comment on why: the world origin sits on a block corner). halfWidth, curvature and
+    // pointsPerSide are tuned -- not arbitrary -- so that a SINGLE frame clears resolvesFineGrid,
+    // hasDetail and keepsSignal with real margin while its fine-cell footprint (fineOccupied on that
+    // one frame) sits comfortably under DensityCriteria::minimumFineOccupied (measured: 56 vs 64).
+    // See RevisitedSmallFootprintIsNotRefined for why that specific combination matters.
+    void MakeSmallCurvedPatch(std::vector<Vector3f> &points, std::vector<Vector3f> &normals,
+                              float blockOffset) {
+        points.clear();
+        normals.clear();
+        const float halfWidth = 0.0125f;
+        const float curvature = 31.0f;
+        const int pointsPerSide = 40;
+        for (int i = 0; i < pointsPerSide; ++i)
+            for (int j = 0; j < pointsPerSide; ++j) {
+                const float x = -halfWidth + 2.0f * halfWidth * float(i) / float(pointsPerSide - 1);
+                const float y = -halfWidth + 2.0f * halfWidth * float(j) / float(pointsPerSide - 1);
+                const float z = curvature * (x * x + y * y);
+                points.emplace_back(blockOffset + x, blockOffset + y, blockOffset + z);
+                const Vector3f gradient(-2.0f * curvature * x, -2.0f * curvature * y, 1.0f);
+                normals.push_back(gradient.normalized());
+            }
+    }
+
+} // namespace
+
+// Regression for a review finding: hasSurface must read fineOccupiedMax, not the cumulative
+// fineOccupied. fineOccupied re-counts a physical cell once per frame (the per-frame cell hash is
+// wiped every frame), so it is as much a revisit counter as a footprint measure; a block with a
+// genuinely small footprint can walk it past minimumFineOccupied purely by being looked at enough
+// times, with no growth in real extent -- exactly what minimumFineOccupied exists to prevent. A
+// single Record+Classify cannot catch this: fineOccupied, fineOccupiedFrame and fineOccupiedMax are
+// all numerically equal after one frame. This replays the SAME small patch across several
+// independent frames -- each its own CommandBatch, submitted, matching how a real scan integrates
+// -- and checks the verdict never flips.
+TEST(DenseRegionClassify, RevisitedSmallFootprintIsNotRefined) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, 1u << 15);
+
+    const float blockOffset = 0.01f * 32.0f * 0.5f; // centre of block (0,0,0)
+    std::vector<Vector3f> points, normals;
+    MakeSmallCurvedPatch(points, normals, blockOffset);
+
+    for (int frame = 0; frame < 4; ++frame) {
+        Engine::Compute::CommandBatch batch(context);
+        classifier.Record(points, normals, batch);
+        classifier.Classify(batch);
+        batch.Submit();
+
+        EXPECT_EQ(classifier.DenseBlockCount(), 0u)
+                << "frame " << frame
+                << ": revisiting the same small footprint must not accumulate into a false latch";
+    }
+}

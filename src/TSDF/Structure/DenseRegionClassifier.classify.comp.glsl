@@ -71,7 +71,10 @@ void main()
 	// 3. Enough samples survive the refinement for the finer voxels to be signal, not noise.
 	bool keepsSignal      = pointCount >= g_samplesPerFineCell * fineOccupied;
 	// 4. An absolute floor so a block glimpsed by a handful of points cannot latch to dense.
-	bool hasSurface       = g_blocks[i].fineOccupied >= g_minimumFineOccupied;
+	//    fineOccupiedMax, not fineOccupied: the cumulative field re-counts a cell once per frame, so
+	//    a small block could otherwise cross this floor by being revisited rather than by having
+	//    real extent -- exactly what this floor exists to rule out.
+	bool hasSurface       = g_blocks[i].fineOccupiedMax >= g_minimumFineOccupied;
 
 	if (resolvesFineGrid && hasDetail && keepsSignal && hasSurface) {
 		g_dense[i] = 1u;
