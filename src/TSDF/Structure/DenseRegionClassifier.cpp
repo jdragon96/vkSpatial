@@ -152,6 +152,11 @@ namespace TSDF {
     }
 
     void DenseRegionClassifier::Reset() {
+        // The most-recently-recorded-frame state must not survive a scene reset either, for the
+        // same reason Record() invalidates it up front: a stale count would have Partition()
+        // replay whatever frame was last recorded before this Reset().
+        m_recordedPointCount = 0;
+
         // Empty every block slot on the host: the record buffer is host-visible and this runs once
         // per scene, not per frame.
         auto *records = static_cast<BlockRecord *>(m_blockRecords->MappedPtr());
@@ -174,6 +179,13 @@ namespace TSDF {
     void DenseRegionClassifier::Record(const std::vector<Eigen::Vector3f> &points,
                                        const std::vector<Eigen::Vector3f> &normals,
                                        Engine::Compute::CommandBatch &batch) {
+        // Set first, above BOTH early returns below: Record/Classify/Partition is a per-frame
+        // sequence and this count is that sequence's state, so an empty or malformed frame must
+        // invalidate it right here, where the frame is decided. Leaving the previous frame's count
+        // resident would have Partition() dispatch over -- and ReadPartition() hand back -- the
+        // previous frame's still-resident m_blockIndex, silently duplicating it into the caller's
+        // integration.
+        m_recordedPointCount = 0;
         if (!m_context || points.empty()) return;
         const uint32_t n =
                 std::min(uint32_t(points.size()), uint32_t(normals.size()));

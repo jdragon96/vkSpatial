@@ -291,8 +291,18 @@ TEST(DenseRegionPartition, EveryPointLandsInExactlyOneLevel) {
 
     std::vector<uint32_t> base, detail;
     classifier.ReadPartition(base, detail);
-    EXPECT_EQ(base.size() + detail.size(), points.size());
     EXPECT_GT(detail.size(), 0u) << "a curved dense surface must send points to the detail level";
+
+    // base.size()+detail.size() == points.size() alone does not prove every INDEX landed exactly
+    // once -- it holds whenever each invocation increments a counter once, regardless of what got
+    // written into the lists (e.g. a non-atomic-slot kernel bug: read the counter, write, THEN
+    // atomicAdd -- collides concurrent writes onto the same slot while the counters still end up
+    // correct). Every index in [0, points.size()) must appear EXACTLY ONCE across base+detail
+    // combined; verified as a mutation-tested regression guard against exactly that bug shape.
+    std::vector<uint8_t> seen(points.size(), 0);
+    for (uint32_t index : base)   { ASSERT_LT(index, points.size()); EXPECT_EQ(seen[index]++, 0); }
+    for (uint32_t index : detail) { ASSERT_LT(index, points.size()); EXPECT_EQ(seen[index]++, 0); }
+    EXPECT_EQ(size_t(std::count(seen.begin(), seen.end(), 1)), points.size());
 }
 
 // The verdict is a latch: a block that became dense stays dense on later frames.
@@ -332,7 +342,106 @@ TEST(DenseRegionPartition, DenseVerdictDoesNotRevert) {
         Engine::Compute::CommandBatch batch(context);
         classifier.Record(sparse, sparseNormals, batch);
         classifier.Classify(batch);
+        classifier.Partition(batch);
         batch.Submit();
     }
     EXPECT_GE(classifier.DenseBlockCount(), afterDenseFrame) << "the verdict must not revert";
+
+    // g_dense[] is only ever written 1u and only cleared by Reset(), so the flag latches by
+    // construction -- the DenseBlockCount() check above only proves the COUNTER latches. What the
+    // spec actually needs is that a latched block still ROUTES its points to detail on a later
+    // frame; that is a property of Partition() reading m_denseFlags, not of Classify() alone.
+    std::vector<uint32_t> base, detail;
+    classifier.ReadPartition(base, detail);
+    EXPECT_GT(detail.size(), 0u)
+            << "a block latched dense must still route its points to the detail level";
+}
+
+// Record() has two early returns (an empty `points`, or a mismatched/empty `normals` that makes
+// the shared count zero) above the point where the recorded-point-count state used to be set. A
+// frame the caller filters down to nothing must not leave Partition() replaying the PREVIOUS
+// frame's still-resident m_blockIndex -- that duplicates every one of that frame's points into the
+// caller's integration with no counter showing it.
+TEST(DenseRegionPartition, EmptyFrameDoesNotReplayThePreviousPartition) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, 1u << 15);
+
+    std::vector<Vector3f> points, normals;
+    const float radius = 0.05f;
+    for (int a = 0; a < 180; ++a)
+        for (int b = 0; b < 90; ++b) {
+            const float theta = float(a) * float(M_PI) / 90.0f;
+            const float phi = float(b) * float(M_PI) / 180.0f;
+            const Vector3f direction(std::sin(phi) * std::cos(theta),
+                                     std::sin(phi) * std::sin(theta), std::cos(phi));
+            points.push_back(direction * radius);
+            normals.push_back(direction);
+        }
+
+    {
+        Engine::Compute::CommandBatch batch(context);
+        classifier.Record(points, normals, batch);
+        classifier.Classify(batch);
+        classifier.Partition(batch);
+        batch.Submit();
+    }
+    std::vector<uint32_t> base, detail;
+    classifier.ReadPartition(base, detail);
+    ASSERT_EQ(base.size() + detail.size(), points.size()) << "sanity: the real frame partitions fully";
+
+    // An empty cloud takes Record()'s "points.empty()" early return.
+    std::vector<Vector3f> empty, emptyNormals;
+    {
+        Engine::Compute::CommandBatch batch(context);
+        classifier.Record(empty, emptyNormals, batch);
+        classifier.Classify(batch);
+        classifier.Partition(batch);
+        batch.Submit();
+    }
+    classifier.ReadPartition(base, detail);
+    EXPECT_EQ(base.size(), 0u) << "an empty frame must not replay the previous frame's partition";
+    EXPECT_EQ(detail.size(), 0u) << "an empty frame must not replay the previous frame's partition";
+}
+
+// The HASH_INSERT_FAILED -> base branch (partition.comp.glsl's `blockSlot != EMPTY_KEY` guard) has
+// no coverage unless a fixture actually overflows the block table -- both other fixtures here touch
+// only a handful of blocks against kBlockCapacity's 8192 slots. blockWorld = 0.01 * 32 = 0.32 m, so
+// a 0.4 m lattice spacing (> blockWorld) guarantees every lattice point's floor() lands in its OWN
+// block along every axis: 25^3 = 15625 distinct blocks, so by the pigeonhole principle alone (never
+// mind MAX_PROBE) at least 15625 - 8192 = 7433 of them cannot find a slot. This overflows the table
+// without touching any production code.
+TEST(DenseRegionPartition, HashInsertFailureStillConservesEveryPoint) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, 1u << 15);
+
+    std::vector<Vector3f> points, normals;
+    const float spacing = 0.4f;
+    const int side = 25;
+    for (int x = 0; x < side; ++x)
+        for (int y = 0; y < side; ++y)
+            for (int z = 0; z < side; ++z) {
+                points.emplace_back(float(x) * spacing, float(y) * spacing, float(z) * spacing);
+                normals.emplace_back(0.0f, 0.0f, 1.0f);
+            }
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    classifier.Classify(batch);
+    classifier.Partition(batch);
+    batch.Submit();
+
+    EXPECT_GT(classifier.BlockInsertFailureCount(), 0u)
+            << "25^3 distinct blocks must overflow an 8192-slot table";
+
+    // The point of this test: a frame that overflows the block table still loses nothing. Every
+    // point -- insert-failed or not -- must land in exactly one of the two lists.
+    std::vector<uint32_t> base, detail;
+    classifier.ReadPartition(base, detail);
+    std::vector<uint8_t> seen(points.size(), 0);
+    for (uint32_t index : base)   { ASSERT_LT(index, points.size()); EXPECT_EQ(seen[index]++, 0); }
+    for (uint32_t index : detail) { ASSERT_LT(index, points.size()); EXPECT_EQ(seen[index]++, 0); }
+    EXPECT_EQ(size_t(std::count(seen.begin(), seen.end(), 1)), points.size())
+            << "a frame that overflows the block table must still lose no points";
 }
