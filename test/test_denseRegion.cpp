@@ -1,6 +1,6 @@
 #include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
-#include "TSDF/Structure/DenseRegionClassifier.h"
+#include "TSDF/Memory/RegionClassifier/DenseRegionClassifier.h"
 
 #include <gtest/gtest.h>
 

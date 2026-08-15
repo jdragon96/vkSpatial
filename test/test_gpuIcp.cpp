@@ -1,10 +1,10 @@
-#include "Engine/Pipeline/Registration/GpuPointToPlaneIcp.h"
+#include "Pipeline/Registration/GpuPointToPlaneIcp.h"
 #include <Eigen/Core>
 #include <gtest/gtest.h>
 #include <random>
 #include <vector>
 using Eigen::Vector3f;
-using Engine::Pipeline::LocalGrid;
+using Pipeline::LocalGrid;
 
 // Brute-force nearest within radius (reference).
 static int bruteNearest(const std::vector<Vector3f> &pts, const Vector3f &q, float radius) {
@@ -42,8 +42,8 @@ TEST(LocalGrid, NearestMatchesBruteForce) {
 }
 
 #include "Engine/Core/Context.h"
-#include "Engine/Pipeline/Registration/GpuPointToPlaneIcp.h"
-#include "Engine/Pipeline/Registration/RegistrationTypes.h"
+#include "Pipeline/Registration/GpuPointToPlaneIcp.h"
+#include "Pipeline/Registration/RegistrationTypes.h"
 
 // CPU reference: point-to-plane H,b in T's frame, over grid-NN correspondences, CENTRED on tgt centroid.
 static void cpuAccumulate(const std::vector<Vector3f> &src, const Engine::Registration::PointCloud &tgt,
@@ -96,7 +96,7 @@ TEST(GpuIcp, AccumulateMatchesCpu) {
     cpuAccumulate(src, tgt, T, maxCorr, Hc, bc, nc);
     ASSERT_GT(nc, 100);
 
-    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+    Pipeline::GpuPointToPlaneIcp gpu(ctx);
     const auto out = gpu.Accumulate(src, tgt, T, maxCorr);
     EXPECT_EQ(out.inliers, nc);
     EXPECT_TRUE(((out.H - Hc).array().abs() < 1e-2 * (1.0 + Hc.array().abs())).all()) << out.H << "\n---\n"
@@ -105,7 +105,7 @@ TEST(GpuIcp, AccumulateMatchesCpu) {
                                                                                       << bc;
 }
 
-#include "Engine/Pipeline/Registration/PointToPlaneIcp.h"
+#include "Pipeline/Registration/PointToPlaneIcp.h"
 #include <Eigen/Geometry>
 
 TEST(GpuIcp, SolveMatchesCpuOnCorner) {
@@ -141,7 +141,7 @@ TEST(GpuIcp, SolveMatchesCpuOnCorner) {
                                                                  Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(cpu.valid);
 
-    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+    Pipeline::GpuPointToPlaneIcp gpu(ctx);
     const auto g = gpu.Solve(src, srcNormals, tgt, Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(g.valid);
     // Both should recover ~perturb⁻¹ (align source back onto target). Compare the two poses directly.
@@ -192,7 +192,7 @@ TEST(GpuIcp, ResidualRmseMatchesCpu) {
             Engine::Registration::AlignPointToPlaneIcp(src, {}, tgt, Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(cpu.valid);
 
-    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+    Pipeline::GpuPointToPlaneIcp gpu(ctx);
     const auto gpuResult = gpu.Solve(src, {}, tgt, Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(gpuResult.valid);
 
@@ -233,7 +233,7 @@ namespace {
 
 TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
     Engine::Core::Context ctx;
-    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx); // one instance reused across sizes, like the real tracker
+    Pipeline::GpuPointToPlaneIcp gpu(ctx); // one instance reused across sizes, like the real tracker
 
     // Target sizes ~5k/20k/80k/200k (3 planes of (2M+1)^2 points each); spacing shrinks with M so the
     // plane extent stays ~0.6m (sub-meter) at every size.
@@ -328,7 +328,7 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
 // the residual `rmse` as a SECONDARY one: Task 1 found the GPU accumulator under-reports residuals
 // below ~7mm (fixed-point floor), so this harness does not assert on residual rmse being large.
 #include "Engine/Eval/RmseMetrics.h"
-#include "Engine/Pipeline/Registration/Tracker.h"
+#include "Pipeline/Registration/Tracker.h"
 
 #include <cmath>
 
@@ -402,18 +402,17 @@ namespace {
     // an approximation). Because kCornerApex is off the voxel grid (see the block comment above it),
     // `center`'s normal-axis coordinate is snapped AWAY from the true apex coordinate, so this is a
     // genuine non-zero correction -- the invariant a later tier's sub-voxel extraction will exploit.
-    Engine::Pipeline::ModelSnapshot QuantizeToModel(const std::vector<Vector3f> &surfacePoints, float voxel,
+    Pipeline::ModelSnapshot QuantizeToModel(const std::vector<Vector3f> &surfacePoints, float voxel,
                                                      float truncation) {
-        Engine::Pipeline::ModelSnapshot model;
+        Pipeline::ModelSnapshot model;
         model.entries.reserve(surfacePoints.size());
         for (const Vector3f &p: surfacePoints) {
             const Vector3f n = cornerPlaneNormal(p);
             Vector3f center;
             for (int axis = 0; axis < 3; ++axis) center[axis] = std::round(p[axis] / voxel) * voxel;
             const float signedDistance = n.dot(center - kCornerApex); // plane through kCornerApex
-            TSDF::AdvancedEntry entry;
+            TSDFVoxel entry;
             entry.center = center;
-            entry.direction = 0;
             entry.tsdf = signedDistance / truncation;
             entry.weight = 1.0f;
             entry.normal = n;
@@ -430,7 +429,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarness) {
     // true surface points (sub-voxel), + a ModelSnapshot whose entries are the SAME surface snapped to
     // the voxel grid but carrying tsdf/normal so center - tsdf*truncation*normal recovers the surface.
     std::vector<Eigen::Vector3f> trueSurface = MakeCornerSurfacePoints(); // dense corner, sub-voxel
-    Engine::Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation); // helper (this task)
+    Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation); // helper (this task)
     model.voxel = voxel;
     model.truncationDistance = truncation;
 
@@ -440,13 +439,13 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarness) {
     // trueNormals[i] is the (unit) surface normal at trueSurface[i]; the sensor frame sees both the
     // points and normals rotated by the perturbation (normals rotate, do not translate).
     std::vector<Eigen::Vector3f> trueNormals = MakeCornerSurfaceNormals(); // parallel to trueSurface
-    Engine::Pipeline::Frame frame;
+    Pipeline::Frame frame;
     for (size_t i = 0; i < trueSurface.size(); ++i) {
         frame.pts.push_back(knownPerturbation * trueSurface[i]);
         frame.nrm.push_back(knownPerturbation.rotation() * trueNormals[i]);
     }
 
-    auto tracker = Engine::Pipeline::TrackerRegistry::Default().Create("icp");
+    auto tracker = Pipeline::TrackerRegistry::Default().Create("icp");
     const auto result = tracker->Track(frame, &model, Eigen::Isometry3f::Identity());
 
     const Eigen::Isometry3f error = result.pose * knownPerturbation; // should be ~identity
@@ -485,7 +484,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessNoisyRobustness) {
     const float voxel = 0.05f, truncation = 0.15f;
     std::vector<Eigen::Vector3f> trueSurface = MakeCornerSurfacePoints(); // dense corner, sub-voxel
     std::vector<Eigen::Vector3f> trueNormals = MakeCornerSurfaceNormals(); // parallel to trueSurface
-    Engine::Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation);
+    Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation);
     model.voxel = voxel;
     model.truncationDistance = truncation;
 
@@ -503,7 +502,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessNoisyRobustness) {
     std::normal_distribution<float> gaussianNoise(0.0f, 0.01f);
     std::uniform_real_distribution<float> outlierOffsetMag(0.04f, 0.08f);
     std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
-    Engine::Pipeline::Frame frame;
+    Pipeline::Frame frame;
     int numOutliers = 0, numNoisy = 0;
     for (size_t i = 0; i < trueSurface.size(); ++i) {
         Eigen::Vector3f p = knownPerturbation * trueSurface[i];
@@ -532,7 +531,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessNoisyRobustness) {
         tgt.normals.push_back(entry.normal);
     }
 
-    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+    Pipeline::GpuPointToPlaneIcp gpu(ctx);
 
     // Tier 1 baseline: Huber weighting + normal rejection both effectively OFF (huge huberScale =>
     // robustWeight == 1 always; empty sourceNormals => rejection skipped entirely), everything else
@@ -600,7 +599,7 @@ TEST(GpuIcp, RobustPathMatchesCpuOnNoisyFixture) {
     const float voxel = 0.05f, truncation = 0.15f;
     std::vector<Eigen::Vector3f> trueSurface = MakeCornerSurfacePoints(); // dense corner, sub-voxel
     std::vector<Eigen::Vector3f> trueNormals = MakeCornerSurfaceNormals(); // parallel to trueSurface
-    Engine::Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation);
+    Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation);
     model.voxel = voxel;
     model.truncationDistance = truncation;
 
@@ -616,7 +615,7 @@ TEST(GpuIcp, RobustPathMatchesCpuOnNoisyFixture) {
     std::normal_distribution<float> gaussianNoise(0.0f, 0.01f);
     std::uniform_real_distribution<float> outlierOffsetMag(0.04f, 0.08f);
     std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
-    Engine::Pipeline::Frame frame;
+    Pipeline::Frame frame;
     for (size_t i = 0; i < trueSurface.size(); ++i) {
         Eigen::Vector3f p = knownPerturbation * trueSurface[i];
         Eigen::Vector3f n = knownPerturbation.rotation() * trueNormals[i];
@@ -653,7 +652,7 @@ TEST(GpuIcp, RobustPathMatchesCpuOnNoisyFixture) {
                                                                  Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(cpu.valid);
 
-    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+    Pipeline::GpuPointToPlaneIcp gpu(ctx);
     const auto g = gpu.Solve(frame.pts, frame.nrm, tgt, Eigen::Isometry3f::Identity().matrix(), params);
     ASSERT_TRUE(g.valid);
 
@@ -682,7 +681,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessAnnealing) {
     const float voxel = 0.05f, truncation = 0.15f;
     std::vector<Eigen::Vector3f> trueSurface = MakeCornerSurfacePoints(); // dense corner, sub-voxel
     std::vector<Eigen::Vector3f> trueNormals = MakeCornerSurfaceNormals(); // parallel to trueSurface
-    Engine::Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation);
+    Pipeline::ModelSnapshot model = QuantizeToModel(trueSurface, voxel, truncation);
     model.voxel = voxel;
     model.truncationDistance = truncation;
 
@@ -699,7 +698,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessAnnealing) {
     knownPerturbation.translate(Eigen::Vector3f(0.15f, -0.12f, 0.10f));
     knownPerturbation.rotate(Eigen::AngleAxisf(0.25f, Eigen::Vector3f::UnitZ()));
 
-    Engine::Pipeline::Frame frame;
+    Pipeline::Frame frame;
     for (size_t i = 0; i < trueSurface.size(); ++i) {
         frame.pts.push_back(knownPerturbation * trueSurface[i]);
         frame.nrm.push_back(knownPerturbation.rotation() * trueNormals[i]);
@@ -714,7 +713,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessAnnealing) {
         tgt.normals.push_back(entry.normal);
     }
 
-    Engine::Pipeline::GpuPointToPlaneIcp gpu(ctx);
+    Pipeline::GpuPointToPlaneIcp gpu(ctx);
 
     // Fixed-gate baseline: a single maxCorrDist for every iteration (minCorrespondenceDistance left at
     // its default 0 -> annealing OFF), at the value the real trackers use (2*voxel) -- the CURRENT

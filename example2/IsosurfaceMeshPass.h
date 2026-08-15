@@ -4,7 +4,7 @@
 #include "Engine/Render/GraphicsPipeline.h"
 #include "Engine/Render/Object.h"
 #include "Engine/Render/RenderGraph.h"
-#include "Engine/Spatial/Extraction/SurfaceMesh.h"
+#include "Mesh/SurfaceMesh.h"
 
 #include <Eigen/Core>
 #include <string>
@@ -33,7 +33,7 @@ public:
     // Converts the SurfaceMesh to render vertices (position + normal from the mesh, color = the
     // caller-supplied debug tint) and indices from mesh.triangles, then re-uploads the
     // vertex/index buffers. Must be called between frames -- see the class comment above.
-    void SetMesh(const Engine::Spatial::Extraction::SurfaceMesh &mesh, const Eigen::Vector3f &color);
+    void SetMesh(const Mesh::SurfaceMesh &mesh, const Eigen::Vector3f &color);
 
     // Selects which of the two pipelines built up front Execute() binds: VK_POLYGON_MODE_FILL
     // (default) or VK_POLYGON_MODE_LINE. A cheap flag flip -- no rebuild, no pipeline creation.

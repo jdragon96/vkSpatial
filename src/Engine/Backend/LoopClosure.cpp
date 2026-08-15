@@ -1,7 +1,7 @@
 #include "Engine/Backend/LoopClosure.h"
 
-#include "Engine/Spatial/FPFH.h"
-#include "Engine/Spatial/NeighborQuery.h"
+#include "Engine/Features/FpfhSignature.h"
+#include "BVH/NeighborQuery.h"
 
 #include <Eigen/Geometry> // Eigen::umeyama
 
@@ -11,10 +11,10 @@
 
 namespace Engine::Backend {
 
-    using Engine::Spatial::ComputeFPFH;
+    using Engine::Features::ComputeFPFH;
     using Engine::Spatial::CpuGridNeighborhood;
-    using Engine::Spatial::FpfhSignature;
-    using Engine::Spatial::FPFH_DIM;
+    using Engine::Features::FpfhSignature;
+    using Engine::Features::FPFH_DIM;
     using Engine::Core::OrientedPointCloud;
 
     namespace {

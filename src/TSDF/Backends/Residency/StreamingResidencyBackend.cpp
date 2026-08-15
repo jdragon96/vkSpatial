@@ -65,13 +65,13 @@ namespace TSDF {
         m_stageSlotList = std::make_unique<StagingBuffer>(ctx, VkDeviceSize(poolCapacity) * sizeof(uint32_t), kSrc);
 
         m_registerKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_registerKernel->Build("directional_tsdf_register_reusable.comp")
+        m_registerKernel->Build("TSDF/Backends/Residency/kernel_directional_tsdf_register_reusable.comp.glsl")
                 .Bind(0, *m_slotListBuffer)
                 .Bind(1, *m_metaBuffer)
                 .Bind(2, *m_indexGrid);
 
         m_classifyKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_classifyKernel->Build("directional_tsdf_classify.comp")
+        m_classifyKernel->Build("TSDF/Backends/Residency/kernel_directional_tsdf_classify.comp.glsl")
                 .Bind(0, *m_metaBuffer)
                 .Bind(1, *m_reusableList)
                 .Bind(2, *m_cleanFreeList)

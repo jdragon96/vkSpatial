@@ -1,7 +1,7 @@
-#include "Engine/Spatial/Extraction/ExtractorRegistry.h"
+#include "Mesh/ExtractorRegistry.h"
 #include "isosurface_test_util.h"
 #include <gtest/gtest.h>
-using namespace Engine::Spatial::Extraction;
+using namespace Mesh;
 
 // Thin slab: |z| - t  intersected as two sheets at z = +/- t, spacing 2t ~ one cell.
 static VoxelField ThinSlab(float halfThickness, float cell, int halfN) {

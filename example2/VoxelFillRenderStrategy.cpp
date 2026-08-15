@@ -4,9 +4,9 @@
 #include "PointCloudPass.h"
 
 #include "Engine/Core/Context.h"
-#include "Engine/Pipeline/Pipeline.h"
 #include "Engine/Render/Application.h"
 #include "Engine/Render/GlfwWindow.h"
+#include "Pipeline/Pipeline.h"
 
 #include "imgui.h"
 
@@ -15,8 +15,8 @@
 #include <utility>
 
 using Eigen::Vector3f;
-using TSDF::AdvancedEntry;
-namespace ep = Engine::Pipeline;
+
+namespace ep = Pipeline;
 
 namespace {
 
@@ -30,7 +30,6 @@ namespace {
         for (const auto &p: pts) out.push_back({{p.x(), p.y(), p.z()}, {r, g, b, 255}});
     }
 
-    // A small red camera marker: the eye plus a short segment toward the origin (view direction).
     std::vector<PointVertex> cameraMarker(const Vector3f &eye) {
         std::vector<PointVertex> v;
         for (int i = 0; i < 30; ++i) {
@@ -41,7 +40,6 @@ namespace {
         return v;
     }
 
-    // Sample points along the 12 edges of an AABB so the box reads as a wireframe in the point renderer.
     std::vector<PointVertex> boxEdges(const Vector3f &mn, const Vector3f &mx, float voxel,
                                       uint8_t r, uint8_t g, uint8_t b) {
         std::vector<PointVertex> v;
@@ -57,16 +55,12 @@ namespace {
         return v;
     }
 
-    // Build the "occupied" (coloured by mode; below-threshold dimmed grey or skipped) and "new this
-    // frame" highlight point sets from downloaded voxel entries. First-seen frame is carried per entry
-    // (AdvancedEntry::firstFrame, GPU-stamped), so the fill-frame colour and "new this frame" come
-    // straight off the entries -- no parallel isNew/firstFrame arrays.
-    void buildVoxelSets(const std::vector<AdvancedEntry> &entries, voxdbg::ColorMode mode, float trunc,
+    void buildVoxelSets(const std::vector<TSDFVoxel> &entries, voxdbg::ColorMode mode, float trunc,
                         float wMax, float wThresh, bool hideBelow, int currentFrame, int nFrames,
                         std::vector<PointVertex> &occupied, std::vector<PointVertex> &newThis) {
         occupied.clear();
         newThis.clear();
-        for (const AdvancedEntry &e: entries) {
+        for (const TSDFVoxel &e: entries) {
             const bool below = voxdbg::belowThreshold(e.weight, wThresh);
             if (below && hideBelow) continue;
             voxdbg::Rgba c;
@@ -137,13 +131,11 @@ void VoxelFillRenderStrategy::OnModel(std::shared_ptr<const ep::ModelSnapshot> s
 }
 
 void VoxelFillRenderStrategy::OnFrame() {
-    // A UI option toggle rebuilds the pipeline and replays from frame 0. Do it here (between frames,
-    // before rendering) rather than inside the ImGui pass, so no render frame is in flight. The fresh
-    // map starts empty, so clear the reconstructed layers + drop the stale snapshot immediately.
     if (m_pendingRebuild) {
         m_pendingRebuild = false;
         if (m_p.onRebuild) {
-            vkDeviceWaitIdle(m_ctx->device); // no frame in flight -> safe to reupload point sets
+            // no frame in flight -> safe to reupload point sets
+            vkDeviceWaitIdle(m_ctx->device);
             m_p.onRebuild(m_opts);
             m_snap.reset();
             m_pc->SetPointSet(0, {}); // occupied voxels
@@ -156,8 +148,6 @@ void VoxelFillRenderStrategy::OnFrame() {
     }
 }
 
-// Rebuild the render point-sets from the immutable snapshot. SetPointSet reallocates PointCloudPass
-// buffers; the prior frame's command buffer may still be in flight, so wait once here first.
 void VoxelFillRenderStrategy::refresh() {
     {
         util::ScopedStageTimer t(m_prof, "waitIdle");
@@ -201,8 +191,104 @@ void VoxelFillRenderStrategy::refresh() {
     m_pc->SetPointSet(6, submapBoxes);
 }
 
+void VoxelFillRenderStrategy::drawStatsPanel(ep::Pipeline &pipe) {
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    const float margin = 10.0f;
+    const float width = 380.0f;
+    ImGui::SetNextWindowPos({viewport->WorkPos.x + viewport->WorkSize.x - width - margin,
+                             viewport->WorkPos.y + margin},
+                            ImGuiCond_Always);
+    ImGui::SetNextWindowSize({width, viewport->WorkSize.y - 2.0f * margin}, ImGuiCond_Always);
+    ImGui::Begin("Pipeline Stats", nullptr,
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
+
+    const ep::PipelineStats ps = pipe.GetStats();
+
+    // A stage that has processed something is alive (green); one that has not is idle (grey).
+    auto stageHeader = [](const char *name, unsigned long long frames, double avgMs) {
+        const ImVec4 color = frames > 0 ? ImVec4(0.40f, 0.90f, 0.45f, 1.0f)
+                                        : ImVec4(0.60f, 0.60f, 0.60f, 1.0f);
+        ImGui::SeparatorText(name);
+        ImGui::TextColored(color, "%llu frames   %.2f ms avg", frames, avgMs);
+    };
+
+    stageHeader("Reconstruction (acquire)", (unsigned long long) ps.acquiredFrames, ps.acquireMsAvg);
+    ImGui::Text("queue depth: %zu", ps.captureDepth);
+
+    stageHeader("Track (ICP)", (unsigned long long) ps.alignedFrames, ps.alignMsAvg);
+    ImGui::Text("tracker: %s", m_p.trackerName.c_str());
+    ImGui::Text("rmse (avg): %.4f", ps.trackerRmseAvg);
+    ImGui::Text("queue depth: %zu   dropped: %zu", ps.trackDepth, ps.trackDropped);
+
+    stageHeader("Map (TSDF integrate)", (unsigned long long) ps.integratedFrames, ps.integrateMsAvg);
+    for (const char *stage: {"integrate", "download", "tracker"})
+        ImGui::Text("%-10s %7.2f / %7.2f ms  (avg/last)", stage, m_workerProf.AvgMs(stage),
+                    m_workerProf.LastMs(stage));
+
+    if (!m_snap) {
+        ImGui::TextDisabled("waiting for the first integrated frame (press Play)");
+    } else {
+        const TSDFBackendStats &map = m_snap->map;
+        const double megabyte = 1024.0 * 1024.0;
+
+        ImGui::SeparatorText("Map contents");
+        std::size_t below = 0;
+        for (const auto &e: m_snap->entries)
+            if (voxdbg::belowThreshold(e.weight, m_state.wThresh)) ++below;
+        ImGui::Text("occupied: %zu voxels   below thresh: %zu", m_snap->entries.size(), below);
+        ImGui::Text("windows: %u  (base %u, detail %u)", map.tableCount, m_snap->baseTiles,
+                    m_snap->detailTiles);
+        ImGui::Text("dense blocks: %u", m_snap->denseBlocks);
+        if (m_snap->hasAlloc) {
+            const Vector3f size = m_snap->allocMax - m_snap->allocMin;
+            ImGui::Text("allocated box: %.2f x %.2f x %.2f", size.x(), size.y(), size.z());
+        }
+
+        ImGui::SeparatorText("Map memory / hash");
+        ImGui::Text("memory: %.1f MB", double(map.deviceMemoryBytes) / megabyte);
+        ImGui::Text("  %.2f MB/window   %.1f B/voxel",
+                    map.tableCount ? double(map.deviceMemoryBytes) / megabyte / map.tableCount : 0.0,
+                    map.filledCount ? double(map.deviceMemoryBytes) / double(map.filledCount) : 0.0);
+        ImGui::Text("hash: %llu / %llu slots", (unsigned long long) map.filledCount,
+                    (unsigned long long) map.hashCapacity);
+        ImGui::Text("  load %.3f   grows %llu", map.LoadFactor(),
+                    (unsigned long long) map.growCount);
+
+        if (map.probeQueryCount > 0) {
+            const double alpha = map.LoadFactor();
+            const double predicted = alpha < 1.0 ? 0.5 * (1.0 + 1.0 / (1.0 - alpha)) : 0.0;
+            ImGui::Text("probes: %.2f slots/lookup", map.AverageProbes());
+            ImGui::Text("  worst %u   linear-probe theory %.2f", map.probeSlotMax, predicted);
+        } else {
+            ImGui::TextDisabled("probes: start with --probe-stats to measure");
+        }
+
+        if (map.insertFailureCount > 0)
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "DROPPED %llu observation(s)",
+                               (unsigned long long) map.insertFailureCount);
+        if (m_snap->windowLimitRefusals > 0)
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f),
+                               "REFUSED %u point(s) (window ceiling)", m_snap->windowLimitRefusals);
+    }
+
+    ImGui::SeparatorText("Render");
+    const ImGuiIO &io = ImGui::GetIO();
+    ImGui::Text("%.1f fps   %.2f ms/frame", io.Framerate, 1000.0f / io.Framerate);
+
+    ImGui::End();
+}
+
 void VoxelFillRenderStrategy::drawUi(ep::Pipeline &pipe) {
-    ImGui::Begin("Voxel Fill Debug");
+    // Anchored to the window's top-left, mirroring the stats panel on the right.
+    {
+        const ImGuiViewport *viewport = ImGui::GetMainViewport();
+        const float margin = 10.0f;
+        ImGui::SetNextWindowPos({viewport->WorkPos.x + margin, viewport->WorkPos.y + margin},
+                                ImGuiCond_Always);
+        ImGui::SetNextWindowSize({360.0f, viewport->WorkSize.y - 2.0f * margin}, ImGuiCond_Always);
+    }
+    ImGui::Begin("Voxel Fill Debug", nullptr,
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
     // Play / pause the acquisition (mapping + render keep running regardless).
     if (pipe.IsPaused()) {
         if (ImGui::Button("Play")) pipe.SetPaused(false);
@@ -254,47 +340,7 @@ void VoxelFillRenderStrategy::drawUi(ep::Pipeline &pipe) {
         changed |= ImGui::Checkbox("hermite (A2)", &m_opts.hermite);
         if (changed) m_pendingRebuild = true;
     }
-    ImGui::SeparatorText("Stats");
-    const ep::PipelineStats ps = pipe.GetStats();
-    ImGui::Text("tracker: %s   integrated frames: %d", m_p.trackerName.c_str(), ps.processedFrame + 1);
-    ImGui::Text("queues: capture %zu, track %zu (dropped %zu)", ps.captureDepth, ps.trackDepth,
-                ps.trackDropped);
-
-    // Per-pipeline-STAGE average cost: each worker's mean per-frame time + its processed count. A
-    // count that keeps rising while playing = that thread is alive (drawn green); grey = idle/not run.
-    ImGui::SeparatorText("Pipeline stages (avg ms / frames)");
-    auto stageLine = [](const char *name, double avgMs, unsigned long long count) {
-        const ImVec4 col = count > 0 ? ImVec4(0.40f, 0.90f, 0.45f, 1.0f)  // alive
-                                     : ImVec4(0.60f, 0.60f, 0.60f, 1.0f); // idle
-        ImGui::TextColored(col, "%-14s %8.2f / %llu", name, avgMs, count);
-    };
-    stageLine("Reconstruction", ps.acquireMsAvg, (unsigned long long) ps.acquiredFrames);
-    stageLine("ICP", ps.alignMsAvg, (unsigned long long) ps.alignedFrames);
-    stageLine("Integration", ps.integrateMsAvg, (unsigned long long) ps.integratedFrames);
-    ImGui::Text("ICP rmse (avg): %.4f", ps.trackerRmseAvg);
-    if (m_snap) {
-        ImGui::Text("occupied voxels: %zu", m_snap->entries.size());
-        std::size_t below = 0;
-        for (const auto &e: m_snap->entries)
-            if (voxdbg::belowThreshold(e.weight, m_state.wThresh)) ++below;
-        ImGui::Text("below thresh: %zu", below);
-        ImGui::Text("base/detail tiles: %u / %u, dense blocks: %u", m_snap->baseTiles,
-                    m_snap->detailTiles, m_snap->denseBlocks);
-        if (m_snap->hasAlloc) {
-            const Vector3f sz = m_snap->allocMax - m_snap->allocMin;
-            ImGui::Text("allocated box: %.2f x %.2f x %.2f", sz.x(), sz.y(), sz.z());
-        }
-        ImGui::SeparatorText("Worker stage times (avg / last ms)");
-        for (const char *s: {"integrate", "download", "tracker"})
-            ImGui::Text("%-10s %8.2f / %8.2f", s, m_workerProf.AvgMs(s), m_workerProf.LastMs(s));
-        const double workerAvg = m_workerProf.AvgMs("integrate") + m_workerProf.AvgMs("download") +
-                                 m_workerProf.AvgMs("tracker");
-        ImGui::Text("%-10s %8.2f", "map total", workerAvg); // avg per-frame Integration-stage cost
-    } else {
-        ImGui::Text("(waiting for first snapshot...)");
-    }
-    ImGui::SeparatorText("Render stage times (avg / last ms)");
-    for (const char *s: {"waitIdle", "buildSets", "upload"})
-        ImGui::Text("%-10s %8.2f / %8.2f", s, m_prof.AvgMs(s), m_prof.LastMs(s));
     ImGui::End();
+
+    drawStatsPanel(pipe);
 }

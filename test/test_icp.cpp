@@ -1,5 +1,5 @@
-#include "Engine/Pipeline/Registration/PointToPlaneIcp.h"
-#include "Engine/Pipeline/Registration/RegistrationTypes.h"
+#include "Pipeline/Registration/PointToPlaneIcp.h"
+#include "Pipeline/Registration/RegistrationTypes.h"
 
 #include <gtest/gtest.h>
 

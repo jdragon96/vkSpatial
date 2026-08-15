@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Pipeline/Registration/RegistrationTypes.h"
+#include "Pipeline/Registration/RegistrationTypes.h"
 
 namespace Engine::Features {
 

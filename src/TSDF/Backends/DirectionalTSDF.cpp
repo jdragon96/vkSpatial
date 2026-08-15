@@ -103,14 +103,14 @@ namespace TSDF {
         const VkDeviceSize metaBytes = VkDeviceSize(poolCapacity) * sizeof(ActiveGroupMeta);
 
         m_integrateKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_integrateKernel->Build("directional_tsdf_integrate.comp")
+        m_integrateKernel->Build("TSDF/Backends/kernel_directional_tsdf_integrate.comp.glsl")
                 .Bind(0, *m_pointBuffer)
                 .Bind(1, m_backend->IndexGridBuffer(), indexGridBytes)
                 .Bind(2, m_backend->PoolVoxelBuffer(), poolVoxelsBytes)
                 .Bind(3, m_backend->MetaBuffer(), metaBytes);
 
         m_extractKernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_extractKernel->Build("directional_tsdf_extract.comp")
+        m_extractKernel->Build("TSDF/Backends/kernel_directional_tsdf_extract.comp.glsl")
                 .Bind(0, *m_groupSlotListBuffer) // recompute-group list (core-owned)
                 .Bind(1, m_backend->MetaBuffer(), metaBytes)
                 .Bind(2, m_backend->PoolVoxelBuffer(), poolVoxelsBytes)

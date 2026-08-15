@@ -66,7 +66,7 @@ void unpackDirKey(uint key, out ivec3 voxel, out uint direction)
 	voxel = localVoxel + ivec3(g_originX, g_originY, g_originZ);
 }
 
-#include "TSDF/Memory/Hash/HashStrategy.glsl"
+#include "TSDF/Hash/HashStrategy.glsl"
 
 // Hash lookup for (voxel, direction); false on HASH_NOT_FOUND, weight below MIN_WEIGHT, or
 // voxel outside the movable window.

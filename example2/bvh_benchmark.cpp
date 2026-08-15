@@ -1,5 +1,5 @@
 // Benchmark: compares Engine::Spatial acceleration backends — BinaryLBVH vs WideBVH —
-// by swapping them through the pluggable SpatialIndex factory (MakeSpatialIndex). It
+// by swapping the BVH facade's backend (BVHConfiguration::backend). It
 // reports build time, query time, and structure size, demonstrating the interchangeable
 // design and quantifying the wide BVH's compactness.
 //
@@ -29,8 +29,8 @@
 //      reflects an empty traversal. The old vkWideBVH fails identically.
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/BVHTypes.h"
-#include "Engine/Spatial/SpatialIndex.h"
+#include "BVH/BVHTypes.h"
+#include "BVH/BVH.h"
 
 #include <algorithm>
 #include <chrono>
@@ -48,7 +48,7 @@ using Clock = std::chrono::steady_clock;
 namespace {
 
     struct BackendCase {
-        BVHKind kind;
+        const char *backend;
         uint32_t leaf;
         const char *label;
     };
@@ -122,15 +122,23 @@ namespace {
     double medianBuildMs(Engine::Core::Context &ctx, const BackendCase &c,
                          const std::vector<PointPrim> &pts, int repeats) {
         {
-            auto warm = MakeSpatialIndex(ctx, c.kind, BVHParams{c.leaf});
-            warm->Build(pts);
+            BVH warm;
+            BVHConfiguration warmConfig;
+            warmConfig.backend = c.backend;
+            warmConfig.backendConfig.maxLeafPrimitives = c.leaf ? c.leaf : 4u;
+            warm.Build(ctx, warmConfig);
+            warm.Insert(pts);
         }
         std::vector<double> ms;
         ms.reserve(repeats);
         for (int i = 0; i < repeats; ++i) {
-            auto idx = MakeSpatialIndex(ctx, c.kind, BVHParams{c.leaf});
+            BVH idx;
+        BVHConfiguration idxConfig;
+        idxConfig.backend = c.backend;
+        idxConfig.backendConfig.maxLeafPrimitives = c.leaf ? c.leaf : 4u;
+        idx.Build(ctx, idxConfig);
             const auto t0 = Clock::now();
-            idx->Build(pts);
+            idx.Insert(pts);
             const auto t1 = Clock::now();
             ms.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
         }
@@ -146,25 +154,29 @@ namespace {
         row.n = static_cast<uint32_t>(pts.size());
         row.buildMs = medianBuildMs(ctx, c, pts, 5);
 
-        auto idx = MakeSpatialIndex(ctx, c.kind, BVHParams{c.leaf});
-        idx->Build(pts);
-        row.nodeCount = idx->NodeCount();
-        row.memBytes = idx->MemoryBytes();
+        BVH idx;
+        BVHConfiguration idxConfig;
+        idxConfig.backend = c.backend;
+        idxConfig.backendConfig.maxLeafPrimitives = c.leaf ? c.leaf : 4u;
+        idx.Build(ctx, idxConfig);
+        idx.Insert(pts);
+        row.nodeCount = idx.Stats().nodeCount;
+        row.memBytes = idx.Stats().memoryBytes;
 
         const auto tk0 = Clock::now();
-        for (const auto &q : queries) idx->KNN(q.x, q.y, q.z, static_cast<int>(k));
+        for (const auto &q : queries) idx.KNN(q.x, q.y, q.z, static_cast<int>(k));
         const auto tk1 = Clock::now();
         row.knnUs = std::chrono::duration<double, std::micro>(tk1 - tk0).count() /
                     static_cast<double>(queries.size());
 
         const auto tr0 = Clock::now();
-        for (const auto &q : queries) idx->RadiusSearch(q.x, q.y, q.z, radius);
+        for (const auto &q : queries) idx.RadiusSearch(q.x, q.y, q.z, radius);
         const auto tr1 = Clock::now();
         row.radiusUs = std::chrono::duration<double, std::micro>(tr1 - tr0).count() /
                        static_cast<double>(queries.size());
 
         row.knnRec = knnRecall(
-                idx->KNN(queries[0].x, queries[0].y, queries[0].z, static_cast<int>(k)),
+                idx.KNN(queries[0].x, queries[0].y, queries[0].z, static_cast<int>(k)),
                 cpuKNN(pts, queries[0].x, queries[0].y, queries[0].z, k));
         return row;
     }
@@ -181,9 +193,9 @@ int main(int argc, char **argv) {
     Engine::Core::Context ctx;
 
     const std::vector<BackendCase> backends = {
-            {BVHKind::BinaryLBVH, 0u, "BinaryLBVH"},
-            {BVHKind::Wide, 4u, "Wide(leaf=4)"},
-            {BVHKind::Wide, 8u, "Wide(leaf=8)"},
+            {"binary", 0u, "BinaryLBVH"},
+            {"wide", 4u, "Wide(leaf=4)"},
+            {"wide", 8u, "Wide(leaf=8)"},
     };
     // Capped at 512 — see KNOWN ISSUE 1 (Engine::Core is non-deterministic at N >= ~1000).
     const std::vector<uint32_t> nSweep = {128u, 256u, 512u};

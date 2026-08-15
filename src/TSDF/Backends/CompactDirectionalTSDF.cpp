@@ -89,7 +89,7 @@ namespace TSDF {
         m_statBuffer->Allocate(sizeof(uint32_t));
 
         m_kernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_kernel->Build("compact_directional_integrate.comp")
+        m_kernel->Build("TSDF/Backends/kernel_compact_directional_integrate.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, *m_pointBuffer)
                 .Bind(2, *m_normalBuffer)
@@ -190,7 +190,7 @@ namespace TSDF {
                      m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z()};
 
         Engine::Core::ComputePipeline kernel(*m_ctx);
-        kernel.Build("compact_directional_extract.comp")
+        kernel.Build("TSDF/Backends/kernel_compact_directional_extract.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, candBuf)
                 .Bind(2, countBuf)

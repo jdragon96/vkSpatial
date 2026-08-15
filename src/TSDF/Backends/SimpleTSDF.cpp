@@ -50,7 +50,7 @@ namespace TSDF {
         m_statBuffer->Allocate(sizeof(uint32_t));
 
         m_kernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_kernel->Build("voxel_tsdf_integrate.comp")
+        m_kernel->Build("TSDF/Backends/kernel_voxel_tsdf_integrate.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, *m_pointBuffer)
                 .Bind(2, *m_statBuffer)
@@ -162,7 +162,7 @@ namespace TSDF {
         MCPushConst pc{m_voxelSize, m_hashCapacity, m_truncation};
 
         Engine::Core::ComputePipeline kernel(*m_ctx);
-        kernel.Build("voxel_tsdf_mc.comp")
+        kernel.Build("TSDF/Backends/kernel_voxel_tsdf_mc.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, countBuf)
                 .Bind(2, vertsBuf)

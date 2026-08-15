@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
 
 #include "Engine/Core/Context.h"
-#include "Engine/Spatial/BVHTypes.h"
-#include "Engine/Spatial/BinaryLBVH.h"
-#include "Engine/Spatial/SpatialIndex.h"
-#include "Engine/Spatial/WideBVH.h"
+#include "BVH/BVHTypes.h"
+#include "BVH/BinaryLBVH/BinaryLBVH.h"
+#include "BVH/BVH.h"
+#include "BVH/WideBVH/WideBVH.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -19,10 +19,25 @@ using namespace Engine::Spatial;
 // Compile/shape guard for the interface header. Real backend behaviour is added
 // in later tasks. This test only verifies the header is well-formed and the
 // enum/params/defaults exist.
-TEST(SpatialIndexInterface, EnumAndParamsExist) {
-    EXPECT_EQ(BVHParams{}.maxLeafPrimitives, 4u);
-    EXPECT_NE(static_cast<int>(BVHKind::BinaryLBVH),
-              static_cast<int>(BVHKind::Wide));
+
+namespace {
+    // Every test drives the BVH facade; the backend is what varies.
+    BVH MakeBvh(Engine::Core::Context &ctx, const char *backend, uint32_t maxLeafPrimitives = 4) {
+        BVH bvh;
+        BVHConfiguration config;
+        config.backend = backend;
+        config.backendConfig.maxLeafPrimitives = maxLeafPrimitives;
+        bvh.Build(ctx, config);
+        return bvh;
+    }
+} // namespace
+
+TEST(SpatialIndexInterface, RegistryOffersBothBackends) {
+    EXPECT_EQ(BVHBackendConfig{}.maxLeafPrimitives, 4u);
+    const std::vector<std::string> names = BVHBackendNames();
+    EXPECT_NE(std::find(names.begin(), names.end(), "binary"), names.end());
+    EXPECT_NE(std::find(names.begin(), names.end(), "wide"), names.end());
+    EXPECT_EQ(MakeBVHBackend("no-such-backend"), nullptr);
 }
 
 namespace {
@@ -79,7 +94,7 @@ namespace {
     }
 
     struct BackendCase {
-        BVHKind kind;
+        const char *backend;
         uint32_t leaf;
         const char *label;
         bool radiusWorks; // wide RadiusSearch is deferred on this HW (MoltenVK)
@@ -91,20 +106,20 @@ TEST(BinaryLBVHTest, BuildProducesExpectedMetrics) {
     if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
 
     const auto pts = randomPoints(512, 1);
-    BinaryLBVH bvh(*h.ctx);
-    bvh.Build(pts);
+    BVH bvh = MakeBvh(*h.ctx, "binary");
+    bvh.Insert(pts);
 
-    EXPECT_EQ(bvh.Length(), 512u);
-    EXPECT_EQ(bvh.NodeCount(), 2u * 512u - 1u);
-    EXPECT_GT(bvh.MemoryBytes(), 0u);
+    EXPECT_EQ(bvh.Stats().primitiveCount, 512u);
+    EXPECT_EQ(bvh.Stats().nodeCount, 2u * 512u - 1u);
+    EXPECT_GT(bvh.Stats().memoryBytes, 0u);
 }
 
 TEST(BinaryLBVHTest, RejectsFewerThanTwoPrimitives) {
     CtxHolder h;
     if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
-    BinaryLBVH bvh(*h.ctx);
+    BVH bvh = MakeBvh(*h.ctx, "binary");
     std::vector<PointPrim> one{{0.0f, 0.0f, 0.0f}};
-    EXPECT_THROW(bvh.Build(one), std::runtime_error);
+    EXPECT_THROW(bvh.Insert(one), std::runtime_error);
 }
 
 TEST(BinaryLBVHTest, RadiusMatchesCpu) {
@@ -112,8 +127,8 @@ TEST(BinaryLBVHTest, RadiusMatchesCpu) {
     if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
 
     const auto pts = randomPoints(512, 42);
-    BinaryLBVH bvh(*h.ctx);
-    bvh.Build(pts);
+    BVH bvh = MakeBvh(*h.ctx, "binary");
+    bvh.Insert(pts);
 
     auto gpu = bvh.RadiusSearch(1.0f, -2.0f, 0.5f, 7.5f);
     auto cpu = cpuRadius(pts, 1.0f, -2.0f, 0.5f, 7.5f);
@@ -126,8 +141,8 @@ TEST(BinaryLBVHTest, KNNMatchesCpu) {
     if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
 
     const auto pts = randomPoints(400, 99);
-    BinaryLBVH bvh(*h.ctx);
-    bvh.Build(pts);
+    BVH bvh = MakeBvh(*h.ctx, "binary");
+    bvh.Insert(pts);
 
     // KNN returns the correct k-nearest SET; internal order is unspecified
     // (cmd_knn.comp emits its max-heap array), so compare as sets by sorting
@@ -150,9 +165,9 @@ TEST(BinaryLBVHTest, KNNMatchesCpu) {
 TEST(SpatialIndexBackend, RadiusAndKnnMatchCpu) {
     const auto pts = randomPoints(512, 7);
     const std::vector<BackendCase> cases = {
-            {BVHKind::BinaryLBVH, 0u, "BinaryLBVH", true},
-            {BVHKind::Wide, 4u, "Wide4", false},
-            {BVHKind::Wide, 8u, "Wide8", false},
+            {"binary", 0u, "BinaryLBVH", true},
+            {"wide", 4u, "Wide4", false},
+            {"wide", 8u, "Wide8", false},
     };
 
     for (const auto &c : cases) {
@@ -162,23 +177,27 @@ TEST(SpatialIndexBackend, RadiusAndKnnMatchCpu) {
         // docs/KNOWN_ISSUES_engine_core_large_n.md) so it stays deterministic.
         CtxHolder h;
         if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
-        auto idx = MakeSpatialIndex(*h.ctx, c.kind, BVHParams{c.leaf});
-        idx->Build(pts);
+        BVH idx;
+        BVHConfiguration config;
+        config.backend = c.backend;
+        config.backendConfig.maxLeafPrimitives = c.leaf ? c.leaf : 4u;
+        idx.Build(*h.ctx, config);
+        idx.Insert(pts);
 
-        EXPECT_EQ(idx->Length(), 512u);
-        EXPECT_GT(idx->NodeCount(), 0u);
-        EXPECT_GT(idx->MemoryBytes(), 0u);
+        EXPECT_EQ(idx.Stats().primitiveCount, 512u);
+        EXPECT_GT(idx.Stats().nodeCount, 0u);
+        EXPECT_GT(idx.Stats().memoryBytes, 0u);
 
         // Wide RadiusSearch is deferred on this HW — see EngineWideBVHTest.RadiusMatchesCpu.
         if (c.radiusWorks) {
-            auto gpuR = idx->RadiusSearch(1.0f, -2.0f, 0.5f, 7.5f);
+            auto gpuR = idx.RadiusSearch(1.0f, -2.0f, 0.5f, 7.5f);
             auto cpuR = cpuRadius(pts, 1.0f, -2.0f, 0.5f, 7.5f);
             std::sort(gpuR.begin(), gpuR.end());
             EXPECT_EQ(gpuR, cpuR);
         }
 
         // KNN order is unspecified — compare as a set.
-        auto gpuK = idx->KNN(0.5f, -1.0f, 2.0f, 16);
+        auto gpuK = idx.KNN(0.5f, -1.0f, 2.0f, 16);
         auto cpuK = cpuKNN(pts, 0.5f, -1.0f, 2.0f, 16);
         std::sort(gpuK.begin(), gpuK.end());
         std::sort(cpuK.begin(), cpuK.end());
@@ -191,14 +210,14 @@ TEST(EngineWideBVHTest, BuildProducesFewerNodesThanBinary) {
     if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
 
     const auto pts = randomPoints(1024, 7);
-    WideBVH bvh(*h.ctx, 4);
-    bvh.Build(pts);
+    BVH bvh = MakeBvh(*h.ctx, "wide", 4);
+    bvh.Insert(pts);
 
-    EXPECT_EQ(bvh.Length(), 1024u);
-    EXPECT_EQ(bvh.MaxLeafPrimitives(), 4u);
-    EXPECT_GT(bvh.NodeCount(), 0u);
-    EXPECT_LT(bvh.NodeCount(), 2u * 1024u - 1u);
-    EXPECT_GT(bvh.MemoryBytes(), 0u);
+    EXPECT_EQ(bvh.Stats().primitiveCount, 1024u);
+    EXPECT_EQ(bvh.Config().backendConfig.maxLeafPrimitives, 4u);
+    EXPECT_GT(bvh.Stats().nodeCount, 0u);
+    EXPECT_LT(bvh.Stats().nodeCount, 2u * 1024u - 1u);
+    EXPECT_GT(bvh.Stats().memoryBytes, 0u);
 }
 
 TEST(EngineWideBVHTest, RejectsInvalidLeafSize) {
@@ -223,8 +242,8 @@ TEST(EngineWideBVHTest, KNNMatchesCpu) {
     if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
 
     const auto pts = randomPoints(400, 99);
-    WideBVH bvh(*h.ctx, 4);
-    bvh.Build(pts);
+    BVH bvh = MakeBvh(*h.ctx, "wide", 4);
+    bvh.Insert(pts);
 
     // KNN order is unspecified — compare as a set.
     auto gpu = bvh.KNN(0.5f, -1.0f, 2.0f, 32);
@@ -242,12 +261,12 @@ TEST(EngineWideBVHTest, RadiusSearchGuardsRejectInvalidArgs) {
     CtxHolder h;
     if (!h.ok) GTEST_SKIP() << "Vulkan context unavailable";
 
-    WideBVH unbuilt(*h.ctx, 4);
+    BVH unbuilt = MakeBvh(*h.ctx, "wide", 4);
     EXPECT_THROW(unbuilt.RadiusSearch(0.0f, 0.0f, 0.0f, 1.0f), std::runtime_error);
 
     const auto pts = randomPoints(256, 5);
-    WideBVH bvh(*h.ctx, 4);
-    bvh.Build(pts);
+    BVH bvh = MakeBvh(*h.ctx, "wide", 4);
+    bvh.Insert(pts);
     const float nan = std::numeric_limits<float>::quiet_NaN();
     EXPECT_THROW(bvh.RadiusSearch(nan, 0.0f, 0.0f, 1.0f), std::runtime_error);
     EXPECT_THROW(bvh.RadiusSearch(0.0f, 0.0f, 0.0f, -1.0f), std::runtime_error);
@@ -265,7 +284,7 @@ namespace {
     }
 
     // Mean k-NN recall over Q random query points against a CPU brute-force reference.
-    float meanKnnRecall(SpatialIndex &bvh, const std::vector<PointPrim> &pts,
+    float meanKnnRecall(BVH &bvh, const std::vector<PointPrim> &pts,
                         uint32_t k, int Q, uint32_t seed) {
         std::mt19937 rng(seed);
         std::uniform_real_distribution<float> d(-20.0f, 20.0f);
@@ -288,8 +307,8 @@ TEST(BinaryLBVHTest, LargeNKnnExactAcrossScales) {
 
     for (uint32_t N : {1024u, 4096u, 16384u}) {
         const auto pts = randomPoints(N, 7);
-        BinaryLBVH bvh(*h.ctx);
-        bvh.Build(pts);
+        BVH bvh = MakeBvh(*h.ctx, "binary");
+        bvh.Insert(pts);
         EXPECT_FLOAT_EQ(meanKnnRecall(bvh, pts, 16, 24, 123), 1.0f)
                 << "KNN wrong at N=" << N << " — AABB refit race regressed";
     }
@@ -303,8 +322,8 @@ TEST(BinaryLBVHTest, RepeatedBuildsStayExactUnderLoad) {
 
     for (int build = 0; build < 6; ++build) {
         const auto pts = randomPoints(512, 100u + static_cast<uint32_t>(build));
-        BinaryLBVH bvh(*h.ctx);
-        bvh.Build(pts);
+        BVH bvh = MakeBvh(*h.ctx, "binary");
+        bvh.Insert(pts);
         EXPECT_FLOAT_EQ(meanKnnRecall(bvh, pts, 16, 40, 321), 1.0f)
                 << "KNN wrong on build #" << build << " under load";
     }

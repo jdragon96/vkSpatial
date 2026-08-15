@@ -56,7 +56,7 @@ layout(std430, set = 0, binding = 3) buffer FirstFrame { int g_firstFrame[]; };
 layout(set = 0, binding = 4) buffer Stat { uint g_filledCount; };
 
 #define HASH_WITH_INSERT
-#include "TSDF/Memory/Hash/HashStrategy.glsl"
+#include "TSDF/Hash/HashStrategy.glsl"
 
 void main()
 {

@@ -4,9 +4,9 @@
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
-#include "TSDF/Backends/DirectionalIntegrationQuality.h"
 #include "Engine/Core/OrientedPointCloud.h"
-#include "TSDF/Memory/Hash/HashStrategy.h"
+#include "TSDF/Backends/DirectionalIntegrationQuality.h"
+#include "TSDF/Hash/HashStrategy.h"
 
 #include <Eigen/Core>
 #include <cstddef>
@@ -19,7 +19,7 @@ namespace TSDF {
 
     // Per-(voxel,direction) hash entry for AdvancedTSDF. 24 bytes: distance/weight
     // accumulators + a stored-gradient (observed normal) accumulator. Layout must match
-    // DirEntry in AdvancedTSDF.{integrate,extract}.comp.glsl exactly.
+    // DirEntry in kernel_AdvancedTSDF.{integrate,extract}.comp.glsl exactly.
     struct AdvDirEntry {
         uint32_t key;  // packDirKey(voxel, dir); 0xFFFFFFFF = empty
         int32_t sumDW; // Σ tsdf · w · 10000
@@ -50,7 +50,7 @@ namespace TSDF {
     //   - point-to-plane integration (near-exact on flat surfaces, better edges — measured),
     //   - stored-gradient mode-3 extraction (denoised normals + legacy sub-voxel zero-crossing
     //     position),
-    // implemented over the AdvancedTSDF.{integrate,extract}.comp.glsl kernels beside this header.
+    // implemented over the kernel_AdvancedTSDF.{integrate,extract}.comp.glsl kernels beside this header.
     //
     // 32-bit key => a movable 512^3-voxel window. Unlike CompactDirectionalTSDF's fixed-corner
     // default (only correct at voxelSize=0.1), the default window here is CENTRED on the world
@@ -132,7 +132,7 @@ namespace TSDF {
         // Mode-3 hybrid extraction → oriented point cloud. merge=true clusters/dedups the raw
         // candidates on the CPU (corner-preserving), via MergeCandidates.
         Engine::Core::OrientedPointCloud ExtractPointCloud(uint32_t maxCandidates = 1u << 19,
-                                             bool merge = false) const;
+                                                           bool merge = false) const;
 
         uint32_t FilledCount() const;
 
@@ -143,6 +143,14 @@ namespace TSDF {
         // Observations the integrate kernel dropped because probing gave up. Zero in a healthy
         // run; non-zero means this strategy's load factor limit is too high.
         uint32_t InsertFailureCount() const;
+
+        // Hash probe accounting. Off by default: enabling it recompiles the integrate kernel with
+        // HASH_PROBE_STATS and adds three atomics per lookup, so it is a development switch, not a
+        // production one. Must be set before Build().
+        void SetProbeStats(bool on) { m_probeStats = on; }
+
+        // slots examined / lookups / worst single lookup. Zero unless SetProbeStats(true).
+        void ProbeStats(uint64_t &slotTotal, uint64_t &queryCount, uint32_t &slotMax) const;
 
         // Rehashes performed since Build. Each one doubled the table.
         uint32_t GrowCount() const { return m_growCount; }
@@ -167,8 +175,8 @@ namespace TSDF {
 
         // Corner-preserving cluster/dedup of raw {position,normal} candidates (shared utility).
         static Engine::Core::OrientedPointCloud MergeCandidates(const std::vector<Eigen::Vector3f> &points,
-                                                  const std::vector<Eigen::Vector3f> &normals,
-                                                  float voxelSize);
+                                                                const std::vector<Eigen::Vector3f> &normals,
+                                                                float voxelSize);
 
     private:
         // Upload the first n points/normals into the mapped buffers (n <= current capacity) and record
@@ -197,6 +205,7 @@ namespace TSDF {
         uint32_t m_maxPoints = 0;
         Eigen::Vector3i m_originVoxel = Eigen::Vector3i::Constant(-256); // centred default
         IntegrationQuality m_quality;
+        bool m_probeStats = false;
         bool m_pointToPlane = true; // measured-best default
         float m_confWeight = 0.5f;  // A1: adopted (measured cube RMSE -29%); 0 disables
         bool m_hermite = false;     // A2: off by default (no measured gain on synthetic fixtures)
@@ -209,6 +218,7 @@ namespace TSDF {
         std::unique_ptr<Engine::Core::Buffer> m_statBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_firstFrameBuffer; // per-slot first-fill frame (int32)
         std::unique_ptr<Engine::Core::Buffer> m_insertFailureBuffer;
+        std::unique_ptr<Engine::Core::Buffer> m_probeStatBuffer;
         // Throwaway g_filledCount for kernel_rehashTable's findOrInsert: a rehash MOVES entries, it
         // creates none, so the real occupancy in m_statBuffer must not see these claims. Allocated
         // once and reused every grow -- never read back, so it is never reset either.

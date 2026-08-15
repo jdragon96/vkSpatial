@@ -5,13 +5,13 @@
 #include <array>
 #include <set>
 
-using TSDF::AdvancedEntry;
+
 using Eigen::Vector3f;
 using namespace voxdbg;
 
 namespace {
-    AdvancedEntry ent(float cx, float cy, float cz, uint32_t dir, float tsdf, float weight) {
-        AdvancedEntry e;
+    TSDFVoxel ent(float cx, float cy, float cz, uint32_t dir, float tsdf, float weight) {
+        TSDFVoxel e;
         e.center = Vector3f(cx, cy, cz);
         e.direction = dir;
         e.tsdf = tsdf;
@@ -32,7 +32,7 @@ TEST(VoxelFillDebug, KeyOfQuantizesToVoxel) {
 
 TEST(VoxelFillDebug, FillTrackerMarksNewAndRecordsFirstFrame) {
     FillTracker t(0.05f);
-    std::vector<AdvancedEntry> f0 = {ent(0, 0, 0, 4, 0, 1), ent(1, 0, 0, 4, 0, 1)};
+    std::vector<TSDFVoxel> f0 = {ent(0, 0, 0, 4, 0, 1), ent(1, 0, 0, 4, 0, 1)};
     auto n0 = t.update(f0, 0);
     EXPECT_EQ(n0.size(), 2u);
     EXPECT_EQ(n0[0], 1);
@@ -40,7 +40,7 @@ TEST(VoxelFillDebug, FillTrackerMarksNewAndRecordsFirstFrame) {
     EXPECT_EQ(t.size(), 2u);
 
     // Frame 1: one repeat (0,0,0) + one new (2,0,0). Only the new one is marked; firstFrame kept.
-    std::vector<AdvancedEntry> f1 = {ent(0, 0, 0, 4, 0, 1), ent(2, 0, 0, 4, 0, 1)};
+    std::vector<TSDFVoxel> f1 = {ent(0, 0, 0, 4, 0, 1), ent(2, 0, 0, 4, 0, 1)};
     auto n1 = t.update(f1, 1);
     EXPECT_EQ(n1[0], 0); // (0,0,0) already seen at frame 0
     EXPECT_EQ(n1[1], 1); // (2,0,0) new at frame 1
@@ -51,7 +51,7 @@ TEST(VoxelFillDebug, FillTrackerMarksNewAndRecordsFirstFrame) {
 
 TEST(VoxelFillDebug, FillTrackerResetReMarksEverything) {
     FillTracker t(0.05f);
-    std::vector<AdvancedEntry> f = {ent(0, 0, 0, 4, 0, 1)};
+    std::vector<TSDFVoxel> f = {ent(0, 0, 0, 4, 0, 1)};
     t.update(f, 0);
     t.reset();
     EXPECT_EQ(t.size(), 0u);

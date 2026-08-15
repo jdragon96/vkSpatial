@@ -1,7 +1,7 @@
-#include "Engine/Pipeline/Registration/Tracker.h" // Engine::Pipeline::TrackerRegistry
-#include "Engine/Pipeline/Pipeline.h"  // Engine::Pipeline::Pipeline / Config / EAcquisitionType
-#include "Engine/Pipeline/CommunicationModule.h"       // Engine::Pipeline::CommunicationModule
-#include "Engine/Pipeline/Registration/RegistrationThread.h"
+#include "Pipeline/Registration/Tracker.h" // Pipeline::TrackerRegistry
+#include "Pipeline/Pipeline.h"  // Pipeline::Pipeline / Config / EAcquisitionType
+#include "Pipeline/CommunicationModule.h"       // Pipeline::CommunicationModule
+#include "Pipeline/Registration/RegistrationThread.h"
 
 #include "utilities/PointCloudIO.h"
 
@@ -18,7 +18,7 @@
 #include <vector>
 
 namespace fs = std::filesystem;
-namespace ep = Engine::Pipeline;
+namespace ep = Pipeline;
 using Eigen::Vector3f;
 
 namespace {
@@ -121,7 +121,7 @@ TEST(Pipeline, FileSourceProducesModel) {
     ASSERT_NE(snap, nullptr);
     EXPECT_GE(snap->processedFrame, 2);
     EXPECT_GT(snap->entries.size(), 100u);
-    // First-seen frame is carried per voxel (AdvancedEntry::firstFrame, GPU-stamped), not in parallel
+    // First-seen frame is carried per voxel (TSDFVoxel::firstFrame, GPU-stamped), not in parallel
     // isNew/firstFrame arrays. Every entry must carry a valid frame within the processed range.
     for (const auto &e: snap->entries) {
         EXPECT_GE(e.firstFrame, 0);
@@ -195,7 +195,7 @@ TEST(Pipeline, GpuIcpTrackerRecoversPerturbation) {
     ep::ModelSnapshot model;
     model.entries.reserve(corner.pts.size());
     for (std::size_t i = 0; i < corner.pts.size(); ++i) {
-        ep::AdvancedEntry e{};
+        TSDFVoxel e{};
         e.center = corner.pts[i];
         e.normal = corner.nrm[i];
         model.entries.push_back(e);
@@ -239,7 +239,7 @@ TEST(Pipeline, GpuIcpTrackerCropExcludesFarModel) {
 
     ep::ModelSnapshot farModel;
     for (int i = 0; i < 5; ++i) {
-        ep::AdvancedEntry e{};
+        TSDFVoxel e{};
         e.center = Vector3f(100.0f + i * 0.1f, 100.0f, 100.0f); // far outside AABB+0.1 margin
         e.normal = Vector3f(0, 0, 1);
         farModel.entries.push_back(e);
@@ -276,7 +276,7 @@ TEST(Pipeline, GpuIcpTrackerRecoversMovingCameraPose) {
     ep::ModelSnapshot model;
     model.entries.reserve(corner.pts.size());
     for (std::size_t i = 0; i < corner.pts.size(); ++i) {
-        ep::AdvancedEntry e{};
+        TSDFVoxel e{};
         e.center = corner.pts[i] + worldOffset;
         e.normal = corner.nrm[i];
         model.entries.push_back(e);

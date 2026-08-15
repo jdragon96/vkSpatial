@@ -1,8 +1,8 @@
-#include "Engine/Spatial/Extraction/ExtractorRegistry.h"
+#include "Mesh/ExtractorRegistry.h"
 #include "isosurface_test_util.h"
 #include <gtest/gtest.h>
 #include <algorithm>
-using namespace Engine::Spatial::Extraction;
+using namespace Mesh;
 
 // Distance from a mesh's vertices to the nearest true box edge (the sharp 90-deg creases).
 // Feature-preserving extractors put vertices ON the crease; rounded MC pulls them inward.

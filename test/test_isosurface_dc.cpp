@@ -1,9 +1,9 @@
-#include "Engine/Spatial/Extraction/ExtractorRegistry.h"
+#include "Mesh/ExtractorRegistry.h"
 #include "Engine/Eval/RmseMetrics.h"
 #include "isosurface_test_util.h"
 #include <gtest/gtest.h>
 #include <algorithm>
-using namespace Engine::Spatial::Extraction;
+using namespace Mesh;
 
 TEST(Isosurface, DualContouringSphereAccurateAndManifold) {
     auto reg = ExtractorRegistry::Default();

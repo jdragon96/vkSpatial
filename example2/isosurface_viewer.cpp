@@ -1,13 +1,13 @@
 // Isosurface (Marching-Cubes family) debug viewer.
 //
 // Extracts a surface with a SELECTABLE isosurface extractor (mc/mc33/mtet/emc/dc/dmc/cms; see
-// Engine::Spatial::Extraction::ExtractorRegistry) over a selectable input shape -- an analytic
+// Mesh::ExtractorRegistry) over a selectable input shape -- an analytic
 // sphere/box/torus, or (with --dir) a folder of pre-registered frame_*.ply scans integrated into
 // an TSDF::AdvancedTSDF -- and renders the resulting triangle mesh so the differences
 // between algorithms (sharp-feature preservation, cracks, topology, rounding) are visible.
 // Switching the extractor / shape / cellSize / featureAngle live re-extracts and re-renders;
 // wireframe toggles instantly with no re-extraction. A connectivity overlay (EdgeOverlayPass,
-// toggleable, on by default) draws Engine::Spatial::Extraction::AnalyzeConnectivity's flagged
+// toggleable, on by default) draws Mesh::AnalyzeConnectivity's flagged
 // edges directly on top of the mesh -- non-manifold edges in red, boundary edges in yellow -- so
 // a crack or a bowtie vertex is something you SEE, not something you have to infer from the
 // wireframe.
@@ -39,15 +39,15 @@
 #include "ImGuiPass.h"
 
 #include "Engine/Core/Context.h"
-#include "Engine/Pipeline/Reconstruction/FrameLoader.h"
+#include "Pipeline/Reconstruction/FrameLoader.h"
 #include "Engine/Render/Application.h"
 #include "Engine/Render/Camera.h"
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
 #include "TSDF/Backends/AdvancedTSDF.h"
-#include "Engine/Spatial/Extraction/ExtractorRegistry.h"
-#include "Engine/Spatial/Extraction/MeshConnectivity.h"
-#include "Engine/Spatial/Extraction/VoxelField.h"
+#include "Mesh/ExtractorRegistry.h"
+#include "Mesh/MeshConnectivity.h"
+#include "Mesh/VoxelField.h"
 
 #include "utilities/Math.h"
 
@@ -75,15 +75,15 @@
 #endif
 
 namespace fs = std::filesystem;
-namespace ep = Engine::Pipeline;
+namespace ep = Pipeline;
 using Eigen::Vector3f;
-using Engine::Spatial::Extraction::AnalyzeConnectivity;
-using Engine::Spatial::Extraction::ConnectivityReport;
-using Engine::Spatial::Extraction::ExtractorRegistry;
-using Engine::Spatial::Extraction::ExtractParams;
-using Engine::Spatial::Extraction::IsoSurfaceExtractor;
-using Engine::Spatial::Extraction::SurfaceMesh;
-using Engine::Spatial::Extraction::VoxelField;
+using Mesh::AnalyzeConnectivity;
+using Mesh::ConnectivityReport;
+using Mesh::ExtractorRegistry;
+using Mesh::ExtractParams;
+using Mesh::IsoSurfaceExtractor;
+using Mesh::SurfaceMesh;
+using Mesh::VoxelField;
 
 namespace {
 
@@ -165,7 +165,7 @@ namespace {
             const float pointNorm = point.norm();
             return pointNorm > 1e-6f ? Eigen::Vector3f(point / pointNorm) : Eigen::Vector3f(0.0f, 0.0f, 1.0f);
         };
-        return Engine::Spatial::Extraction::FromImplicit(minCoord, maxCoord, cellSize, valueFunction, &gradientFunction);
+        return Mesh::FromImplicit(minCoord, maxCoord, cellSize, valueFunction, &gradientFunction);
     }
 
     // Axis-aligned box SDF centred at the origin, non-uniform half-extents so its edges and
@@ -186,7 +186,7 @@ namespace {
                 [&valueFunction](const Eigen::Vector3f &point) {
             return CentralDifferenceGradient(valueFunction, point);
         };
-        return Engine::Spatial::Extraction::FromImplicit(minCoord, maxCoord, cellSize, valueFunction, &gradientFunction);
+        return Mesh::FromImplicit(minCoord, maxCoord, cellSize, valueFunction, &gradientFunction);
     }
 
     // Torus SDF, ring axis = Y (the ring lies in the XZ plane): value = distance to the ring
@@ -208,7 +208,7 @@ namespace {
                 [&valueFunction](const Eigen::Vector3f &point) {
             return CentralDifferenceGradient(valueFunction, point);
         };
-        return Engine::Spatial::Extraction::FromImplicit(minCoord, maxCoord, cellSize, valueFunction, &gradientFunction);
+        return Mesh::FromImplicit(minCoord, maxCoord, cellSize, valueFunction, &gradientFunction);
     }
 
     /// ---------------------------------------------------------------------------------------
@@ -228,7 +228,7 @@ namespace {
 
     // Sorted frame_*.ply paths from `directory` (skips ground_truth_*); mirrors
     // voxel_fill_debugger.cpp's collectFramePaths. Directory listing only -- the clouds
-    // themselves are read by Engine::Pipeline::LoadFrames.
+    // themselves are read by Pipeline::LoadFrames.
     std::vector<std::string> CollectFramePaths(const std::string &directory) {
         std::vector<std::string> paths;
         for (const auto &entry : fs::directory_iterator(directory)) {
@@ -288,7 +288,7 @@ namespace {
             tsdf.Integrate(frame.pts, frame.nrm, frame.cam); // identity pose: folder is pre-registered
 
         const std::vector<TSDF::AdvancedEntry> entries = tsdf.DownloadEntries();
-        return Engine::Spatial::Extraction::FromAdvancedEntries(entries, cellSize);
+        return Mesh::FromAdvancedEntries(entries, cellSize);
     }
 
     /// ---------------------------------------------------------------------------------------

@@ -73,7 +73,7 @@ void IsosurfaceMeshPass::BuildPipeline(Engine::Render::GraphicsPipeline &pipelin
     pipeline.Build(descriptor);
 }
 
-void IsosurfaceMeshPass::SetMesh(const Engine::Spatial::Extraction::SurfaceMesh &mesh,
+void IsosurfaceMeshPass::SetMesh(const Mesh::SurfaceMesh &mesh,
                                  const Eigen::Vector3f &color) {
     std::vector<MeshVertex> vertices;
     vertices.reserve(mesh.vertices.size());

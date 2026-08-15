@@ -9,9 +9,9 @@
 //
 // Usage: icp_quality_diag --dir <folder> [--voxel v] [--trackers identity,icp[,icp-cpu]]
 
-#include "Engine/Pipeline/Pipeline.h"
-#include "Engine/Pipeline/Registration/Tracker.h"       // TrackerRegistry
-#include "Engine/Pipeline/Reconstruction/FrameLoader.h" // LoadFrames / ComputeBounds
+#include "Pipeline/Pipeline.h"
+#include "Pipeline/Registration/Tracker.h"       // TrackerRegistry
+#include "Pipeline/Reconstruction/FrameLoader.h" // LoadFrames / ComputeBounds
 #include "Engine/Eval/RmseMetrics.h"                     // NearestNeighbourRMSE
 #include "utilities/ArgParser.h"
 
@@ -24,7 +24,7 @@
 #include <thread>
 #include <vector>
 
-namespace ep = Engine::Pipeline;
+namespace ep = Pipeline;
 namespace fs = std::filesystem;
 
 namespace {
@@ -93,7 +93,7 @@ namespace {
         if (const std::shared_ptr<const ep::ModelSnapshot> model = pipe.LatestModel()) {
             r.entries = model->entries.size();
             r.reconPoints.reserve(model->entries.size());
-            for (const TSDF::AdvancedEntry &e: model->entries) r.reconPoints.push_back(e.center);
+            for (const TSDFVoxel &e: model->entries) r.reconPoints.push_back(e.center);
         }
         pipe.Stop();
         return r;

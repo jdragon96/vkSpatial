@@ -15,7 +15,7 @@
 // One highlighted group of world-space line segments sharing a single color -- e.g. every
 // non-manifold edge in red, or every boundary edge in yellow (see isosurface_viewer.cpp's
 // rebuild(), which builds one EdgeOverlayGroup per
-// Engine::Spatial::Extraction::ConnectivityReport category via BuildEdgeOverlayGroup).
+// Mesh::ConnectivityReport category via BuildEdgeOverlayGroup).
 struct EdgeOverlayGroup {
     std::vector<std::pair<Eigen::Vector3f, Eigen::Vector3f>> segments;
     Eigen::Vector3f color;

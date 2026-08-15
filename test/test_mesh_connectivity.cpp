@@ -1,8 +1,8 @@
-#include "Engine/Spatial/Extraction/MeshConnectivity.h"
-#include "Engine/Spatial/Extraction/ExtractorRegistry.h"
+#include "Mesh/MeshConnectivity.h"
+#include "Mesh/ExtractorRegistry.h"
 #include "isosurface_test_util.h"
 #include <gtest/gtest.h>
-using namespace Engine::Spatial::Extraction;
+using namespace Mesh;
 
 TEST(MeshConnectivity, SphereIsClosedManifold) {
     VoxelField field = isotest::SphereField(0.7f, 0.1f, 12);

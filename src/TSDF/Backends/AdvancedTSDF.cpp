@@ -101,6 +101,7 @@ namespace TSDF {
         m_statBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
         m_firstFrameBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
         m_insertFailureBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
+        m_probeStatBuffer = std::make_unique<Engine::Core::Buffer>(ctx);
         m_rehashScratchStat = std::make_unique<Engine::Core::Buffer>(ctx);
 
         m_hashBuffer->Allocate(hashCapacity * sizeof(AdvDirEntry));
@@ -109,17 +110,20 @@ namespace TSDF {
         m_statBuffer->AllocateHostVisibleReadback(sizeof(uint32_t));
         m_firstFrameBuffer->Allocate(hashCapacity * sizeof(int32_t));
         m_insertFailureBuffer->AllocateHostVisibleReadback(sizeof(uint32_t));
+        m_probeStatBuffer->AllocateHostVisibleReadback(3u * sizeof(uint32_t));
         m_rehashScratchStat->Allocate(sizeof(uint32_t)); // discarded -- see member comment
 
         kernel_integratePoints = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         if (m_hash->macroName) kernel_integratePoints->Define(m_hash->macroName);
+        if (m_probeStats) kernel_integratePoints->Define("HASH_PROBE_STATS");
         kernel_integratePoints->Build("TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl")
                 .Bind(0, *m_hashBuffer)
                 .Bind(1, *m_pointBuffer)
                 .Bind(2, *m_normalBuffer)
                 .Bind(3, *m_statBuffer)
                 .Bind(4, *m_firstFrameBuffer)
-                .Bind(5, *m_insertFailureBuffer);
+                .Bind(5, *m_insertFailureBuffer)
+                .Bind(9, *m_probeStatBuffer);
 
         kernel_compactTable = std::make_unique<Engine::Core::ComputePipeline>(ctx);
         kernel_compactTable->Build("TSDF/Backends/kernel_AdvancedTSDF.compact.comp.glsl").Bind(3, *m_firstFrameBuffer);
@@ -149,6 +153,9 @@ namespace TSDF {
         // (compaction only reads occupied slots) -- no explicit clear needed.
         *static_cast<uint32_t *>(m_insertFailureBuffer->MappedPtr()) = 0;
         m_insertFailureBuffer->MakeVisibleToGPU(sizeof(uint32_t));
+        auto *probe = static_cast<uint32_t *>(m_probeStatBuffer->MappedPtr());
+        probe[0] = probe[1] = probe[2] = 0;
+        m_probeStatBuffer->MakeVisibleToGPU(3u * sizeof(uint32_t));
         m_growCount = 0; // otherwise a second scene reusing this instance would inherit the first's count
     }
 
@@ -270,6 +277,17 @@ namespace TSDF {
         if (!m_insertFailureBuffer) return 0;
         m_insertFailureBuffer->MakeVisibleToCPU(sizeof(uint32_t));
         return *static_cast<const uint32_t *>(m_insertFailureBuffer->MappedPtr());
+    }
+
+    void AdvancedTSDF::ProbeStats(uint64_t &slotTotal, uint64_t &queryCount, uint32_t &slotMax) const {
+        slotTotal = queryCount = 0;
+        slotMax = 0;
+        if (!m_probeStatBuffer) return;
+        m_probeStatBuffer->MakeVisibleToCPU(3u * sizeof(uint32_t));
+        const auto *probe = static_cast<const uint32_t *>(m_probeStatBuffer->MappedPtr());
+        slotTotal = probe[0];
+        queryCount = probe[1];
+        slotMax = probe[2];
     }
 
     void AdvancedTSDF::maybeGrow() {

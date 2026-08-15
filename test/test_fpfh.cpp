@@ -1,12 +1,10 @@
 // FPFH descriptor + shared oriented-point extraction (Engine::Spatial).
-// CPU-only correctness (no GPU) + integration through SimpleTSDF / DirectionalTSDF.
+// CPU-only correctness. The GPU integration tests went with the TSDF backends they drove.
 
 #include "Engine/Core/Context.h"
-#include "TSDF/Backends/DirectionalTSDF.h"
-#include "Engine/Spatial/FPFH.h"
-#include "Engine/Spatial/NeighborQuery.h"
+#include "Engine/Features/FpfhSignature.h"
+#include "BVH/NeighborQuery.h"
 #include "Engine/Core/OrientedPointCloud.h"
-#include "TSDF/Backends/SimpleTSDF.h"
 
 #include <Eigen/Geometry>
 #include <cmath>
@@ -15,7 +13,7 @@
 #include <set>
 #include <vector>
 
-using namespace TSDF;
+using namespace Engine::Features;
 using namespace Engine::Spatial; // FPFH stayed behind in Engine::Spatial
 
 namespace {
@@ -114,72 +112,5 @@ TEST(FpfhTest, DeterministicAndBlocksNormalized) {
         EXPECT_EQ(l1(a[i], b[i]), 0.0f) << "non-deterministic at " << i; // identical input → identical output
         for (int blk = 0; blk < 3; ++blk)
             EXPECT_NEAR(blockSum(a[i], blk), 100.0f, 1e-2f) << "block " << blk << " not normalised at " << i;
-    }
-}
-
-// ── GPU: SimpleTSDF → shared oriented cloud → FPFH ──────────────────────────
-TEST(FpfhTsdfTest, SimpleTSDFExtractAndDescribe) {
-    Engine::Core::Context ctx;
-    SimpleTSDF tsdf;
-    tsdf.Build(ctx, /*voxelSize=*/0.1f, /*truncation=*/0.3f);
-
-    // Fibonacci-sphere surface points (radius 1), integrated from an outside camera.
-    std::vector<Eigen::Vector3f> pts;
-    const int N = 1500;
-    const float golden = float(M_PI) * (3.0f - std::sqrt(5.0f));
-    for (int i = 0; i < N; ++i) {
-        const float y = 1.0f - 2.0f * (float(i) + 0.5f) / float(N);
-        const float r = std::sqrt(std::max(0.0f, 1.0f - y * y));
-        const float a = golden * float(i);
-        pts.emplace_back(r * std::cos(a), y, r * std::sin(a));
-    }
-    tsdf.Integrate(pts, Eigen::Vector3f(0, 0, 3));
-
-    const Engine::Core::OrientedPointCloud cloud = tsdf.ExtractPointCloud();
-    ASSERT_FALSE(cloud.empty()) << "SimpleTSDF extracted no surface";
-    EXPECT_EQ(cloud.points.size(), cloud.normals.size());
-    for (const auto &nrm : cloud.normals)
-        EXPECT_NEAR(nrm.norm(), 1.0f, 1e-3f); // welded normals are unit length
-
-    const auto sig = ComputeFPFH(cloud, FpfhConfig{0.25f});
-    ASSERT_EQ(sig.size(), cloud.size());
-    for (const auto &s : sig)
-        for (int blk = 0; blk < 3; ++blk) {
-            const float bs = blockSum(s, blk);
-            EXPECT_TRUE(bs == 0.0f || std::fabs(bs - 100.0f) < 1e-2f); // normalised or isolated
-        }
-}
-
-// ── GPU: DirectionalTSDF oriented-cloud adapter mirrors PointCloud() ─────────
-TEST(FpfhTsdfTest, DirectionalTSDFOrientedCloudMatchesPointCloud) {
-    Engine::Core::Context ctx;
-    DirectionalTSDF tsdf;
-    tsdf.Build(ctx, 0.1f, 0.3f, /*poolCapacity=*/4096);
-
-    // Small cloud (N<1000, below the known Engine::Core large-N issue).
-    std::vector<Eigen::Vector3f> pts, nms;
-    const int N = 600;
-    const float golden = float(M_PI) * (3.0f - std::sqrt(5.0f));
-    for (int i = 0; i < N; ++i) {
-        const float y = 1.0f - 2.0f * (float(i) + 0.5f) / float(N);
-        const float r = std::sqrt(std::max(0.0f, 1.0f - y * y));
-        const float a = golden * float(i);
-        const Eigen::Vector3f p(r * std::cos(a), y, r * std::sin(a));
-        pts.push_back(p);
-        nms.push_back(p.normalized()); // outward normal
-    }
-    tsdf.Integrate(pts, nms, Eigen::Vector3f(0, 0, 3), Eigen::Vector3f::Zero());
-
-    const Engine::Core::OrientedPointCloud cloud = tsdf.ExtractOrientedCloud();
-    ASSERT_EQ(cloud.points.size(), tsdf.PointCloud().size());
-    ASSERT_EQ(cloud.normals.size(), cloud.points.size());
-    for (size_t i = 0; i < cloud.points.size(); ++i) {
-        EXPECT_EQ(cloud.points[i], tsdf.PointCloud()[i].position);
-        EXPECT_EQ(cloud.normals[i], tsdf.PointCloud()[i].normal);
-    }
-
-    if (!cloud.empty()) {
-        const auto sig = ComputeFPFH(cloud, FpfhConfig{0.25f});
-        EXPECT_EQ(sig.size(), cloud.size());
     }
 }

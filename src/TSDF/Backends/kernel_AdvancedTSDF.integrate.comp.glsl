@@ -91,7 +91,7 @@ bool packDirKey(ivec3 voxel, uint direction, out uint key)
 }
 
 #define HASH_WITH_INSERT
-#include "TSDF/Memory/Hash/HashStrategy.glsl"
+#include "TSDF/Hash/HashStrategy.glsl"
 
 /// *********************************************
 /// Direction weighting

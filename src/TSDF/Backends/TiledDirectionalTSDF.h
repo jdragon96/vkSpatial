@@ -5,7 +5,7 @@
 #include "Engine/Core/Context.h"
 #include "TSDF/Backends/DirectionalIntegrationQuality.h"
 #include "Engine/Core/OrientedPointCloud.h"
-#include "TSDF/Memory/Hash/HashStrategy.h"
+#include "TSDF/Hash/HashStrategy.h"
 
 #include <Eigen/Core>
 #include <algorithm>

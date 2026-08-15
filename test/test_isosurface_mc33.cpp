@@ -1,8 +1,8 @@
-#include "Engine/Spatial/Extraction/ExtractorRegistry.h"
+#include "Mesh/ExtractorRegistry.h"
 #include "Engine/Eval/RmseMetrics.h"
 #include "isosurface_test_util.h"
 #include <gtest/gtest.h>
-using namespace Engine::Spatial::Extraction;
+using namespace Mesh;
 
 // A single cube carrying a face-ambiguous configuration (two diagonally-opposite
 // negative corners on one face). Original 15-case MC can leave a boundary hole here;
@@ -11,7 +11,7 @@ static VoxelField AmbiguousCube() {
     VoxelField f; f.SetCellSize(1.0f);
     // corner signs (MC corner order): negatives at 0 and 2 (a face diagonal), rest positive
     const float s[8] = {-1,+1,-1,+1, +1,+1,+1,+1};
-    for (int c=0;c<8;++c) f.Insert({Engine::Spatial::mc::CORNER[c][0],Engine::Spatial::mc::CORNER[c][1],Engine::Spatial::mc::CORNER[c][2]}, s[c]);
+    for (int c=0;c<8;++c) f.Insert({Mesh::mc::CORNER[c][0],Mesh::mc::CORNER[c][1],Mesh::mc::CORNER[c][2]}, s[c]);
     return f;
 }
 

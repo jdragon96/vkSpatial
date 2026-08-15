@@ -1,6 +1,6 @@
 #pragma once
-#include "Engine/Spatial/Extraction/VoxelField.h"
-#include "Engine/Spatial/Extraction/SurfaceMesh.h"
+#include "Mesh/VoxelField.h"
+#include "Mesh/SurfaceMesh.h"
 #include <Eigen/Core>
 #include <array>
 #include <cmath>
@@ -8,8 +8,8 @@
 #include <vector>
 
 namespace isotest {
-    using Engine::Spatial::Extraction::SurfaceMesh;
-    using Engine::Spatial::Extraction::VoxelField;
+    using Mesh::SurfaceMesh;
+    using Mesh::VoxelField;
 
     // Analytic sphere signed field (value = |p| - radius), exact gradient = p/|p|.
     inline VoxelField SphereField(float radius, float cellSize, int halfN) {
@@ -17,7 +17,7 @@ namespace isotest {
         auto value = [radius](const Eigen::Vector3f& p){ return p.norm() - radius; };
         auto grad  = [](const Eigen::Vector3f& p){ float n=p.norm(); return n>1e-6f?Eigen::Vector3f(p/n):Eigen::Vector3f(0,0,1);} ;
         std::function<Eigen::Vector3f(const Eigen::Vector3f&)> g = grad;
-        return Engine::Spatial::Extraction::FromImplicit(lo, hi, cellSize, value, &g);
+        return Mesh::FromImplicit(lo, hi, cellSize, value, &g);
     }
     // Axis-aligned box SDF centred at origin, exact gradient (sharp edges/corners).
     inline VoxelField BoxField(const Eigen::Vector3f& halfExtents, float cellSize, int halfN) {
@@ -37,7 +37,7 @@ namespace isotest {
             float n=g.norm(); return n>1e-6f?Eigen::Vector3f(g/n):Eigen::Vector3f(0,0,1);
         };
         std::function<Eigen::Vector3f(const Eigen::Vector3f&)> gg = grad;
-        return Engine::Spatial::Extraction::FromImplicit(lo, hi, cellSize, value, &gg);
+        return Mesh::FromImplicit(lo, hi, cellSize, value, &gg);
     }
 
     // Undirected-edge incidence count over the mesh's triangles.

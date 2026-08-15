@@ -1,11 +1,11 @@
-#include "Engine/Spatial/Extraction/GpuExtractorRegistry.h"
-#include "Engine/Spatial/Extraction/ExtractorRegistry.h"
-#include "Engine/Spatial/Extraction/MeshConnectivity.h"
+#include "Mesh/GpuExtractorRegistry.h"
+#include "Mesh/ExtractorRegistry.h"
+#include "Mesh/MeshConnectivity.h"
 #include "Engine/Core/Context.h"
 #include "Engine/Eval/RmseMetrics.h"
 #include "isosurface_test_util.h"
 #include <gtest/gtest.h>
-using namespace Engine::Spatial::Extraction;
+using namespace Mesh;
 
 TEST(GpuExtractors, McGpuMatchesCpuOnSphere) {
     Engine::Core::Context ctx;

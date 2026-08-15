@@ -1,5 +1,5 @@
-// TSDF folder evaluator — read every frame_*.ply in a folder, integrate them into a TSDF::Volume
-// (selected by --tsdf/--hash through TSDF::VolumeRegistry), extract the surface, and score it
+// TSDF folder evaluator — read every frame_*.ply in a folder, integrate them into a TSDF
+// (windowing and hash selected by --tsdf/--hash), extract the surface, and score it
 // against ground_truth.ply (RMSE). Fully separate from capture (object_scan_viewer) and headless.
 //
 //   ./tsdf_folder_eval --dir scans/bunny [--voxel v] [--trunc t] [--gt path.ply]
@@ -15,8 +15,7 @@
 
 #include "Engine/Core/Context.h"
 #include "Engine/Core/OrientedPointCloud.h"
-#include "TSDF/Memory/Hash/HashStrategy.h"
-#include "TSDF/Volume.h"
+#include "TSDF/TSDF.h"
 
 #include "utilities/ArgParser.h"
 #include "utilities/PointCloudIO.h"
@@ -266,58 +265,52 @@ int main(int argc, char **argv) {
                          "not the scene. Use --tsdf tile (the default here) for the whole scene.\n",
                          axisVox, 100.0 * 512.0 / double(axisVox));
 
-        const TSDF::VolumeRegistry registry = TSDF::VolumeRegistry::Default();
-        std::unique_ptr<TSDF::Volume> volume = registry.Create(tsdfName);
-        if (!volume) {
-            std::cerr << "unknown --tsdf: " << tsdfName << "\n";
-            return 2;
-        }
-
-        // HashStrategyByName falls back to linear on an unknown name WITHOUT telling the caller --
-        // so --hash typo would otherwise silently run linear while the operator believes they asked
-        // for something else. Resolve it here and report if the fallback fired, so the comparison
-        // table below is labelled with what actually ran, not with what was typed.
-        const std::string resolvedHashName = TSDF::HashStrategyByName(hashName).name;
+        // HashStrategyByName falls back to linear on an unknown name WITHOUT telling the caller,
+        // so a --hash typo would silently run linear while the operator believes otherwise.
+        const std::string resolvedHashName = ResolveHashName(hashName);
         if (resolvedHashName != hashName)
             std::fprintf(stderr, "warning: --hash %s is not a known strategy; falling back to %s\n",
                          hashName.c_str(), resolvedHashName.c_str());
 
-        TSDF::VolumeParams params;
-        params.voxelSize = voxel;
-        params.truncation = trunc;
-        // flat owns ONE table sized to the whole scene (hashCap); tile/submap own MANY tables, each
-        // sized to a single tile (tileHash, default 1<<21, overridden by --tile-hash exactly as
-        // before this task). Using hashCap as a PER-TILE budget -- as an earlier version of this
-        // harness briefly did -- multiplies a whole-scene-sized table by every tile and can exhaust
-        // device memory on a real scan (see task-6-report.md's fix-round-1 note).
-        params.hashCapacity = tsdfName == "flat" ? hashCap : tileHash;
-        params.maxPointsPerFrame = maxPts;
-        params.hashStrategy = hashName;
-        if (tsdfName == "flat") params.windowMinCorner = windowMinCorner;
-        volume->Build(ctx, params);
+        TSDFConfiguration config;
+        config.backend = "advanced";
+        // flat = one window (everything outside it is refused and counted); tile = windows opened
+        // on demand, no detail level; submap = windows plus the dense detail level.
+        config.splitter = tsdfName == "submap" ? "dense" : "none";
+        config.useSubmap = tsdfName == "submap";
+        config.maxResidentWindow = tsdfName == "flat" ? 1 : 0;
+        config.backendConfig.voxelSize = voxel;
+        config.backendConfig.truncation = trunc;
+        config.backendConfig.hashCapacity = tsdfName == "flat" ? hashCap : tileHash;
+        config.backendConfig.maxPointPerFrame = maxPts;
+        config.backendConfig.hash = hashName;
+        config.backendConfig.pointToPlane = p2p;
+        config.backendConfig.confidenceWeight = conf;
+        config.backendConfig.hermitePosition = hermite;
+        config.backendConfig.maxDirections = 3;
+        config.backendConfig.directionExponent = 4;
+        config.backendConfig.viewAngleWeight = true;
+        config.splitterConfig.baseResolution = voxel;
+        config.splitterConfig.maxPointPerFrame = int(maxPts);
 
-        TSDF::IntegrationOptions options;
-        options.pointToPlane = p2p;
-        options.confidenceWeight = conf;
-        options.hermitePosition = hermite;
-        options.quality = {3, 4, true};
-        volume->Configure(options);
+        TSDF tsdf;
+        tsdf.Build(ctx, config);
 
-        for (const auto &fr: frames) volume->Integrate(fr.pts, fr.nrm, fr.cam);
-        Engine::Core::OrientedPointCloud recon = volume->Extract(/*merge=*/true);
+        for (const auto &fr: frames) tsdf.Integrate(fr.pts, fr.nrm, fr.cam);
+        Engine::Core::OrientedPointCloud recon = tsdf.Extract();
         std::printf("extracted : %zu oriented points\n", recon.points.size());
 
         // The comparison table this plan exists to produce: run twice with --tsdf/--hash held
         // fixed except for one axis and diff tableMB. Labelled with the RESOLVED hash name (see
         // above), not the raw --hash argument.
-        const TSDF::VolumeStats stats = volume->Stats();
+        const TSDFBackendStats stats = tsdf.Stats();
         std::printf("\n%-10s %-8s %10s %10s %7s %7s %9s %6s %6s\n",
                     "hash", "tsdf", "occupied", "slots", "load", "tables", "tableMB",
                     "drops", "grows");
         std::printf("%-10s %-8s %10llu %10llu %7.3f %7u %9.1f %6llu %6llu\n",
                     resolvedHashName.c_str(), tsdfName.c_str(),
-                    (unsigned long long) stats.occupiedEntryCount,
-                    (unsigned long long) stats.slotCapacity,
+                    (unsigned long long) stats.filledCount,
+                    (unsigned long long) stats.hashCapacity,
                     stats.LoadFactor(),
                     stats.tableCount,
                     double(stats.deviceMemoryBytes) / (1024.0 * 1024.0),

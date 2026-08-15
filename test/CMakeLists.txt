@@ -10,11 +10,12 @@ add_executable(vkspatial_tests ${TEST_SOURCES})
 target_link_libraries(vkspatial_tests
         PRIVATE
         Engine::Core
-        Engine::Spatial
+        Mesh
+        BVH
         Engine::Compute
         Engine::Render
         Engine::Backend
-        Engine::Pipeline
+        Pipeline
         TSDF::TSDF
         GTest::gtest
         GTest::gtest_main)
