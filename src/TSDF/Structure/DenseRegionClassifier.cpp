@@ -202,7 +202,7 @@ namespace TSDF {
         m_cellInsertFailureCount->MakeVisibleToGPU(sizeof(uint32_t));
 
         // Every readback the accessors serve has to be reset too, not just the records they are
-        // derived from. These four are the accessors' ONLY storage -- DenseBlockCount(),
+        // derived from. These two buffers are the accessors' ONLY storage -- DenseBlockCount(),
         // DetailSlotEstimate() and ReadPartition() read them straight back with no recomputation --
         // so leaving them resident would have `Reset(); DenseBlockCount();` answer with the
         // pre-Reset count and ReadPartition() hand back the pre-Reset frame's index lists.
@@ -227,12 +227,12 @@ namespace TSDF {
     void DenseRegionClassifier::Record(const std::vector<Eigen::Vector3f> &points,
                                        const std::vector<Eigen::Vector3f> &normals,
                                        Engine::Compute::CommandBatch &batch) {
-        // Set first, above BOTH early returns below: Record/Classify/Partition is a per-frame
-        // sequence and this count is that sequence's state, so an empty or malformed frame must
-        // invalidate it right here, where the frame is decided. Leaving the previous frame's count
-        // resident would have Partition() dispatch over -- and ReadPartition() hand back -- the
-        // previous frame's still-resident m_blockIndex, silently duplicating it into the caller's
-        // integration.
+        // Set first, above the throw and the early return below: Record/Classify/Partition is a
+        // per-frame sequence and this count is that sequence's state, so an empty or malformed frame
+        // must invalidate it right here, where the frame is decided. Leaving the previous frame's
+        // count resident would have Partition() dispatch over -- and ReadPartition() hand back --
+        // the previous frame's still-resident m_blockIndex, silently duplicating it into the
+        // caller's integration.
         m_recordedPointCount = 0;
         // A mismatch used to fall back to min(points, normals), which is a silent truncation of the
         // caller's frame -- points past the shorter array vanish from the reconstruction with no

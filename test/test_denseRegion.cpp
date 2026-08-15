@@ -452,7 +452,7 @@ namespace {
 
 } // namespace
 
-// Regression for a review finding: hasSurface must read fineOccupiedMax, not the cumulative
+// Regression for a review finding: hasSurface must read a PER-FRAME occupancy, not the cumulative
 // fineOccupied. fineOccupied re-counts a physical cell once per frame (the per-frame cell hash is
 // wiped every frame), so it is as much a revisit counter as a footprint measure; a block with a
 // genuinely small footprint can walk it past minimumFineOccupied purely by being looked at enough
@@ -461,6 +461,11 @@ namespace {
 // all numerically equal after one frame. This replays the SAME small patch across several
 // independent frames -- each its own CommandBatch, submitted, matching how a real scan integrates
 // -- and checks the verdict never flips.
+//
+// The per-frame field it reads was fineOccupiedMax when this test was written and is now
+// fineOccupiedFrame (the whole-branch review's C1 fix moved it, so that the extent condition and the
+// curvature condition describe the same frame). Either satisfies this test; the cumulative field is
+// what it rules out.
 TEST(DenseRegionClassify, RevisitedSmallFootprintIsNotRefined) {
     Engine::Core::Context context;
     TSDF::DenseRegionClassifier classifier;
@@ -692,11 +697,11 @@ TEST(DenseRegionPartition, DenseVerdictDoesNotRevert) {
             << "a block latched dense must still route its points to the detail level";
 }
 
-// Record() has two early returns (an empty `points`, or a mismatched/empty `normals` that makes
-// the shared count zero) above the point where the recorded-point-count state used to be set. A
-// frame the caller filters down to nothing must not leave Partition() replaying the PREVIOUS
-// frame's still-resident m_blockIndex -- that duplicates every one of that frame's points into the
-// caller's integration with no counter showing it.
+// Record() has an early return for an empty `points` above the point where the recorded-point-count
+// state used to be set (a mismatched `normals` now throws instead; see
+// RecordRejectsAPointNormalSizeMismatch). A frame the caller filters down to nothing must not leave
+// Partition() replaying the PREVIOUS frame's still-resident m_blockIndex -- that duplicates every
+// one of that frame's points into the caller's integration with no counter showing it.
 TEST(DenseRegionPartition, EmptyFrameDoesNotReplayThePreviousPartition) {
     Engine::Core::Context context;
     TSDF::DenseRegionClassifier classifier;

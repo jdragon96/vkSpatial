@@ -112,9 +112,9 @@ namespace TSDF {
         // Records the partition pass into `batch` without submitting. Splits the most recent
         // Record()'d frame's points into a base-level index list and a detail-level index list,
         // using the verdicts Classify() wrote to m_denseFlags. A point whose block record could not
-        // be created (HASH_INSERT_FAILED, i.e. EMPTY_KEY, in m_blockIndex) still goes to the base
-        // level -- every point must land somewhere, so the two output counts always total the
-        // input count.
+        // be created (EMPTY_KEY in m_blockIndex -- see BlockInsertFailureCount for the two ways
+        // that happens) still goes to the base level: every point must land somewhere, so the two
+        // output counts always total the input count.
         void Partition(Engine::Compute::CommandBatch &batch);
 
         // Reads back the two index lists Partition() produced, sized to exactly the counts the GPU
