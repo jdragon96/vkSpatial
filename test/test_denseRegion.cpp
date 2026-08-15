@@ -371,6 +371,61 @@ TEST(DenseRegionClassify, SparseCurvedSurfaceIsNotRefined) {
 
 namespace {
 
+    // A block sampled NON-UNIFORMLY: ~90% of its surface area swept coarsely at s = 2v, plus a small
+    // strongly curved feature sampled at s = v/8. Both live inside block (0,0,0), which spans
+    // [0, 0.32)^3 at baseVoxel 0.01.
+    //
+    // This is the one shape that separates condition 1 (resolvesFineGrid) from condition 3
+    // (keepsSignal). On any UNIFORMLY sampled surface the two are not independent: with spacing s
+    // over area A, pointCount = A/s^2 and fineOccupied = min(pointCount, 4A/v^2), so keepsSignal
+    // (P >= 3F) forces F != P, hence s < v/2, hence F = 4A/v^2 and F/coarseOccupied = 4 >= 3.2.
+    // keepsSignal IMPLIES resolvesFineGrid, and the pair collapses to the redundancy heuristic
+    // (pointCount/coarseOccupied >= 12) that this component exists to replace. Every other fixture
+    // in this file is uniform, so none of them can tell the two apart.
+    //
+    // Non-uniform breaks the implication. The dense feature is 256x more densely sampled per unit
+    // area than the sweep, so it supplies almost every point (high redundancy -> keepsSignal passes
+    // easily) while covering almost none of the area (poor coverage -> the coverage-weighted ratio
+    // stays near the sweep's own value of 1). That is exactly the case the redundancy heuristic gets
+    // wrong, and exactly what spec sections 1-2 claim over it.
+    void MakeNonUniformlySampledBlock(std::vector<Vector3f> &points,
+                                      std::vector<Vector3f> &normals) {
+        points.clear();
+        normals.clear();
+
+        // 1. The coarse sweep: a 0.20 x 0.20 m flat patch at s = 2v = 0.02. Offset by half a fine
+        //    cell so no sample sits exactly on a cell boundary. s > v > v/2, so every point claims
+        //    its own fine AND its own coarse cell -- a local ratio of exactly 1.
+        const int sweepCount = 11;
+        const float sweepSpacing = 0.02f;
+        const float sweepOrigin = 0.0525f;
+        for (int i = 0; i < sweepCount; ++i)
+            for (int j = 0; j < sweepCount; ++j) {
+                points.emplace_back(sweepOrigin + float(i) * sweepSpacing,
+                                    sweepOrigin + float(j) * sweepSpacing, 0.2825f);
+                normals.emplace_back(0.0f, 0.0f, 1.0f);
+            }
+
+        // 2. The fine feature: a sphere sampled at s = v/8 = 0.00125, sized so its surface area is
+        //    1/9 of the sweep's -- i.e. the sweep is 90% of the sampled area. A full sphere rather
+        //    than a gentle bulge because the feature supplies ~97% of the points, so the block's
+        //    normal coherence is essentially the feature's own: a gentle one would read coherent and
+        //    condition 2 would veto, hiding the effect this fixture exists to show.
+        const float radius = 0.0188f; // 4*pi*r^2 = 0.00444 m^2 = (0.20 m)^2 / 9
+        const Vector3f centre(0.14f, 0.14f, 0.10f);
+        const int latitudeCount = 47;  // pi*r / 0.00125
+        const int longitudeCount = 94; // 2*pi*r / 0.00125
+        for (int a = 0; a < longitudeCount; ++a)
+            for (int b = 0; b < latitudeCount; ++b) {
+                const float theta = float(a) * 2.0f * float(M_PI) / float(longitudeCount);
+                const float phi = float(b) * float(M_PI) / float(latitudeCount);
+                const Vector3f direction(std::sin(phi) * std::cos(theta),
+                                         std::sin(phi) * std::sin(theta), std::cos(phi));
+                points.push_back(centre + direction * radius);
+                normals.push_back(direction);
+            }
+    }
+
     // A small paraboloid patch z = curvature*(x^2+y^2), centred in the middle of block (0,0,0) (see
     // MakePlane's comment on why: the world origin sits on a block corner). halfWidth, curvature and
     // pointsPerSide are tuned -- not arbitrary -- so that a SINGLE frame clears resolvesFineGrid,
@@ -483,6 +538,65 @@ TEST(DenseRegionClassify, ReplayedFlatPlaneNeverOverflowsIntoADenseLatch) {
             10000.0 / double(blocks[0].pointCountFrame);
     EXPECT_NEAR(coherence, 1.0, 0.01)
             << "the per-frame normal sum must still read a coherent plane after 60 replays";
+}
+
+// Condition 1 (resolvesFineGrid) is the spec's core decision, and until this fixture it had no
+// evidence: every other fixture in this file samples uniformly, where condition 3 implies condition
+// 1 (see MakeNonUniformlySampledBlock's comment for the proof), so setting occupancyRatio to 0 left
+// all of them green. The claim over the redundancy heuristic was argued, never shown.
+//
+// This is the block that separates them: a coarse sweep over 90% of the area plus a small densely
+// sampled sphere. Conditions 2, 3 and 4 all pass with margin -- the block IS curved, IS redundantly
+// sampled, and DOES have real extent -- and the only thing standing between it and a second full
+// tile hierarchy is that the sampling does not COVER the block. The old heuristic
+// (pointCount/coarseOccupied >= 12) reads ~27 here and refines.
+//
+// The sub-condition assertions below are not decoration: they are what makes the verdict attributable
+// to condition 1 rather than to the fixture accidentally failing something else.
+TEST(DenseRegionClassify, NonUniformlySampledBlockIsNotRefined) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    const TSDF::DensityCriteria criteria;
+    classifier.Build(context, 0.01f, 32, 1u << 15, criteria);
+
+    std::vector<Vector3f> points, normals;
+    MakeNonUniformlySampledBlock(points, normals);
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    classifier.Classify(batch);
+    batch.Submit();
+
+    const std::vector<TSDF::BlockRecord> blocks = classifier.ReadBlocks();
+    ASSERT_EQ(blocks.size(), 1u) << "both regions must land in the one block being classified";
+    const TSDF::BlockRecord &record = blocks[0];
+
+    const double occupancyRatio = double(record.fineOccupied) / double(record.coarseOccupied);
+    const double coherence =
+            std::sqrt(double(record.sumNormalFrameX) * double(record.sumNormalFrameX) +
+                      double(record.sumNormalFrameY) * double(record.sumNormalFrameY) +
+                      double(record.sumNormalFrameZ) * double(record.sumNormalFrameZ)) /
+            10000.0 / double(record.pointCountFrame);
+
+    // The three conditions that must PASS, so the verdict is attributable to the fourth.
+    EXPECT_LT(coherence, criteria.normalCoherence)
+            << "condition 2 must pass: the block is genuinely curved";
+    EXPECT_GE(double(record.pointCount), criteria.samplesPerFineCell * double(record.fineOccupied))
+            << "condition 3 must pass: the sampling is genuinely redundant";
+    EXPECT_GE(record.fineOccupiedFrame, criteria.minimumFineOccupied)
+            << "condition 4 must pass: the block has genuine extent";
+    // And the one that must FAIL.
+    EXPECT_LT(occupancyRatio, criteria.occupancyRatio)
+            << "condition 1 must fail: the sampling does not cover the block";
+
+    // The heuristic being replaced would refine this block; the point of condition 1 is that it
+    // does not.
+    EXPECT_GE(double(record.pointCount) / double(record.coarseOccupied), 12.0)
+            << "sanity: this is a block the old redundancy heuristic sends to the detail level";
+
+    EXPECT_EQ(classifier.DenseBlockCount(), 0u)
+            << "a block whose sampling does not cover it must not earn a detail level, however "
+               "redundantly its one small feature was sampled";
 }
 
 // The partition must be exhaustive: every input point lands in exactly one level. A point silently
