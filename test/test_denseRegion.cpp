@@ -516,8 +516,10 @@ TEST(DenseRegionPartition, LargeFrameGrowsInsteadOfTruncating) {
 // cell claim (lines 132-142) ever runs, and partition.comp.glsl only routes an already-counted point
 // to a different LIST (base vs. detail) -- it never drops one. So Task 1's Critical 1 (cellCapacity
 // silently drifting past the cell hashes' true allocation) would leave that test, and every other
-// DenseRegion* fixture in this suite, green: none of them fires the grow branch at all -- they all
-// Build with 1<<15, comfortably above every fixture's point count.
+// DenseRegion* fixture in this suite, green: none of them fires the grow branch at all. 11 of the 12
+// pre-existing fixtures Build with 1<<15; the one exception (DistantBlocksDoNotCollide) Builds with
+// 1<<12 but only ever records 8 points, nowhere near even that smaller hint -- checked every Build()
+// call in this file directly rather than assuming they all match.
 //
 // MakePlane's usual 0.0025 spacing is HALF the 0.005 fine-cell width (baseVoxel * 0.5), so 4 points
 // collapse onto every fine cell -- measured 1024 distinct cells for 4096 points in the task-4-report,
