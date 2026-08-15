@@ -450,6 +450,37 @@ namespace {
             }
     }
 
+    // A SPARSE curved glimpse of block (0,0,0): a 7x7 grid at 0.02 m spacing over a strongly curved
+    // paraboloid. The spacing is what matters -- 0.02 is above both the coarse cell (v = 0.01) and
+    // the fine cell (v/2 = 0.005), so every one of the 49 points claims its own fine AND its own
+    // coarse cell, giving an exactly predictable per-frame footprint of 49: under the 64 floor, and
+    // by a margin no float wobble can close.
+    //
+    // Curvature 10 over a 0.06 m half-width puts the normal coherence at ~0.69 (computed, then
+    // measured): the frame reads as genuinely curved, so hasDetail passes. That combination -- a
+    // frame that passes the curvature test while failing the footprint floor -- is the whole point;
+    // see SparseGlimpseCannotLatchOnAnEarlierFramesFootprint.
+    void MakeSparseCurvedGlimpse(std::vector<Vector3f> &points, std::vector<Vector3f> &normals,
+                                 float blockOffset) {
+        points.clear();
+        normals.clear();
+        const float spacing = 0.02f;
+        const float curvature = 10.0f;
+        const int pointsPerSide = 7;
+        const float half = 0.5f * spacing * float(pointsPerSide - 1); // 0.06
+        for (int i = 0; i < pointsPerSide; ++i)
+            for (int j = 0; j < pointsPerSide; ++j) {
+                const float x = float(i) * spacing - half;
+                const float y = float(j) * spacing - half;
+                // Based at z = 0.05 rather than at blockOffset, so the 0.072 m of curvature rise
+                // still lands inside the block alongside the plane this glimpse follows.
+                points.emplace_back(blockOffset + x, blockOffset + y,
+                                    0.05f + curvature * (x * x + y * y));
+                const Vector3f gradient(-2.0f * curvature * x, -2.0f * curvature * y, 1.0f);
+                normals.push_back(gradient.normalized());
+            }
+    }
+
 } // namespace
 
 // Regression for a review finding: hasSurface must read a PER-FRAME occupancy, not the cumulative
@@ -464,8 +495,9 @@ namespace {
 //
 // The per-frame field it reads was fineOccupiedMax when this test was written and is now
 // fineOccupiedFrame (the whole-branch review's C1 fix moved it, so that the extent condition and the
-// curvature condition describe the same frame). Either satisfies this test; the cumulative field is
-// what it rules out.
+// curvature condition describe the same frame). Either satisfies THIS test -- the cumulative field
+// is all it rules out -- so the move itself is pinned separately, by
+// SparseGlimpseCannotLatchOnAnEarlierFramesFootprint.
 TEST(DenseRegionClassify, RevisitedSmallFootprintIsNotRefined) {
     Engine::Core::Context context;
     TSDF::DenseRegionClassifier classifier;
@@ -485,6 +517,88 @@ TEST(DenseRegionClassify, RevisitedSmallFootprintIsNotRefined) {
                 << "frame " << frame
                 << ": revisiting the same small footprint must not accumulate into a false latch";
     }
+}
+
+// The regression latch for hasSurface reading fineOccupiedFrame rather than fineOccupiedMax. That
+// move landed with the C1 fix so the two single-viewpoint conditions would describe the SAME frame,
+// but nothing pinned it: RevisitedSmallFootprintIsNotRefined measures 56 under either field, so
+// reverting the line left every test green. On a branch that mutation-tested every other
+// load-bearing condition this was the one exception, and the boundary it leaves uncovered is the
+// same failure class as C1 by a different route.
+//
+// The uncovered case: a block seen WELL once and then GLIMPSED sparsely with scattered normals.
+// Under fineOccupiedMax the floor is satisfied by the first frame's footprint while the curvature
+// test is satisfied by the second frame's normals, so the block latches on evidence no single
+// viewpoint ever produced -- a flat wall earning a detail level off one noisy glimpse, which is
+// exactly what this component exists to prevent.
+//
+// Frame 1 is that dense flat plane: a big footprint, but coherence 1.0, so hasDetail vetoes and
+// nothing latches. Frame 2 is the sparse curved glimpse: only 49 fine cells this frame -- under the
+// 64 floor -- while frame 1's accumulated statistics keep the two cumulative conditions passing.
+TEST(DenseRegionClassify, SparseGlimpseCannotLatchOnAnEarlierFramesFootprint) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    const TSDF::DensityCriteria criteria;
+    classifier.Build(context, 0.01f, 32, 1u << 15, criteria);
+
+    const float blockOffset = 0.01f * 32.0f * 0.5f; // centre of block (0,0,0)
+
+    // Frame 1: the block is seen well. Big footprint, no curvature.
+    std::vector<Vector3f> densePlane, densePlaneNormals;
+    MakePlane(densePlane, densePlaneNormals, 0.0025f, 64, blockOffset);
+    {
+        Engine::Compute::CommandBatch batch(context);
+        classifier.Record(densePlane, densePlaneNormals, batch);
+        classifier.Classify(batch);
+        batch.Submit();
+    }
+    ASSERT_EQ(classifier.DenseBlockCount(), 0u)
+            << "sanity: a dense flat plane is vetoed by coherence, so nothing is latched yet";
+    const std::vector<TSDF::BlockRecord> afterFrame1 = classifier.ReadBlocks();
+    ASSERT_EQ(afterFrame1.size(), 1u);
+    ASSERT_GE(afterFrame1[0].fineOccupiedMax, criteria.minimumFineOccupied)
+            << "sanity: frame 1 must leave a remembered footprint ABOVE the floor -- that memory is "
+               "the thing this test proves cannot be borrowed";
+
+    // Frame 2: the same block, glimpsed sparsely, with normals that do read as curvature.
+    std::vector<Vector3f> glimpse, glimpseNormals;
+    MakeSparseCurvedGlimpse(glimpse, glimpseNormals, blockOffset);
+    {
+        Engine::Compute::CommandBatch batch(context);
+        classifier.Record(glimpse, glimpseNormals, batch);
+        classifier.Classify(batch);
+        batch.Submit();
+    }
+
+    const std::vector<TSDF::BlockRecord> blocks = classifier.ReadBlocks();
+    ASSERT_EQ(blocks.size(), 1u) << "both frames must land in the one block being classified";
+    const TSDF::BlockRecord &record = blocks[0];
+
+    const double occupancyRatio = double(record.fineOccupied) / double(record.coarseOccupied);
+    const double coherence =
+            std::sqrt(double(record.sumNormalFrameX) * double(record.sumNormalFrameX) +
+                      double(record.sumNormalFrameY) * double(record.sumNormalFrameY) +
+                      double(record.sumNormalFrameZ) * double(record.sumNormalFrameZ)) /
+            10000.0 / double(record.pointCountFrame);
+
+    // The three conditions that must PASS on frame 2, so the verdict is attributable to the fourth.
+    EXPECT_GE(occupancyRatio, criteria.occupancyRatio)
+            << "condition 1 must pass: frame 1's accumulated coverage still carries the ratio";
+    EXPECT_LT(coherence, criteria.normalCoherence)
+            << "condition 2 must pass: this frame's normals do read as curvature";
+    EXPECT_GE(double(record.pointCount), criteria.samplesPerFineCell * double(record.fineOccupied))
+            << "condition 3 must pass: the cumulative sampling is still redundant";
+    // And the one that must FAIL -- but only when it is read per frame.
+    EXPECT_LT(record.fineOccupiedFrame, criteria.minimumFineOccupied)
+            << "condition 4 must fail: THIS frame's footprint is under the floor";
+    EXPECT_GE(record.fineOccupiedMax, criteria.minimumFineOccupied)
+            << "and must fail only per-frame: the remembered maximum is still well over the floor, "
+               "which is what a fineOccupiedMax reading would borrow";
+
+    EXPECT_EQ(classifier.DenseBlockCount(), 0u)
+            << "a block must earn its detail level from ONE viewpoint that saw both the extent and "
+               "the curvature -- not from extent remembered off an earlier frame and curvature "
+               "measured on this one";
 }
 
 // Regression for the branch's one critical review finding: the normal sum used to accumulate across
