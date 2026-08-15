@@ -509,3 +509,54 @@ TEST(DenseRegionPartition, LargeFrameGrowsInsteadOfTruncating) {
     // -- through two independent buffer groups and kernels -- both fail immediately the moment growth
     // does not happen. Confirmed by mutation, not just by this argument: see task-4-report.md.
 }
+
+// LargeFrameGrowsInsteadOfTruncating (above) guards the point/normal/blockIndex/base/detail buffer
+// group, but is structurally blind to the cell hashes: accumulate.comp.glsl's pointCount/blockIndex
+// writes (lines 124-130) happen unconditionally once a block slot is found, BEFORE the fine/coarse
+// cell claim (lines 132-142) ever runs, and partition.comp.glsl only routes an already-counted point
+// to a different LIST (base vs. detail) -- it never drops one. So Task 1's Critical 1 (cellCapacity
+// silently drifting past the cell hashes' true allocation) would leave that test, and every other
+// DenseRegion* fixture in this suite, green: none of them fires the grow branch at all -- they all
+// Build with 1<<15, comfortably above every fixture's point count.
+//
+// MakePlane's usual 0.0025 spacing is HALF the 0.005 fine-cell width (baseVoxel * 0.5), so 4 points
+// collapse onto every fine cell -- measured 1024 distinct cells for 4096 points in the task-4-report,
+// comfortably under capacity whether or not the cell hashes actually grow, which is exactly why that
+// spacing cannot exercise this path. 0.0075 is spaced ABOVE the fine-cell width instead: the step
+// exceeds the cell width, so floor() strictly increases point-to-point and every point claims its own
+// distinct fine cell -- measured exactly 1:1 (see task-4-report.md, fix round). This fixture is sized
+// at 128x128 = 16384 points, not the smaller 64x64 = 4096 first tried: the review's own 4096-point
+// prediction turned out to be a WEAK mutation target (measured, see report) -- the un-grown cell hash
+// is device-local (VMA/MoltenVK) memory whose *logical* size the shader indexes past under the
+// drift bug, but small over-reads/writes land in real, mapped allocator slack rather than faulting or
+// visibly colliding, so a 2x oversubscription (4096 keys into a capacity sized for 2048, see below)
+// produced zero observable deficit. 8x oversubscription (this fixture) reliably exhausts that slack --
+// measured a several-hundred-key deficit under the mutation described below (two runs: 15826/16384
+// and 15737/16384 -- the exact shortfall varies slightly run to run, since it depends on GPU
+// thread-scheduling order among the racing atomicCompSwap probes once the table is genuinely this
+// oversubscribed), with no crash either time. See task-4-report.md for both full runs.
+//
+// The comparison is against the UN-GROWN capacity, which is NOT Task 1's FIX 1 number (3072): that
+// figure assumed growPointBuffers' own first call (from Build()) still resizes the cell hashes before
+// the growth path gets frozen. The mutation below removes that resize from EVERY call, including the
+// first, so the cell hashes never move past Build()'s own raw pre-allocation: kCellCapacityFactor(2.0)
+// x 1024 = 2048 (Build(..., 1024u)'s local `cellCapacity`, DenseRegionClassifier.cpp:63-64) -- traced,
+// and consistent with the measured 4096-point non-deficit above (2x over 2048 still fit in slack).
+TEST(DenseRegionPartition, LargeFrameGrowsCellHashesNotJustPointBuffers) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, /*maxPointPerFrame=*/1024u);
+
+    std::vector<Vector3f> points, normals;
+    MakePlane(points, normals, 0.0075f, 128); // 16384 points, each claiming its own distinct fine cell
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    batch.Submit();
+
+    uint32_t totalFineOccupied = 0;
+    for (const auto &block : classifier.ReadBlocks()) totalFineOccupied += block.fineOccupied;
+    EXPECT_EQ(totalFineOccupied, points.size())
+            << "a cell hash that failed to grow past the build-time hint's capacity would saturate "
+               "and silently under-report occupancy -- exactly Task 1's Critical 1, reproduced";
+}
