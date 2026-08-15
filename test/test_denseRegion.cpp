@@ -263,3 +263,76 @@ TEST(DenseRegionClassify, RevisitedSmallFootprintIsNotRefined) {
                 << ": revisiting the same small footprint must not accumulate into a false latch";
     }
 }
+
+// The partition must be exhaustive: every input point lands in exactly one level. A point silently
+// dropped here vanishes from the reconstruction with no counter to show it.
+TEST(DenseRegionPartition, EveryPointLandsInExactlyOneLevel) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, 1u << 15);
+
+    std::vector<Vector3f> points, normals;
+    const float radius = 0.05f;
+    for (int a = 0; a < 180; ++a)
+        for (int b = 0; b < 90; ++b) {
+            const float theta = float(a) * float(M_PI) / 90.0f;
+            const float phi = float(b) * float(M_PI) / 180.0f;
+            const Vector3f direction(std::sin(phi) * std::cos(theta),
+                                     std::sin(phi) * std::sin(theta), std::cos(phi));
+            points.push_back(direction * radius);
+            normals.push_back(direction);
+        }
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    classifier.Classify(batch);
+    classifier.Partition(batch);
+    batch.Submit();
+
+    std::vector<uint32_t> base, detail;
+    classifier.ReadPartition(base, detail);
+    EXPECT_EQ(base.size() + detail.size(), points.size());
+    EXPECT_GT(detail.size(), 0u) << "a curved dense surface must send points to the detail level";
+}
+
+// The verdict is a latch: a block that became dense stays dense on later frames.
+TEST(DenseRegionPartition, DenseVerdictDoesNotRevert) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, 1u << 15);
+
+    std::vector<Vector3f> dense, denseNormals;
+    const float radius = 0.05f;
+    for (int a = 0; a < 180; ++a)
+        for (int b = 0; b < 90; ++b) {
+            const float theta = float(a) * float(M_PI) / 90.0f;
+            const float phi = float(b) * float(M_PI) / 180.0f;
+            const Vector3f direction(std::sin(phi) * std::cos(theta),
+                                     std::sin(phi) * std::sin(theta), std::cos(phi));
+            dense.push_back(direction * radius);
+            denseNormals.push_back(direction);
+        }
+
+    {
+        Engine::Compute::CommandBatch batch(context);
+        classifier.Record(dense, denseNormals, batch);
+        classifier.Classify(batch);
+        batch.Submit();
+    }
+    const uint32_t afterDenseFrame = classifier.DenseBlockCount();
+    ASSERT_GT(afterDenseFrame, 0u);
+
+    // A sparse second frame over the same region would fail the criteria on its own.
+    std::vector<Vector3f> sparse, sparseNormals;
+    for (size_t i = 0; i < dense.size(); i += 40) {
+        sparse.push_back(dense[i]);
+        sparseNormals.push_back(denseNormals[i]);
+    }
+    {
+        Engine::Compute::CommandBatch batch(context);
+        classifier.Record(sparse, sparseNormals, batch);
+        classifier.Classify(batch);
+        batch.Submit();
+    }
+    EXPECT_GE(classifier.DenseBlockCount(), afterDenseFrame) << "the verdict must not revert";
+}

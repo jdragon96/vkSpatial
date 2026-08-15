@@ -63,6 +63,18 @@ namespace TSDF {
         // Applies the criteria to every block record. Latched: a dense block stays dense.
         void Classify(Engine::Compute::CommandBatch &batch);
 
+        // Records the partition pass into `batch` without submitting. Splits the most recent
+        // Record()'d frame's points into a base-level index list and a detail-level index list,
+        // using the verdicts Classify() wrote to m_denseFlags. A point whose block record could not
+        // be created (HASH_INSERT_FAILED, i.e. EMPTY_KEY, in m_blockIndex) still goes to the base
+        // level -- every point must land somewhere, so the two output counts always total the
+        // input count.
+        void Partition(Engine::Compute::CommandBatch &batch);
+
+        // Reads back the two index lists Partition() produced, sized to exactly the counts the GPU
+        // wrote -- never the buffers' full capacity.
+        void ReadPartition(std::vector<uint32_t> &base, std::vector<uint32_t> &detail) const;
+
         uint32_t DenseBlockCount() const;
 
         // Slots the detail table needs across every dense block, from per-frame maximum occupancy
@@ -87,6 +99,7 @@ namespace TSDF {
         float m_baseVoxel = 0.01f;
         int m_blockVoxels = 32;
         uint32_t m_maxPointPerFrame = 0;
+        uint32_t m_recordedPointCount = 0; // points passed to the most recent Record() call
         DensityCriteria m_criteria;
 
         std::unique_ptr<Engine::Core::Buffer> m_pointBuffer;
@@ -99,10 +112,14 @@ namespace TSDF {
         std::unique_ptr<Engine::Core::Buffer> m_coarseCells;  // per-frame key-only hash
         std::unique_ptr<Engine::Core::Buffer> m_denseFlags;   // per-record latch, parallel to m_blockRecords
         std::unique_ptr<Engine::Core::Buffer> m_totals;       // [0] denseBlockCount, [1] detailSlots
+        std::unique_ptr<Engine::Core::Buffer> m_baseIndex;      // per frame -- points routed to the base level
+        std::unique_ptr<Engine::Core::Buffer> m_detailIndex;    // per frame -- points routed to the detail level
+        std::unique_ptr<Engine::Core::Buffer> m_partitionCount; // [0] baseCount, [1] detailCount
 
         std::unique_ptr<Engine::Core::ComputePipeline> kernel_clearCells;
         std::unique_ptr<Engine::Core::ComputePipeline> kernel_accumulate;
         std::unique_ptr<Engine::Core::ComputePipeline> kernel_classify;
+        std::unique_ptr<Engine::Core::ComputePipeline> kernel_partition;
     };
 
 } // namespace TSDF

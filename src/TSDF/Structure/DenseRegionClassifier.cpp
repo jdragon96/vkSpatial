@@ -33,6 +33,10 @@ namespace TSDF {
             float samplesPerFineCell;
             uint32_t minimumFineOccupied;
         };
+
+        struct PartitionPC {
+            uint32_t numPoints;
+        };
     } // namespace
 
     void DenseRegionClassifier::Build(Engine::Core::Context &context, float baseVoxel,
@@ -88,6 +92,19 @@ namespace TSDF {
                 .Bind(1, *m_denseFlags)
                 .Bind(2, *m_totals);
 
+        m_partitionCount = std::make_unique<Engine::Core::Buffer>(context);
+        m_partitionCount->AllocateHostVisibleReadback(2u * sizeof(uint32_t));
+
+        // m_baseIndex/m_detailIndex were already (re)created by the growPointBuffers() call above,
+        // so they and m_blockIndex are all valid to bind here.
+        kernel_partition = std::make_unique<Engine::Core::ComputePipeline>(context);
+        kernel_partition->Build("TSDF/Structure/DenseRegionClassifier.partition.comp.glsl")
+                .Bind(0, *m_blockIndex)
+                .Bind(1, *m_denseFlags)
+                .Bind(2, *m_baseIndex)
+                .Bind(3, *m_detailIndex)
+                .Bind(4, *m_partitionCount);
+
         Reset();
     }
 
@@ -102,6 +119,15 @@ namespace TSDF {
         m_normalBuffer->AllocateHostVisible(grown * 3u * sizeof(float));
         m_blockIndex = std::make_unique<Engine::Core::Buffer>(*m_context);
         m_blockIndex->Allocate(grown * sizeof(uint32_t));
+
+        // The partition output lists are sized 1:1 with the point buffers -- a frame can never
+        // route more points into base+detail combined than it has points -- so, like m_blockIndex,
+        // they must be recreated (not just resized) here and rebound below whenever this function
+        // actually grows. Host-visible readback because ReadPartition() copies them back to the CPU.
+        m_baseIndex = std::make_unique<Engine::Core::Buffer>(*m_context);
+        m_detailIndex = std::make_unique<Engine::Core::Buffer>(*m_context);
+        m_baseIndex->AllocateHostVisibleReadback(grown * sizeof(uint32_t));
+        m_detailIndex->AllocateHostVisibleReadback(grown * sizeof(uint32_t));
 
         // The cell hashes are sized off maxPointPerFrame too (a frame can never occupy more cells
         // than it has points), so they must grow in lockstep with it, here, in the one place
@@ -119,6 +145,10 @@ namespace TSDF {
         if (kernel_accumulate)
             kernel_accumulate->Bind(4, *m_blockIndex).Bind(5, *m_fineCells).Bind(6, *m_coarseCells);
         if (kernel_clearCells) kernel_clearCells->Bind(0, *m_fineCells).Bind(1, *m_coarseCells);
+        // m_blockIndex was just recreated above too, so kernel_partition's binding to it (as well
+        // as to the two output lists) needs refreshing along with everything else.
+        if (kernel_partition)
+            kernel_partition->Bind(0, *m_blockIndex).Bind(2, *m_baseIndex).Bind(3, *m_detailIndex);
     }
 
     void DenseRegionClassifier::Reset() {
@@ -149,6 +179,9 @@ namespace TSDF {
                 std::min(uint32_t(points.size()), uint32_t(normals.size()));
         if (n == 0) return;
         growPointBuffers(n);
+        // Partition() has no points parameter of its own -- it repartitions THIS frame, so it reads
+        // the count back from here rather than the caller passing it twice.
+        m_recordedPointCount = n;
 
         std::memcpy(m_pointBuffer->MappedPtr(), points.data(), n * 3u * sizeof(float));
         std::memcpy(m_normalBuffer->MappedPtr(), normals.data(), n * 3u * sizeof(float));
@@ -195,6 +228,47 @@ namespace TSDF {
                                          m_criteria.normalCoherence, m_criteria.samplesPerFineCell,
                                          m_criteria.minimumFineOccupied});
         batch.DispatchElements(*kernel_classify, kBlockCapacity);
+    }
+
+    void DenseRegionClassifier::Partition(Engine::Compute::CommandBatch &batch) {
+        if (!m_context) return;
+        // The two counts are this frame's partition sizes, recomputed from scratch every call --
+        // not accumulated across calls -- matching how Classify() resets m_totals. Safe to reset
+        // unconditionally on the host: CommandBatch already forbids dispatching the same
+        // ComputePipeline twice in one batch, so Partition() can never run twice against a
+        // not-yet-submitted dispatch of its own kernel_partition.
+        auto *counts = static_cast<uint32_t *>(m_partitionCount->MappedPtr());
+        counts[0] = 0;
+        counts[1] = 0;
+        m_partitionCount->MakeVisibleToGPU(2u * sizeof(uint32_t));
+
+        // Orders the partition dispatch after Classify()'s writes to m_denseFlags (and, further
+        // back in the same command buffer, Record()'s writes to m_blockIndex): Vulkan gives no
+        // ordering guarantee between two dispatches recorded back to back.
+        batch.Barrier();
+
+        kernel_partition->Args(PartitionPC{m_recordedPointCount});
+        batch.DispatchElements(*kernel_partition, m_recordedPointCount);
+    }
+
+    void DenseRegionClassifier::ReadPartition(std::vector<uint32_t> &base,
+                                              std::vector<uint32_t> &detail) const {
+        base.clear();
+        detail.clear();
+        if (!m_partitionCount) return;
+
+        m_partitionCount->MakeVisibleToCPU(2u * sizeof(uint32_t));
+        const auto *counts = static_cast<const uint32_t *>(m_partitionCount->MappedPtr());
+        const uint32_t baseCount = counts[0];
+        const uint32_t detailCount = counts[1];
+
+        // Copy back only the counts the GPU actually wrote, never the buffers' full capacity.
+        m_baseIndex->MakeVisibleToCPU(baseCount * sizeof(uint32_t));
+        m_detailIndex->MakeVisibleToCPU(detailCount * sizeof(uint32_t));
+        const auto *baseData = static_cast<const uint32_t *>(m_baseIndex->MappedPtr());
+        const auto *detailData = static_cast<const uint32_t *>(m_detailIndex->MappedPtr());
+        base.assign(baseData, baseData + baseCount);
+        detail.assign(detailData, detailData + detailCount);
     }
 
     uint32_t DenseRegionClassifier::DenseBlockCount() const {
