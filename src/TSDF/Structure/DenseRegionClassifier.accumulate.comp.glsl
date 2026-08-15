@@ -8,22 +8,10 @@
 /// instead would let collisions merge distinct cells, and that undercount would flow straight into
 /// the occupancy ratio the whole decision rests on.
 
-#include "voxel_common.glsl" // EMPTY_KEY, MAX_PROBE, wangHash
+#include "voxel_common.glsl"                     // EMPTY_KEY, MAX_PROBE, wangHash
+#include "DenseRegionClassifier.common.glsl"     // BlockRecord, NORMAL_FIXED_POINT_SCALE
 
 layout(local_size_x = 256) in;
-
-struct BlockRecord
-{
-	uint blockKey;
-	uint pointCount;
-	uint coarseOccupied;
-	uint fineOccupied;
-	uint fineOccupiedFrame;
-	uint fineOccupiedMax;
-	int  sumNormalX;
-	int  sumNormalY;
-	int  sumNormalZ;
-};
 
 layout(std430, set = 0, binding = 0) readonly buffer Points  { float g_points[]; };
 layout(std430, set = 0, binding = 1) readonly buffer Normals { float g_normals[]; };
@@ -44,8 +32,6 @@ layout(push_constant) uniform PC
 	float g_baseVoxel;
 	int   g_blockVoxels;
 };
-
-const int NORMAL_SCALE = 10000;
 
 /// Key-only open-addressed inserts. Each returns true when THIS call claimed the slot, which is
 /// what makes "distinct cells this frame" countable without a second pass. Two near-identical
@@ -125,9 +111,9 @@ void main()
 
 	// 3. Point and normal.
 	atomicAdd(g_blocks[blockSlot].pointCount, 1u);
-	atomicAdd(g_blocks[blockSlot].sumNormalX, int(normal.x * float(NORMAL_SCALE)));
-	atomicAdd(g_blocks[blockSlot].sumNormalY, int(normal.y * float(NORMAL_SCALE)));
-	atomicAdd(g_blocks[blockSlot].sumNormalZ, int(normal.z * float(NORMAL_SCALE)));
+	atomicAdd(g_blocks[blockSlot].sumNormalX, int(normal.x * NORMAL_FIXED_POINT_SCALE));
+	atomicAdd(g_blocks[blockSlot].sumNormalY, int(normal.y * NORMAL_FIXED_POINT_SCALE));
+	atomicAdd(g_blocks[blockSlot].sumNormalZ, int(normal.z * NORMAL_FIXED_POINT_SCALE));
 
 	// 4. Occupancy, counted once per cell per frame.
 	uint fineKey   = (blockSlot << 18) | (uint(fineCell.z) << 12)

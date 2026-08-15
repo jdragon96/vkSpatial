@@ -4,22 +4,10 @@
 /// frames would mean remembering every distinct fine cell ever seen -- the same order of memory as
 /// the detail TSDF this classifier is deciding about.
 
-#include "voxel_common.glsl" // EMPTY_KEY
+#include "voxel_common.glsl"                     // EMPTY_KEY
+#include "DenseRegionClassifier.common.glsl"     // BlockRecord
 
 layout(local_size_x = 256) in;
-
-struct BlockRecord
-{
-	uint blockKey;
-	uint pointCount;
-	uint coarseOccupied;
-	uint fineOccupied;
-	uint fineOccupiedFrame;
-	uint fineOccupiedMax;
-	int  sumNormalX;
-	int  sumNormalY;
-	int  sumNormalZ;
-};
 
 layout(std430, set = 0, binding = 0) buffer FineCells { uint g_fineCells[]; };
 layout(std430, set = 0, binding = 1) buffer CoarseCells { uint g_coarseCells[]; };

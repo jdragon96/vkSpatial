@@ -4,22 +4,10 @@
 /// verdict: a block that has become dense never reverts, because a level that flips mid-scan
 /// leaves a seam in the reconstruction.
 
-#include "voxel_common.glsl" // EMPTY_KEY
+#include "voxel_common.glsl"                     // EMPTY_KEY
+#include "DenseRegionClassifier.common.glsl"     // BlockRecord, NORMAL_FIXED_POINT_SCALE
 
 layout(local_size_x = 256) in;
-
-struct BlockRecord
-{
-	uint blockKey;
-	uint pointCount;
-	uint coarseOccupied;
-	uint fineOccupied;
-	uint fineOccupiedFrame;
-	uint fineOccupiedMax;
-	int  sumNormalX;
-	int  sumNormalY;
-	int  sumNormalZ;
-};
 
 layout(std430, set = 0, binding = 0) buffer Blocks { BlockRecord g_blocks[]; };
 layout(std430, set = 0, binding = 1) buffer Dense  { uint g_dense[]; };
@@ -33,8 +21,6 @@ layout(push_constant) uniform PC
 	float g_samplesPerFineCell;
 	uint  g_minimumFineOccupied;
 };
-
-const float NORMAL_SCALE = 10000.0;
 
 void main()
 {
@@ -60,7 +46,7 @@ void main()
 	if (coarseOccupied < 1.0 || pointCount < 1.0) return;
 
 	vec3 sumNormal = vec3(float(g_blocks[i].sumNormalX), float(g_blocks[i].sumNormalY),
-	                      float(g_blocks[i].sumNormalZ)) / NORMAL_SCALE;
+	                      float(g_blocks[i].sumNormalZ)) / NORMAL_FIXED_POINT_SCALE;
 
 	// 1. Spacing resolves the fine grid: occupiedFine/occupiedCoarse close to its ceiling of 4.
 	bool resolvesFineGrid = fineOccupied >= g_occupancyRatio * coarseOccupied;

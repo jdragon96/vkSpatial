@@ -28,8 +28,11 @@ namespace TSDF {
         uint32_t minimumFineOccupied = 64u;
     };
 
-    // Per-block statistics, accumulated across frames. Mirrors the GPU-side layout exactly:
-    // 9 tightly packed 4-byte scalars.
+    // Per-block statistics, accumulated across frames. Mirrors the GPU-side layout exactly: 9
+    // tightly packed 4-byte scalars. The GPU side has ONE definition, in
+    // DenseRegionClassifier.common.glsl, shared by all three passes; this struct is its only other
+    // copy, so a field added there must be added here in the same position and the static_assert
+    // below is what catches a size drift.
     struct BlockRecord {
         uint32_t blockKey;        // packed block coordinate; 0xFFFFFFFF = empty slot
         uint32_t pointCount;      // cumulative
