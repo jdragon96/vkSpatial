@@ -109,11 +109,14 @@ void main()
 	}
 	g_blockIndex[i] = blockSlot;
 
-	// 3. Point and normal.
+	// 3. Point and normal. The point count is kept both ways -- cumulative for the two ratio
+	//    conditions, per-frame for the normal coherence, which needs the same frame's denominator
+	//    as its numerator. `normal` is required to be unit length; see Record()'s contract.
 	atomicAdd(g_blocks[blockSlot].pointCount, 1u);
-	atomicAdd(g_blocks[blockSlot].sumNormalX, int(normal.x * NORMAL_FIXED_POINT_SCALE));
-	atomicAdd(g_blocks[blockSlot].sumNormalY, int(normal.y * NORMAL_FIXED_POINT_SCALE));
-	atomicAdd(g_blocks[blockSlot].sumNormalZ, int(normal.z * NORMAL_FIXED_POINT_SCALE));
+	atomicAdd(g_blocks[blockSlot].pointCountFrame, 1u);
+	atomicAdd(g_blocks[blockSlot].sumNormalFrameX, int(normal.x * NORMAL_FIXED_POINT_SCALE));
+	atomicAdd(g_blocks[blockSlot].sumNormalFrameY, int(normal.y * NORMAL_FIXED_POINT_SCALE));
+	atomicAdd(g_blocks[blockSlot].sumNormalFrameZ, int(normal.z * NORMAL_FIXED_POINT_SCALE));
 
 	// 4. Occupancy, counted once per cell per frame.
 	uint fineKey   = (blockSlot << 18) | (uint(fineCell.z) << 12)

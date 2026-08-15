@@ -28,23 +28,30 @@ namespace TSDF {
         uint32_t minimumFineOccupied = 64u;
     };
 
-    // Per-block statistics, accumulated across frames. Mirrors the GPU-side layout exactly: 9
-    // tightly packed 4-byte scalars. The GPU side has ONE definition, in
-    // DenseRegionClassifier.common.glsl, shared by all three passes; this struct is its only other
-    // copy, so a field added there must be added here in the same position and the static_assert
-    // below is what catches a size drift.
+    // Per-block statistics. Mirrors the GPU-side layout exactly: 10 tightly packed 4-byte scalars.
+    // The GPU side has ONE definition, in DenseRegionClassifier.common.glsl, shared by all three
+    // passes; this struct is its only other copy, so a field added there must be added here in the
+    // same position and the static_assert below is what catches a size drift.
+    //
+    // The "Frame" fields hold THIS frame only and are zeroed by the clear pass every frame. The
+    // normal sum in particular is per-frame ON PURPOSE: summed cumulatively it overflows int32 on
+    // exactly the dense flat wall its veto exists for, and averaging normals across viewpoints
+    // mixes differently-misregistered estimates rather than sharpening one. The remaining bound is
+    // one frame, one block: 2^31 / 10000 = 214,748 points before int32 wraps -- about 3.5x the
+    // worst real scan density measured for a 0.32 m block, so it carries no counter.
     struct BlockRecord {
-        uint32_t blockKey;        // packed block coordinate; 0xFFFFFFFF = empty slot
-        uint32_t pointCount;      // cumulative
-        uint32_t coarseOccupied;  // cumulative sum of per-frame counts
+        uint32_t blockKey;          // packed block coordinate; 0xFFFFFFFF = empty slot
+        uint32_t pointCount;        // cumulative
+        uint32_t pointCountFrame;   // THIS frame -- denominator of the normal coherence
+        uint32_t coarseOccupied;    // cumulative sum of per-frame counts
         uint32_t fineOccupied;      // cumulative sum of per-frame counts
-        uint32_t fineOccupiedFrame; // THIS frame's count; zeroed by the clear pass each frame
+        uint32_t fineOccupiedFrame; // THIS frame -- the absolute floor, and the sizing input
         uint32_t fineOccupiedMax;   // max over frames -- the detail table sizing input
-        int32_t sumNormalX;         // fixed point, x10000
-        int32_t sumNormalY;
-        int32_t sumNormalZ;
+        int32_t sumNormalFrameX;    // THIS frame, fixed point x10000
+        int32_t sumNormalFrameY;
+        int32_t sumNormalFrameZ;
     };
-    static_assert(sizeof(BlockRecord) == 36, "BlockRecord must be 9 packed 4-byte scalars");
+    static_assert(sizeof(BlockRecord) == 40, "BlockRecord must be 10 packed 4-byte scalars");
 
     // Decides which blocks earn a half-voxel detail level, and splits a frame's points into the
     // two levels. Owns only its own buffers; it knows nothing about any memory strategy, so it can

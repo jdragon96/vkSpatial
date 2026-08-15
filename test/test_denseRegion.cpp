@@ -264,6 +264,64 @@ TEST(DenseRegionClassify, RevisitedSmallFootprintIsNotRefined) {
     }
 }
 
+// Regression for the branch's one critical review finding: the normal sum used to accumulate across
+// frames in an int32, and COHERENT normals -- the flat wall -- maximise it, so the flat wall is what
+// overflows first. Wrap-around drives |sumNormal| / pointCount down through normalCoherence,
+// hasDetail flips true, the other three conditions already hold on a dense flat plane, and the block
+// latches dense PERMANENTLY. The one condition that exists to keep flat walls out inverts into the
+// condition that lets them in.
+//
+// Arithmetic for this exact fixture (4096 points, normal (0,0,1), x10000 fixed point, so 4.096e7 per
+// frame): int32 saturates partway through frame 53 (2.147e9 / 4.096e7 = 52.4), giving coherence
+// 0.9785 -- still vetoed -- and by frame 56 the wrapped sum reads -2,001,207,296, i.e. coherence
+// 0.8725 < 0.9. At that point the other three all hold: ratio 57344/14336 = 4 >= 3.2; pointCount
+// 229376 >= 3 x 57344; fineOccupied 1024 >= 64. Confirmed RED at exactly frame 56 before the fix.
+// 60 frames, not 56, so the assertion has margin past the measured flip.
+//
+// On real data the wrap is far sooner: a 0.32 m block face at ~600k points/m^2 takes ~61k
+// points/frame, so the first wrap lands in ~4 frames. Two tests already replayed frames; neither
+// replayed more than 4, which is why this shipped through four task reviews.
+//
+// The fix makes the normal sum per-frame, matching what spec section 5 already decided for the
+// occupancy half: single-viewpoint measurement, because averaging normals ACROSS viewpoints does not
+// give a more confident estimate, it gives a mixture of differently-misregistered ones.
+TEST(DenseRegionClassify, ReplayedFlatPlaneNeverOverflowsIntoADenseLatch) {
+    Engine::Core::Context context;
+    const float baseVoxel = 0.01f;
+    const int blockVoxels = 32;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, baseVoxel, blockVoxels, 1u << 15);
+
+    const float blockOffset = baseVoxel * float(blockVoxels) * 0.5f; // centre of block (0,0,0)
+    std::vector<Vector3f> points, normals;
+    MakePlane(points, normals, /*spacing=*/0.0025f, /*count=*/64, blockOffset); // 4096, one block
+
+    for (int frame = 0; frame < 60; ++frame) {
+        Engine::Compute::CommandBatch batch(context);
+        classifier.Record(points, normals, batch);
+        classifier.Classify(batch);
+        batch.Submit();
+
+        ASSERT_EQ(classifier.DenseBlockCount(), 0u)
+                << "frame " << frame
+                << ": a flat wall re-scanned from one viewpoint must stay vetoed by normal "
+                   "coherence -- an overflowing accumulator inverts that veto and the latch makes "
+                   "it permanent";
+    }
+
+    // The veto has to still be the NORMAL one, not an accident of the fixture drifting sparse: this
+    // is the same plane every frame, so its coherence must read ~1 the whole way.
+    const std::vector<TSDF::BlockRecord> blocks = classifier.ReadBlocks();
+    ASSERT_EQ(blocks.size(), 1u);
+    const double coherence =
+            std::sqrt(double(blocks[0].sumNormalFrameX) * double(blocks[0].sumNormalFrameX) +
+                      double(blocks[0].sumNormalFrameY) * double(blocks[0].sumNormalFrameY) +
+                      double(blocks[0].sumNormalFrameZ) * double(blocks[0].sumNormalFrameZ)) /
+            10000.0 / double(blocks[0].pointCountFrame);
+    EXPECT_NEAR(coherence, 1.0, 0.01)
+            << "the per-frame normal sum must still read a coherent plane after 60 replays";
+}
+
 // The partition must be exhaustive: every input point lands in exactly one level. A point silently
 // dropped here vanishes from the reconstruction with no counter to show it.
 TEST(DenseRegionPartition, EveryPointLandsInExactlyOneLevel) {
