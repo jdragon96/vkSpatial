@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 using Eigen::Vector3f;
@@ -59,6 +60,12 @@ TEST(DenseRegionAccumulate, CountsPointsAndOccupancyPerBlock) {
             << "a finer grid can never have fewer occupied cells";
     EXPECT_EQ(classifier.BlockInsertFailureCount(), 0u)
             << "a healthy run must not report a full block table";
+    // The occupancy numbers just asserted are only meaningful if every cell claim actually landed.
+    // A probe-exhausted claim returns the SAME false as "already counted this frame", so without
+    // this counter an under-reported fineOccupied/coarseOccupied is indistinguishable from a
+    // correctly deduplicated one -- and both flow straight into the ratio the verdict rests on.
+    EXPECT_EQ(classifier.CellInsertFailureCount(), 0u)
+            << "a healthy run must not exhaust a cell hash probe chain";
 }
 
 // The ratio is the whole spacing estimate: occupiedFine/occupiedCoarse = min(4, (v/s)^2).
@@ -82,8 +89,95 @@ TEST(DenseRegionAccumulate, OccupancyRatioTracksSampleSpacing) {
         return double(blocks[0].fineOccupied) / double(blocks[0].coarseOccupied);
     };
 
+    // Spec section 8 asks for all four spacings, and the two that were dropped are the informative
+    // ones: v/2 is the CEILING boundary (the last spacing that should still read 4, because a fine
+    // cell is v/2 wide, so one sample per fine cell is the most the ratio can see) and v is the
+    // first spacing that should read 1 (one sample per COARSE cell, so both grids report the same
+    // count). Point counts are chosen to keep each patch's footprint inside the one block while
+    // spanning a comparable area.
     EXPECT_NEAR(ratioAt(baseVoxel * 0.25f, 64), 4.0, 0.6) << "s = v/4 resolves the fine grid";
+    EXPECT_NEAR(ratioAt(baseVoxel * 0.5f, 32), 4.0, 0.6) << "s = v/2 is the last spacing that does";
+    EXPECT_NEAR(ratioAt(baseVoxel * 1.0f, 16), 1.0, 0.3) << "s = v is the first that does not";
     EXPECT_NEAR(ratioAt(baseVoxel * 2.0f, 8), 1.0, 0.3) << "s = 2v resolves neither grid";
+}
+
+// blockVoxels is a public parameter but only [1, 32] is representable: the fine cell key packs 6
+// bits per axis and reserves bits 18+ for the block slot, so at blockVoxels = 64 the fine cell index
+// runs to 127, overflows its field, and aliases distinct cells onto one key -- ACROSS blocks, since
+// the overflow runs into the slot field. Occupancy then under-reports and verdicts change with no
+// symptom whatsoever. Rejected at the door rather than clamped, because there is nothing to clamp to.
+TEST(DenseRegionAccumulate, BuildRejectsABlockWiderThanTheCellKey) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    EXPECT_THROW(classifier.Build(context, 0.01f, 64, 1u << 12), std::runtime_error);
+    EXPECT_THROW(classifier.Build(context, 0.01f, 0, 1u << 12), std::runtime_error);
+    EXPECT_NO_THROW(classifier.Build(context, 0.01f, 32, 1u << 12)) << "32 is the supported maximum";
+}
+
+// Record() used to fall back to min(points.size(), normals.size()) on a mismatch, which is a silent
+// truncation of the caller's frame: the points past the shorter array vanish from the reconstruction
+// with no counter and no error. There is no correct count to guess, so the caller has to hear about
+// it -- matching DirectionalTSDF::Integrate, which throws on the same condition.
+TEST(DenseRegionAccumulate, RecordRejectsAPointNormalSizeMismatch) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, 1u << 12);
+
+    std::vector<Vector3f> points, normals;
+    MakePlane(points, normals, 0.01f, 8);
+    normals.pop_back();
+
+    Engine::Compute::CommandBatch batch(context);
+    EXPECT_THROW(classifier.Record(points, normals, batch), std::runtime_error);
+}
+
+// Reset() is reachable on a default-constructed classifier -- every other public method guards for
+// that, and this one dereferenced m_blockRecords and *m_context unconditionally.
+TEST(DenseRegionAccumulate, ResetOnAnUnbuiltClassifierIsANoOp) {
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Reset();
+    EXPECT_EQ(classifier.BlockCount(), 0u);
+    EXPECT_EQ(classifier.DenseBlockCount(), 0u);
+}
+
+// Reset() zeroed the records, the block count, the insert-failure counter and the dense latch -- but
+// not the two readback buffers the accessors serve. DenseBlockCount(), DetailSlotEstimate() and
+// ReadPartition() read those straight back with no recomputation, so a Reset() followed by a query
+// answered with the PRE-Reset scene: the caller sees dense blocks in a scene that has none, and a
+// partition of a frame that belongs to a discarded scene.
+TEST(DenseRegionAccumulate, ResetClearsEveryCounterTheAccessorsServe) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, 1u << 15);
+
+    std::vector<Vector3f> points, normals;
+    const float radius = 0.05f;
+    for (int a = 0; a < 180; ++a)
+        for (int b = 0; b < 90; ++b) {
+            const float theta = float(a) * float(M_PI) / 90.0f;
+            const float phi = float(b) * float(M_PI) / 180.0f;
+            const Vector3f direction(std::sin(phi) * std::cos(theta),
+                                     std::sin(phi) * std::sin(theta), std::cos(phi));
+            points.push_back(direction * radius);
+            normals.push_back(direction);
+        }
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    classifier.Classify(batch);
+    classifier.Partition(batch);
+    batch.Submit();
+    ASSERT_GT(classifier.DenseBlockCount(), 0u) << "sanity: the scene being discarded had verdicts";
+
+    classifier.Reset();
+
+    EXPECT_EQ(classifier.BlockCount(), 0u);
+    EXPECT_EQ(classifier.DenseBlockCount(), 0u) << "a reset scene has no dense blocks";
+    EXPECT_EQ(classifier.DetailSlotEstimate(), 0u) << "a reset scene needs no detail slots";
+    std::vector<uint32_t> base, detail;
+    classifier.ReadPartition(base, detail);
+    EXPECT_EQ(base.size(), 0u) << "a reset scene has no partitioned frame to hand back";
+    EXPECT_EQ(detail.size(), 0u) << "a reset scene has no partitioned frame to hand back";
 }
 
 // Regression for a packBlockKey collision review found: under the old XOR-with-overlapping-shifts
@@ -130,6 +224,75 @@ TEST(DenseRegionAccumulate, DistantBlocksDoNotCollide) {
     std::sort(pointCounts.begin(), pointCounts.end());
     EXPECT_EQ(pointCounts, (std::vector<uint32_t>{3u, 5u}))
             << "point counts must match the two clusters exactly -- a merge would sum them to 8";
+}
+
+// DistantBlocksDoNotCollide (above) pins packBlockKey against ALIASING inside its range. This pins
+// the range itself, which was the last capacity ceiling with no counter: the packed key keeps 10
+// bits per axis, so `& 0x3FFu` wraps anything outside [-512, 511] onto a near block and merges the
+// two regions' statistics into one record -- silently, and with the merged verdict then routing
+// both regions.
+//
+// The range is not academic, because baseVoxel is the caller's: the extent is
+// 512 x baseVoxel x blockVoxels, so at spec section 5's own regime (50 um detail, hence 100 um
+// base) blockWorld is 3.2 mm and the range collapses to +/-1.638 m -- smaller than a single room.
+// This fixture uses exactly that regime. Blocks +531 and -493 are the concrete colliding pair:
+// (531 + 512) & 0x3FF == 19 == (-493 + 512) & 0x3FF, so they pack to the identical key while
+// sitting 3.28 m apart.
+//
+// The fix routes an out-of-range block through the SAME counted-failure branch as a full table --
+// the point still reaches the base level, so nothing is dropped, and the ceiling becomes visible
+// through the counter that already existed.
+TEST(DenseRegionAccumulate, BlocksOutsideThePackableRangeAreCountedNotAliased) {
+    Engine::Core::Context context;
+    const float baseVoxel = 1e-4f; // 100 um base voxel: blockWorld = 3.2 mm, range = +/-1.638 m
+    const int blockVoxels = 32;
+    const float blockWorld = baseVoxel * float(blockVoxels);
+
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, baseVoxel, blockVoxels, /*maxPointPerFrame=*/1u << 12);
+
+    // Block centres, so a float rounding wobble cannot move a point into a neighbouring block.
+    auto blockCentre = [&](int blockX) {
+        return Vector3f((float(blockX) + 0.5f) * blockWorld, 0.5f * blockWorld, 0.5f * blockWorld);
+    };
+
+    std::vector<Vector3f> points, normals;
+    const int outsideBlock = 531;  // x ~ +1.7008 m -- past the +511 ceiling
+    const int insideBlock = -493;  // x ~ -1.5760 m -- inside, and the block +531 aliases onto
+    for (int i = 0; i < 5; ++i) {
+        points.push_back(blockCentre(outsideBlock) + Vector3f(0.0f, 0.0f, float(i) * 1e-5f));
+        normals.emplace_back(0.0f, 0.0f, 1.0f);
+    }
+    for (int i = 0; i < 3; ++i) {
+        points.push_back(blockCentre(insideBlock) + Vector3f(0.0f, 0.0f, float(i) * 1e-5f));
+        normals.emplace_back(0.0f, 0.0f, 1.0f);
+    }
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    classifier.Classify(batch);
+    classifier.Partition(batch);
+    batch.Submit();
+
+    EXPECT_EQ(classifier.BlockInsertFailureCount(), 5u)
+            << "every point in a block outside the packable range must be COUNTED, not folded onto "
+               "some other block's key";
+
+    const std::vector<TSDF::BlockRecord> blocks = classifier.ReadBlocks();
+    ASSERT_EQ(blocks.size(), 1u) << "only the in-range block may own a record";
+    EXPECT_EQ(blocks[0].pointCount, 3u)
+            << "the in-range block's statistics must not be polluted by the far block's 5 points -- "
+               "a merge would read 8";
+
+    // Counted is not dropped: the never-lose-a-point contract has to hold through this branch too,
+    // exactly as HashInsertFailureStillConservesEveryPoint pins it for the full-table branch.
+    std::vector<uint32_t> base, detail;
+    classifier.ReadPartition(base, detail);
+    std::vector<uint8_t> seen(points.size(), 0);
+    for (uint32_t index : base)   { ASSERT_LT(index, points.size()); EXPECT_EQ(seen[index]++, 0); }
+    for (uint32_t index : detail) { ASSERT_LT(index, points.size()); EXPECT_EQ(seen[index]++, 0); }
+    EXPECT_EQ(size_t(std::count(seen.begin(), seen.end(), 1)), points.size())
+            << "an out-of-range block must still lose no points";
 }
 
 // A dense flat plane must NOT be refined: it resolves the fine grid, but there is no geometry
@@ -536,6 +699,8 @@ TEST(DenseRegionPartition, LargeFrameGrowsInsteadOfTruncating) {
     // must not be quietly failing through THAT counter either, so it is checked here too.
     EXPECT_EQ(classifier.BlockInsertFailureCount(), 0u)
             << "a grown frame must not be silently dropping points through the block-table ceiling";
+    EXPECT_EQ(classifier.CellInsertFailureCount(), 0u)
+            << "nor through the cell-hash ceiling, which grows in the same call";
 
     // Second, independent channel: the ACCUMULATE pass (upstream of Partition) must also have seen
     // every point, not just the build-time hint's worth. This exercises growPointBuffers' point/
@@ -566,6 +731,44 @@ TEST(DenseRegionPartition, LargeFrameGrowsInsteadOfTruncating) {
     // case to worry about here), and the accumulate-pass and partition-list conservation checks above
     // -- through two independent buffer groups and kernels -- both fail immediately the moment growth
     // does not happen. Confirmed by mutation, not just by this argument: see task-4-report.md.
+}
+
+// LargeFrameGrowsInsteadOfTruncating (above) covers a larger FRAME against a fixed Build. This
+// covers a larger BUILD: Build() is not documented as one-shot, and a second Build() with a bigger
+// hint used to leave m_maxPointPerFrame claiming the new size while the four point-sized buffers
+// stayed at the old one. growPointBuffers' early return then fired for every subsequent frame --
+// the member already said 32768 -- so Record() memcpy'd the frame into a mapped allocation sized for
+// the FIRST hint, and partition wrote its index lists past the same ceiling. The smaller-hint
+// direction was considered and deferred during the build; the larger-hint direction is the one that
+// corrupts memory, and it was missed.
+TEST(DenseRegionPartition, RebuildWithALargerHintReallocatesThePointBuffers) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, /*maxPointPerFrame=*/1024u); // point buffers hold 1536
+    classifier.Build(context, 0.01f, 32, /*maxPointPerFrame=*/32768u);
+
+    std::vector<Vector3f> points, normals;
+    MakePlane(points, normals, 0.0025f, 64); // 4096 points: inside the new hint, past the old buffers
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    classifier.Classify(batch);
+    classifier.Partition(batch);
+    batch.Submit();
+
+    uint32_t totalBlockPointCount = 0;
+    for (const auto &block : classifier.ReadBlocks()) totalBlockPointCount += block.pointCount;
+    EXPECT_EQ(totalBlockPointCount, points.size())
+            << "the second Build's hint must actually reach the point buffers, not just the member "
+               "that guards them";
+
+    std::vector<uint32_t> base, detail;
+    classifier.ReadPartition(base, detail);
+    std::vector<uint8_t> seen(points.size(), 0);
+    for (uint32_t index : base)   { ASSERT_LT(index, points.size()); EXPECT_EQ(seen[index]++, 0); }
+    for (uint32_t index : detail) { ASSERT_LT(index, points.size()); EXPECT_EQ(seen[index]++, 0); }
+    EXPECT_EQ(size_t(std::count(seen.begin(), seen.end(), 1)), points.size())
+            << "a frame recorded after a re-Build must still conserve every point exactly once";
 }
 
 // LargeFrameGrowsInsteadOfTruncating (above) guards the point/normal/blockIndex/base/detail buffer
@@ -623,4 +826,10 @@ TEST(DenseRegionPartition, LargeFrameGrowsCellHashesNotJustPointBuffers) {
     EXPECT_EQ(totalFineOccupied, points.size())
             << "a cell hash that failed to grow past the build-time hint's capacity would saturate "
                "and silently under-report occupancy -- exactly Task 1's Critical 1, reproduced";
+    // The sharpest place for this counter: this is the one fixture that genuinely oversubscribes a
+    // cell hash under the mutation it guards against, so it is where a probe-exhaustion deficit
+    // would appear first. Under the un-grown-hash mutation the counter is what NAMES the deficit
+    // that totalFineOccupied only shows as a number that is slightly too small.
+    EXPECT_EQ(classifier.CellInsertFailureCount(), 0u)
+            << "a grown cell hash must not be exhausting its probe chains";
 }

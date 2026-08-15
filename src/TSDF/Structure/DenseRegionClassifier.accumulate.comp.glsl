@@ -20,9 +20,17 @@ layout(std430, set = 0, binding = 3) buffer BlockCount { uint g_blockCount; };
 layout(std430, set = 0, binding = 4) buffer BlockIndex { uint g_blockIndex[]; };
 layout(std430, set = 0, binding = 5) buffer FineCells   { uint g_fineCells[]; };
 layout(std430, set = 0, binding = 6) buffer CoarseCells { uint g_coarseCells[]; };
-// Points dropped because the block table's probing gave up before finding a slot. Must stay 0 in a
-// healthy run -- a non-zero value means kBlockCapacity is too small for the scene.
+// Points whose block record could not be created -- the block table's probing gave up, or the block
+// sits outside the packable coordinate range. Those points are NOT dropped: partition routes them to
+// the base level. The counter exists because the block's STATISTICS are lost, so the block can never
+// earn a detail level. Must stay 0 in a healthy run; non-zero means kBlockCapacity is too small for
+// the scene, or the scene is wider than the packable range.
 layout(std430, set = 0, binding = 7) buffer BlockInsertFailures { uint g_blockInsertFailureCount; };
+// Fine or coarse cell claims whose probing gave up before finding a slot. That cell's occupancy goes
+// uncounted this frame, which under-reports the ratio the whole verdict rests on -- and the caller
+// could not otherwise tell it from "already counted this frame", because both read as false. Must
+// stay 0 in a healthy run; non-zero means the cell hashes are too small or too clustered.
+layout(std430, set = 0, binding = 8) buffer CellInsertFailures { uint g_cellInsertFailureCount; };
 
 layout(push_constant) uniform PC
 {
@@ -40,11 +48,25 @@ layout(push_constant) uniform PC
 /// Disjoint 10-bit fields, spaced exactly 10 apart -- the XOR-with-overlapping-shifts form this
 /// replaced aliased distinct blocks onto one key. Range is +/-512 blocks (about +/-163 m at 0.32 m
 /// blocks); the maximum value is 0x3FFFFFFF, so a real key can never equal EMPTY_KEY.
+const int BLOCK_COORDINATE_BIAS = 512;
+
 uint packBlockKey(ivec3 block)
 {
-	return ((uint(block.x + 512) & 0x3FFu) << 20)
-	     | ((uint(block.y + 512) & 0x3FFu) << 10)
-	     |  (uint(block.z + 512) & 0x3FFu);
+	return ((uint(block.x + BLOCK_COORDINATE_BIAS) & 0x3FFu) << 20)
+	     | ((uint(block.y + BLOCK_COORDINATE_BIAS) & 0x3FFu) << 10)
+	     |  (uint(block.z + BLOCK_COORDINATE_BIAS) & 0x3FFu);
+}
+
+/// packBlockKey keeps 10 bits per axis, so only [-512, 511] survives it intact -- outside that the
+/// mask folds a far block onto a near one and merges two regions' statistics into one record. The
+/// extent this buys is 512 x baseVoxel x blockVoxels, and baseVoxel is the caller's: at a 100 um
+/// base voxel it is only +/-1.638 m, so this is a range a real caller can leave, not a theoretical
+/// bound. Checked here rather than made unreachable, because there is nothing to clamp TO: a folded
+/// key is wrong, not approximate.
+bool blockIsWithinPackableRange(ivec3 block)
+{
+	return all(greaterThanEqual(block, ivec3(-BLOCK_COORDINATE_BIAS)))
+	    && all(lessThanEqual(block, ivec3(BLOCK_COORDINATE_BIAS - 1)));
 }
 
 uint findOrInsertBlock(uint key)
@@ -59,6 +81,10 @@ uint findOrInsertBlock(uint key)
 	return EMPTY_KEY;
 }
 
+/// Both return false in TWO different situations -- "already counted this frame", which is normal
+/// and expected, and "probing gave up", which silently under-reports occupancy. The caller cannot
+/// tell them apart from the return value, so exhaustion is counted here instead.
+
 bool claimFineCell(uint key)
 {
 	uint slot = wangHash(key) % g_cellCapacity;
@@ -68,6 +94,7 @@ bool claimFineCell(uint key)
 		if (previousKey == EMPTY_KEY) return true;   // this thread claimed it -> count it
 		if (previousKey == key) return false;        // already counted this frame
 	}
+	atomicAdd(g_cellInsertFailureCount, 1u);         // gave up -- uncounted, but not unobservable
 	return false;
 }
 
@@ -80,6 +107,7 @@ bool claimCoarseCell(uint key)
 		if (previousKey == EMPTY_KEY) return true;
 		if (previousKey == key) return false;
 	}
+	atomicAdd(g_cellInsertFailureCount, 1u);
 	return false;
 }
 
@@ -100,10 +128,14 @@ void main()
 	ivec3 fineCell   = clamp(ivec3(floor(local / (g_baseVoxel * 0.5))), ivec3(0),
 	                         ivec3(g_blockVoxels * 2 - 1));
 
-	// 2. Block record.
-	uint blockSlot = findOrInsertBlock(packBlockKey(block));
+	// 2. Block record. Two ways it can fail -- the block sits outside the packable coordinate range,
+	//    or the table's probing gives up -- and both take the same branch: count it, mark the point
+	//    as having no record, and let partition route it to the base level. The point survives; only
+	//    its contribution to a block verdict is lost.
+	uint blockSlot = blockIsWithinPackableRange(block) ? findOrInsertBlock(packBlockKey(block))
+	                                                  : EMPTY_KEY;
 	if (blockSlot == EMPTY_KEY) {
-		atomicAdd(g_blockInsertFailureCount, 1u); // table full -- drop is counted, not silent
+		atomicAdd(g_blockInsertFailureCount, 1u);
 		g_blockIndex[i] = EMPTY_KEY;
 		return;
 	}

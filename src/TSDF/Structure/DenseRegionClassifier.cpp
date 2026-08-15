@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
 
 namespace TSDF {
 
@@ -9,6 +10,17 @@ namespace TSDF {
         // Blocks are coarse (32 base voxels a side), so a frame touches thousands, not millions.
         // Kept well below 1<<14 because the cell key packs the block's record index in 14 bits.
         constexpr uint32_t kBlockCapacity = 1u << 13;
+        // The fine cell key is (blockSlot << 18) | 18 bits of local cell, so the slot has exactly 14
+        // bits. Slot 16383 with fine cell (63,63,63) packs to 0xFFFFFFFF, which IS EMPTY_KEY -- the
+        // hash would read that cell as permanently empty and re-count it for every point in it. So
+        // the last representable slot is unusable and the true ceiling is (1<<14) - 1, not 1<<14.
+        // Whoever grows the block table next has to stop there, not at the round number.
+        static_assert(kBlockCapacity <= (1u << 14) - 1u,
+                      "block slot 16383 packs a fine cell key equal to EMPTY_KEY");
+        // The fine cell key packs 6 bits per axis and the coarse key 5, so a block wider than 32
+        // base voxels aliases distinct cells onto one key -- and for the fine key it aliases ACROSS
+        // blocks, because the overflow runs into the slot field.
+        constexpr int kMaxBlockVoxels = 32;
         // One entry per distinct fine cell in a frame. Sized against maxPointPerFrame because a
         // frame can never occupy more cells than it has points.
         constexpr float kCellCapacityFactor = 2.0f;
@@ -42,28 +54,41 @@ namespace TSDF {
     void DenseRegionClassifier::Build(Engine::Core::Context &context, float baseVoxel,
                                       int blockVoxels, uint32_t maxPointPerFrame,
                                       const DensityCriteria &criteria) {
+        // Rejected rather than clamped: a wider block silently aliases distinct cells onto one key,
+        // so the occupancy under-reports and the verdicts change with no symptom at all. Nothing
+        // needs the flexibility today. A throw, not an assert, because the project builds with
+        // NDEBUG -- an assert here would be a no-op in exactly the configuration that ships.
+        if (blockVoxels < 1 || blockVoxels > kMaxBlockVoxels)
+            throw std::runtime_error("DenseRegionClassifier::Build: blockVoxels must be in [1, 32]");
+
         m_context = &context;
         m_baseVoxel = baseVoxel;
         m_blockVoxels = blockVoxels;
-        m_maxPointPerFrame = maxPointPerFrame;
         m_criteria = criteria;
 
-        const uint32_t cellCapacity = uint32_t(float(maxPointPerFrame) * kCellCapacityFactor);
+        // Dropped BEFORE m_maxPointPerFrame is assigned, so growPointBuffers() below cannot take its
+        // early return. Without this, a second Build() with a LARGER hint set the member to the new
+        // size and then early-returned out of the grow (the member already satisfied the test),
+        // leaving the four point-sized buffers at the OLD capacity while the member claimed the new
+        // one -- every later Record() then memcpy'd past a mapped allocation and partition wrote its
+        // index lists past the same ceiling. Measured: a 4096-point frame after Build(1024) then
+        // Build(32768) reported 2,223,218,252 accumulated points instead of 4096.
+        m_pointBuffer.reset();
+        m_maxPointPerFrame = maxPointPerFrame;
 
         m_blockRecords = std::make_unique<Engine::Core::Buffer>(context);
         m_blockCount = std::make_unique<Engine::Core::Buffer>(context);
         m_blockInsertFailureCount = std::make_unique<Engine::Core::Buffer>(context);
-        m_fineCells = std::make_unique<Engine::Core::Buffer>(context);
-        m_coarseCells = std::make_unique<Engine::Core::Buffer>(context);
-        m_blockIndex = std::make_unique<Engine::Core::Buffer>(context);
+        m_cellInsertFailureCount = std::make_unique<Engine::Core::Buffer>(context);
 
         m_blockRecords->AllocateHostVisibleReadback(kBlockCapacity * sizeof(BlockRecord));
         m_blockCount->AllocateHostVisibleReadback(sizeof(uint32_t));
         m_blockInsertFailureCount->AllocateHostVisibleReadback(sizeof(uint32_t));
-        m_fineCells->Allocate(cellCapacity * sizeof(uint32_t));
-        m_coarseCells->Allocate(cellCapacity * sizeof(uint32_t));
-        m_blockIndex->Allocate(maxPointPerFrame * sizeof(uint32_t));
+        m_cellInsertFailureCount->AllocateHostVisibleReadback(sizeof(uint32_t));
 
+        // m_blockIndex and the two cell hashes are NOT allocated here. growPointBuffers owns them --
+        // they are all sized off the point count, and it is the one place that count changes -- so
+        // allocating them here too would only mean three allocate/destroy round-trips per Build.
         growPointBuffers(maxPointPerFrame);
 
         kernel_clearCells = std::make_unique<Engine::Core::ComputePipeline>(context);
@@ -79,7 +104,8 @@ namespace TSDF {
                 .Bind(4, *m_blockIndex)
                 .Bind(5, *m_fineCells)
                 .Bind(6, *m_coarseCells)
-                .Bind(7, *m_blockInsertFailureCount);
+                .Bind(7, *m_blockInsertFailureCount)
+                .Bind(8, *m_cellInsertFailureCount);
 
         m_denseFlags = std::make_unique<Engine::Core::Buffer>(context);
         m_totals = std::make_unique<Engine::Core::Buffer>(context);
@@ -152,6 +178,11 @@ namespace TSDF {
     }
 
     void DenseRegionClassifier::Reset() {
+        // Guarded like every other public method: Reset() is reachable on a default-constructed
+        // classifier (`DenseRegionClassifier c; c.Reset();`), and every dereference below would
+        // otherwise be a null one.
+        if (!m_context || !m_blockRecords || !m_totals || !m_partitionCount) return;
+
         // The most-recently-recorded-frame state must not survive a scene reset either, for the
         // same reason Record() invalidates it up front: a stale count would have Partition()
         // replay whatever frame was last recorded before this Reset().
@@ -167,10 +198,27 @@ namespace TSDF {
         m_blockCount->MakeVisibleToGPU(sizeof(uint32_t));
         *static_cast<uint32_t *>(m_blockInsertFailureCount->MappedPtr()) = 0;
         m_blockInsertFailureCount->MakeVisibleToGPU(sizeof(uint32_t));
+        *static_cast<uint32_t *>(m_cellInsertFailureCount->MappedPtr()) = 0;
+        m_cellInsertFailureCount->MakeVisibleToGPU(sizeof(uint32_t));
+
+        // Every readback the accessors serve has to be reset too, not just the records they are
+        // derived from. These four are the accessors' ONLY storage -- DenseBlockCount(),
+        // DetailSlotEstimate() and ReadPartition() read them straight back with no recomputation --
+        // so leaving them resident would have `Reset(); DenseBlockCount();` answer with the
+        // pre-Reset count and ReadPartition() hand back the pre-Reset frame's index lists.
+        auto *totals = static_cast<uint32_t *>(m_totals->MappedPtr());
+        totals[0] = 0;
+        totals[1] = 0;
+        m_totals->MakeVisibleToGPU(2u * sizeof(uint32_t));
+        auto *partitionCounts = static_cast<uint32_t *>(m_partitionCount->MappedPtr());
+        partitionCounts[0] = 0;
+        partitionCounts[1] = 0;
+        m_partitionCount->MakeVisibleToGPU(2u * sizeof(uint32_t));
 
         // The dense latch must not survive across scenes. m_denseFlags is device-local (Allocate,
         // not AllocateHostVisible*), so it has no mapped pointer to memset from the host -- a
-        // one-shot GPU-side fill is the only way to zero it here.
+        // one-shot GPU-side fill is the only way to zero it here. This is also why Reset(), and
+        // therefore Build(), costs a queue submit and a full wait; see the header.
         Engine::Compute::CommandBatch batch(*m_context);
         batch.FillBuffer(m_denseFlags->Handle(), 0, VK_WHOLE_SIZE, 0u);
         batch.Submit();
@@ -186,10 +234,14 @@ namespace TSDF {
         // previous frame's still-resident m_blockIndex, silently duplicating it into the caller's
         // integration.
         m_recordedPointCount = 0;
+        // A mismatch used to fall back to min(points, normals), which is a silent truncation of the
+        // caller's frame -- points past the shorter array vanish from the reconstruction with no
+        // counter and no error. There is no correct count to pick, so this is the caller's bug to
+        // hear about. Same wording, and same choice, as DirectionalTSDF::Integrate.
+        if (points.size() != normals.size())
+            throw std::runtime_error("DenseRegionClassifier::Record: points/normals size mismatch");
         if (!m_context || points.empty()) return;
-        const uint32_t n =
-                std::min(uint32_t(points.size()), uint32_t(normals.size()));
-        if (n == 0) return;
+        const uint32_t n = uint32_t(points.size());
         growPointBuffers(n);
         // Partition() has no points parameter of its own -- it repartitions THIS frame, so it reads
         // the count back from here rather than the caller passing it twice.
@@ -305,6 +357,12 @@ namespace TSDF {
         if (!m_blockInsertFailureCount) return 0;
         m_blockInsertFailureCount->MakeVisibleToCPU(sizeof(uint32_t));
         return *static_cast<const uint32_t *>(m_blockInsertFailureCount->MappedPtr());
+    }
+
+    uint32_t DenseRegionClassifier::CellInsertFailureCount() const {
+        if (!m_cellInsertFailureCount) return 0;
+        m_cellInsertFailureCount->MakeVisibleToCPU(sizeof(uint32_t));
+        return *static_cast<const uint32_t *>(m_cellInsertFailureCount->MappedPtr());
     }
 
     std::vector<BlockRecord> DenseRegionClassifier::ReadBlocks() const {
