@@ -25,6 +25,14 @@ namespace TSDF {
             uint32_t cellCapacity;
             uint32_t blockCapacity;
         };
+
+        struct ClassifyPC {
+            uint32_t blockCapacity;
+            float occupancyRatio;
+            float normalCoherence;
+            float samplesPerFineCell;
+            uint32_t minimumFineOccupied;
+        };
     } // namespace
 
     void DenseRegionClassifier::Build(Engine::Core::Context &context, float baseVoxel,
@@ -68,6 +76,17 @@ namespace TSDF {
                 .Bind(5, *m_fineCells)
                 .Bind(6, *m_coarseCells)
                 .Bind(7, *m_blockInsertFailureCount);
+
+        m_denseFlags = std::make_unique<Engine::Core::Buffer>(context);
+        m_totals = std::make_unique<Engine::Core::Buffer>(context);
+        m_denseFlags->Allocate(kBlockCapacity * sizeof(uint32_t));
+        m_totals->AllocateHostVisibleReadback(2u * sizeof(uint32_t));
+
+        kernel_classify = std::make_unique<Engine::Core::ComputePipeline>(context);
+        kernel_classify->Build("TSDF/Structure/DenseRegionClassifier.classify.comp.glsl")
+                .Bind(0, *m_blockRecords)
+                .Bind(1, *m_denseFlags)
+                .Bind(2, *m_totals);
 
         Reset();
     }
@@ -113,6 +132,13 @@ namespace TSDF {
         m_blockCount->MakeVisibleToGPU(sizeof(uint32_t));
         *static_cast<uint32_t *>(m_blockInsertFailureCount->MappedPtr()) = 0;
         m_blockInsertFailureCount->MakeVisibleToGPU(sizeof(uint32_t));
+
+        // The dense latch must not survive across scenes. m_denseFlags is device-local (Allocate,
+        // not AllocateHostVisible*), so it has no mapped pointer to memset from the host -- a
+        // one-shot GPU-side fill is the only way to zero it here.
+        Engine::Compute::CommandBatch batch(*m_context);
+        batch.FillBuffer(m_denseFlags->Handle(), 0, VK_WHOLE_SIZE, 0u);
+        batch.Submit();
     }
 
     void DenseRegionClassifier::Record(const std::vector<Eigen::Vector3f> &points,
@@ -147,6 +173,37 @@ namespace TSDF {
         kernel_accumulate->Args(AccumulatePC{n, kBlockCapacity, cellCapacity, m_baseVoxel,
                                              int32_t(m_blockVoxels)});
         batch.DispatchElements(*kernel_accumulate, n);
+    }
+
+    void DenseRegionClassifier::Classify(Engine::Compute::CommandBatch &batch) {
+        if (!m_context) return;
+        // The two totals are recomputed from scratch every call, not accumulated across calls.
+        auto *totals = static_cast<uint32_t *>(m_totals->MappedPtr());
+        totals[0] = 0;
+        totals[1] = 0;
+        m_totals->MakeVisibleToGPU(2u * sizeof(uint32_t));
+
+        // Orders the classify dispatch after Record()'s accumulate dispatch: classify reads the
+        // block records accumulate just wrote, and Vulkan gives no ordering guarantee between two
+        // dispatches recorded back to back on the same command buffer.
+        batch.Barrier();
+
+        kernel_classify->Args(ClassifyPC{kBlockCapacity, m_criteria.occupancyRatio,
+                                         m_criteria.normalCoherence, m_criteria.samplesPerFineCell,
+                                         m_criteria.minimumFineOccupied});
+        batch.DispatchElements(*kernel_classify, kBlockCapacity);
+    }
+
+    uint32_t DenseRegionClassifier::DenseBlockCount() const {
+        if (!m_totals) return 0;
+        m_totals->MakeVisibleToCPU(2u * sizeof(uint32_t));
+        return static_cast<const uint32_t *>(m_totals->MappedPtr())[0];
+    }
+
+    uint32_t DenseRegionClassifier::DetailSlotEstimate() const {
+        if (!m_totals) return 0;
+        m_totals->MakeVisibleToCPU(2u * sizeof(uint32_t));
+        return static_cast<const uint32_t *>(m_totals->MappedPtr())[1];
     }
 
     uint32_t DenseRegionClassifier::BlockCount() const {

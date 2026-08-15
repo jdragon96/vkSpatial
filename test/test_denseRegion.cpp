@@ -16,9 +16,11 @@ namespace {
     // on every axis so it sits in the middle of block (0,0,0) instead of on the world origin.
     // `floor(position / blockWorld)` puts the world origin on a block CORNER, so an origin-centred
     // patch straddles up to four blocks; the offset keeps the whole patch inside one. Spacing is the
-    // knob every density assertion turns.
+    // knob every density assertion turns. `blockOffset` defaults to 0 (origin-centred, so the patch
+    // may straddle several blocks) for callers that only care about per-block classification, not
+    // about which or how many blocks the points land in.
     void MakePlane(std::vector<Vector3f> &points, std::vector<Vector3f> &normals,
-                   float spacing, int count, float blockOffset) {
+                   float spacing, int count, float blockOffset = 0.0f) {
         points.clear();
         normals.clear();
         const float half = 0.5f * spacing * float(count - 1);
@@ -128,4 +130,78 @@ TEST(DenseRegionAccumulate, DistantBlocksDoNotCollide) {
     std::sort(pointCounts.begin(), pointCounts.end());
     EXPECT_EQ(pointCounts, (std::vector<uint32_t>{3u, 5u}))
             << "point counts must match the two clusters exactly -- a merge would sum them to 8";
+}
+
+// A dense flat plane must NOT be refined: it resolves the fine grid, but there is no geometry
+// detail to recover. This is the condition the old redundancy heuristic could not see.
+TEST(DenseRegionClassify, DenseFlatPlaneIsNotRefined) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, 1u << 15);
+
+    std::vector<Vector3f> points, normals;
+    MakePlane(points, normals, 0.0025f, 64);
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    classifier.Classify(batch);
+    batch.Submit();
+
+    EXPECT_EQ(classifier.DenseBlockCount(), 0u)
+            << "normal coherence ~1 on a plane must veto refinement";
+}
+
+// A densely scanned sphere patch has both the sampling and the curvature, so it must be refined.
+TEST(DenseRegionClassify, DenseCurvedSurfaceIsRefined) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, 1u << 15);
+
+    // A 0.05 m sphere sampled at ~0.0025 m: strong curvature across one block.
+    std::vector<Vector3f> points, normals;
+    const float radius = 0.05f;
+    for (int a = 0; a < 180; ++a)
+        for (int b = 0; b < 90; ++b) {
+            const float theta = float(a) * float(M_PI) / 90.0f;
+            const float phi = float(b) * float(M_PI) / 180.0f;
+            const Vector3f direction(std::sin(phi) * std::cos(theta),
+                                     std::sin(phi) * std::sin(theta), std::cos(phi));
+            points.push_back(direction * radius);
+            normals.push_back(direction);
+        }
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    classifier.Classify(batch);
+    batch.Submit();
+
+    EXPECT_GT(classifier.DenseBlockCount(), 0u);
+    EXPECT_GT(classifier.DetailSlotEstimate(), 0u)
+            << "a refined block must report the slots its detail table will need";
+}
+
+// Sparse sampling fails the spacing condition however curved the surface is.
+TEST(DenseRegionClassify, SparseCurvedSurfaceIsNotRefined) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, 1u << 15);
+
+    std::vector<Vector3f> points, normals;
+    const float radius = 0.05f;
+    for (int a = 0; a < 24; ++a)
+        for (int b = 0; b < 12; ++b) {
+            const float theta = float(a) * float(M_PI) / 12.0f;
+            const float phi = float(b) * float(M_PI) / 24.0f;
+            const Vector3f direction(std::sin(phi) * std::cos(theta),
+                                     std::sin(phi) * std::sin(theta), std::cos(phi));
+            points.push_back(direction * radius);
+            normals.push_back(direction);
+        }
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    classifier.Classify(batch);
+    batch.Submit();
+
+    EXPECT_EQ(classifier.DenseBlockCount(), 0u) << "spacing must veto refinement";
 }

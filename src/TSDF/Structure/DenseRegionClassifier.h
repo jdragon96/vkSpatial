@@ -60,6 +60,15 @@ namespace TSDF {
                     const std::vector<Eigen::Vector3f> &normals,
                     Engine::Compute::CommandBatch &batch);
 
+        // Applies the criteria to every block record. Latched: a dense block stays dense.
+        void Classify(Engine::Compute::CommandBatch &batch);
+
+        uint32_t DenseBlockCount() const;
+
+        // Slots the detail table needs across every dense block, from per-frame maximum occupancy
+        // rather than the cumulative count, which re-counts a cell once per frame.
+        uint32_t DetailSlotEstimate() const;
+
         uint32_t BlockCount() const;
 
         // Points dropped because the block table's probing gave up before finding a slot. Zero in a
@@ -88,9 +97,12 @@ namespace TSDF {
         std::unique_ptr<Engine::Core::Buffer> m_blockIndex;   // per point -> record index
         std::unique_ptr<Engine::Core::Buffer> m_fineCells;    // per-frame key-only hash
         std::unique_ptr<Engine::Core::Buffer> m_coarseCells;  // per-frame key-only hash
+        std::unique_ptr<Engine::Core::Buffer> m_denseFlags;   // per-record latch, parallel to m_blockRecords
+        std::unique_ptr<Engine::Core::Buffer> m_totals;       // [0] denseBlockCount, [1] detailSlots
 
         std::unique_ptr<Engine::Core::ComputePipeline> kernel_clearCells;
         std::unique_ptr<Engine::Core::ComputePipeline> kernel_accumulate;
+        std::unique_ptr<Engine::Core::ComputePipeline> kernel_classify;
     };
 
 } // namespace TSDF
