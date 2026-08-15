@@ -77,4 +77,17 @@ namespace Mesh {
         return field;
     }
 
+    VoxelField FromVoxels(const std::vector<TSDFVoxel> &voxels, float cellSize) {
+        VoxelField field;
+        field.SetCellSize(cellSize);
+        for (const TSDFVoxel &voxel : voxels) {
+            const std::array<int, 3> coord{
+                    static_cast<int>(std::lround(voxel.center.x() / cellSize - 0.5f)),
+                    static_cast<int>(std::lround(voxel.center.y() / cellSize - 0.5f)),
+                    static_cast<int>(std::lround(voxel.center.z() / cellSize - 0.5f))};
+            field.Insert(coord, voxel.tsdf, voxel.normal);
+        }
+        return field;
+    }
+
 } // namespace Mesh

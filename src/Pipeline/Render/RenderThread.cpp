@@ -1,5 +1,7 @@
 #include "Pipeline/Render/RenderThread.h"
 
+#include <imgui.h>
+
 #include "Pipeline/Pipeline.h"
 #include "Pipeline/Render/RenderStrategy.h"
 
@@ -54,10 +56,18 @@ namespace Pipeline {
         // (the trackball tracks its own state internally; Camera::Pan takes a pixel delta).
         Engine::Render::MouseListenerGroup mouse(app.GetWindow().Mouse());
         bool panning = false;
+
+        // A drag or scroll that starts over an ImGui window belongs to that window. Without this the
+        // camera zooms while the operator scrolls a panel, and orbits while they drag a slider.
+        // ImGui reports this through WantCaptureMouse; a strategy with no UI leaves it false.
+        auto uiHasMouse = [] { return ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse; };
         double lastPanX = 0.0, lastPanY = 0.0;
         mouse.Add(
                 Engine::Render::MouseEventType::Drag,
                 [&](Engine::Render::MouseEvent &e) {
+                    // Only gate the START of a drag: once the camera owns it, the cursor may leave
+                    // the viewport and the drag must keep working.
+                    if (uiHasMouse() && !camera.IsTrackballDragging() && !panning) return;
                     const VkExtent2D s = app.GetWindow().FramebufferSize();
                     if (s.width == 0 || s.height == 0) return;
                     if (e.button == Engine::Render::MouseButton::Left) {
@@ -89,6 +99,7 @@ namespace Pipeline {
         mouse.Add(
                 Engine::Render::MouseEventType::Scroll,
                 [&](Engine::Render::MouseEvent &e) {
+                    if (uiHasMouse()) return;
                     camera.SetDistance(std::clamp(camera.GetDistance() * std::exp(float(-e.scrollY) * 0.08f),
                                                   extent * 0.2f, extent * 20.0f));
                     e.handled = true;

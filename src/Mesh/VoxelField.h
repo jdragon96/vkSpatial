@@ -14,6 +14,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "TSDF/Backends/TSDFBackend.h" // TSDFVoxel
+
 namespace TSDF {
     struct AdvancedEntry; // forward declaration; full definition in TSDF/Backends/AdvancedTSDF.h
 }
@@ -60,5 +62,8 @@ namespace Mesh {
     // from the entry's world-space centre (lround(center/cellSize - 0.5) per axis, matching
     // AdaptiveVoxelGrid's latticeCoordOf convention), value = tsdf, gradient = normal.
     VoxelField FromAdvancedEntries(const std::vector<TSDF::AdvancedEntry> &entries, float cellSize);
+
+    // Same adaptation from the namespace-free readback the pipeline carries.
+    VoxelField FromVoxels(const std::vector<TSDFVoxel> &voxels, float cellSize);
 
 } // namespace Mesh

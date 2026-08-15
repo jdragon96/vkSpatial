@@ -104,18 +104,30 @@ void IsosurfaceMeshPass::SetMesh(const Mesh::SurfaceMesh &mesh,
 }
 
 void IsosurfaceMeshPass::Execute(Engine::Render::RenderContext &ctx) {
+    if (!m_visible) return;
     if (!ctx.swapChain || !ctx.depthImage || !ctx.view || !ctx.view->GetCamera())
         throw std::runtime_error("IsosurfaceMeshPass requires swapchain, depth image, view and camera");
 
-    Engine::Render::ClearOptions clear{};
-    clear.color[0] = 0.030f;
-    clear.color[1] = 0.033f;
-    clear.color[2] = 0.038f;
-    clear.color[3] = 1.0f;
-
     const VkExtent2D extent = ctx.swapChain->Extent();
-    Engine::Render::RenderingDescriptor renderingDescriptor = Engine::Render::RenderingDescriptor::ColorDepth(
-            extent, ctx.swapChain->ImageView(ctx.imageIndex), ctx.depthImage->View(), clear);
+    Engine::Render::RenderingDescriptor renderingDescriptor(extent);
+    if (m_clears) {
+        Engine::Render::ClearOptions clear{};
+        clear.color[0] = 0.030f;
+        clear.color[1] = 0.033f;
+        clear.color[2] = 0.038f;
+        clear.color[3] = 1.0f;
+        renderingDescriptor = Engine::Render::RenderingDescriptor::ColorDepth(
+                extent, ctx.swapChain->ImageView(ctx.imageIndex), ctx.depthImage->View(), clear);
+    } else {
+        // Draw OVER whatever ran before (the point cloud), depth loaded so the mesh occludes and is
+        // occluded correctly instead of overwriting the points.
+        renderingDescriptor.AddColorAttachment(
+                Engine::Render::ColorAttachment(ctx.swapChain->ImageView(ctx.imageIndex))
+                        .Load()
+                        .Build());
+        renderingDescriptor.SetDepthAttachment(
+                Engine::Render::DepthAttachment(ctx.depthImage->View()).Load().Build());
+    }
     Engine::Render::RenderingScope scope(ctx.commandBuffer, renderingDescriptor);
 
     if (m_meshObject.Empty() || !m_meshObject.Uploaded())

@@ -188,8 +188,8 @@ namespace {
         ep::TrackerRegistry registry = ep::TrackerRegistry::Default();
         const float confValue = baseMap.confidence > 0.0f ? baseMap.confidence : 0.5f;
 
-        auto makeConfig = [&](const VoxelFillRenderStrategy::Opts &o) {
-            ep::MapConfig m = baseMap;
+        auto makeConfig = [&](const VoxelFillRenderStrategy::Opts &o, const ep::MapConfig &base) {
+            ep::MapConfig m = base;
             applyOpts(m, o, confValue);
             ep::Pipeline::Config config;
             config.map = m;
@@ -200,7 +200,7 @@ namespace {
             return config;
         };
 
-        ep::Pipeline pipe(makeConfig(initOpts), registry.Create(trackerName));
+        ep::Pipeline pipe(makeConfig(initOpts, baseMap), registry.Create(trackerName));
         pipe.SetPaused(true);
         pipe.Start();
 
@@ -213,9 +213,12 @@ namespace {
         params.extent = bounds.Extent();
         params.wThresh = wThresh;
         params.trackerName = trackerName;
+        params.map = baseMap;
+        params.intervalMs = intervalMs;
+        params.loop = loop;
         params.opts = initOpts;
-        params.onRebuild = [&](const VoxelFillRenderStrategy::Opts &o) {
-            pipe.Reconfigure(makeConfig(o), registry.Create(trackerName));
+        params.onRebuild = [&](const VoxelFillRenderStrategy::Opts &o, const ep::MapConfig &m) {
+            pipe.Reconfigure(makeConfig(o, m), registry.Create(trackerName));
             pipe.SetPaused(false); // resume playing so the effect of the toggle is visible
         };
         VoxelFillRenderStrategy strategy(std::move(params));

@@ -10,7 +10,7 @@ add_library(Pipeline ALIAS EnginePipeline)
 # declares the render types, so consumers (and the headless tests) don't pull in GLFW/render.
 target_link_libraries(EnginePipeline
         PUBLIC Engine::Features Engine::Core TSDF Mesh BVH Ceres::ceres
-        PRIVATE Engine::Render)
+        PRIVATE Engine::Render imgui)
 
 target_include_directories(EnginePipeline
         PUBLIC

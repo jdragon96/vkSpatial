@@ -1,5 +1,6 @@
 #pragma once
 
+#include "IsosurfaceMeshPass.h" // IsosurfaceMeshPass
 #include "VoxelFillDebug.h" // voxdbg::ColorMode
 
 #include "Pipeline/Render/RenderStrategy.h" // Pipeline::IRenderStrategy
@@ -35,8 +36,12 @@ public:
         float extent = 1.0f;
         float wThresh = 0.0f;                        // initial weight threshold
         std::string trackerName;                     // shown in the UI
+        Pipeline::MapConfig map;                     // shown in the UI (configuration panel)
+        double intervalMs = 0.0;                     // acquisition pacing
+        bool loop = false;
         Opts opts;                                   // initial option-toggle state
-        std::function<void(const Opts &)> onRebuild; // rebuild the pipeline with new opts (may be null)
+        // Rebuild the pipeline with the edited opts + map config and replay from frame 0.
+        std::function<void(const Opts &, const Pipeline::MapConfig &)> onRebuild;
     };
 
     explicit VoxelFillRenderStrategy(Params params);
@@ -49,12 +54,29 @@ public:
 
 private:
     void refresh(); // rebuild the point sets from m_snap + m_state
+    void applyVisibility(); // push m_renderMode + per-layer flags onto the passes
+    void extractMesh();
     void drawStatsPanel(Pipeline::Pipeline &pipe);
     void drawUi(Pipeline::Pipeline &pipe); // ImGui panel (called during the ImGui pass)
 
     Params m_p;
     Engine::Core::Context *m_ctx = nullptr;
-    PointCloudPass *m_pc = nullptr; // owned by the render graph
+    PointCloudPass *m_pc = nullptr;        // owned by the render graph
+    IsosurfaceMeshPass *m_mesh = nullptr;  // owned by the render graph
+
+    // Extraction runs on the CPU over the whole map, so it is on demand (a button), never per
+    // frame. m_meshDirty just tells the UI the shown mesh is older than the map.
+    // Top-level choice: the reconstructed point cloud, the extracted triangle mesh, or both
+    // (the mesh pass loads the framebuffer rather than clearing it, so they compose).
+    enum class RenderMode { Points, Mesh, Both };
+    RenderMode m_renderMode = RenderMode::Points;
+
+    std::string m_extractorName = "mc";
+    bool m_meshWireframe = false;
+    bool m_meshDirty = true;
+    std::size_t m_meshTriangles = 0;
+    double m_meshExtractMs = 0.0;
+    bool m_pendingExtract = false;
     ImGuiPass *m_imgui = nullptr;   // owned by the render graph
 
     struct State {
@@ -68,6 +90,8 @@ private:
     } m_state;
 
     Opts m_opts;                   // live option-toggle state (edited by the UI)
+    Pipeline::MapConfig m_map;     // live map config (edited by the UI while paused)
+    bool m_configDirty = false;    // config edited but not applied
     bool m_pendingRebuild = false; // a toggle flipped -> rebuild the pipeline on the next frame
 
     std::shared_ptr<const Pipeline::ModelSnapshot> m_snap;

@@ -37,6 +37,16 @@ public:
 
     // Selects which of the two pipelines built up front Execute() binds: VK_POLYGON_MODE_FILL
     // (default) or VK_POLYGON_MODE_LINE. A cheap flag flip -- no rebuild, no pipeline creation.
+    // Hidden by default: the debugger extracts on demand, so there is nothing to draw
+    // until the operator asks for it.
+    void SetVisible(bool visible) { m_visible = visible; }
+
+    // Whether this pass clears the framebuffer or draws over what is already there. Clearing is
+    // right when it is the first pass (isosurface_viewer); loading is right when something else
+    // already drew (voxel_fill_debugger draws its point cloud first).
+    void SetClears(bool clears) { m_clears = clears; }
+    bool Visible() const { return m_visible; }
+
     void SetWireframe(bool wireframe) { m_wireframe = wireframe; }
     bool Wireframe() const { return m_wireframe; }
 
@@ -46,6 +56,8 @@ private:
     Engine::Render::GraphicsPipeline m_solidPipeline;
     Engine::Render::GraphicsPipeline m_wireframePipeline;
     bool m_wireframe = false;
+    bool m_visible = true;
+    bool m_clears = true;
 
     void BuildPipeline(Engine::Render::GraphicsPipeline &pipeline,
                         VkPolygonMode polygonMode,

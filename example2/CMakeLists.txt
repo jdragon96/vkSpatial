@@ -124,9 +124,10 @@ if (GLSLC_EXECUTABLE)
     # Voxel-fill debugger: integrate a folder of frame PLYs into AdvancedTSDF frame by frame and
     # render the filling voxels (colored by tsdf/weight/fill-frame/direction, weight-thresholded)
     # to debug coverage/holes. --dump = headless per-frame stats.
-    add_spatial_example(voxel_fill_debugger voxel_fill_debugger.cpp VoxelFillRenderStrategy.cpp PointCloudPass.cpp ImGuiPass.cpp)
+    add_spatial_example(voxel_fill_debugger voxel_fill_debugger.cpp VoxelFillRenderStrategy.cpp PointCloudPass.cpp IsosurfaceMeshPass.cpp ImGuiPass.cpp)
     target_link_libraries(voxel_fill_debugger PRIVATE Engine::Render imgui Engine::Core Pipeline)
-    add_compiled_shaders(voxel_fill_debugger VOXDBG_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
+    add_compiled_shaders(voxel_fill_debugger VOXDBG_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag
+        Shaders/IsosurfaceMesh.vert.glsl Shaders/IsosurfaceMesh.frag.glsl)
 
     # Isosurface (Marching-Cubes family) debug viewer: extracts a surface with a SELECTABLE
     # extractor (mc/mc33/mtet/emc/dc/dmc/cms, see Mesh) over a selectable

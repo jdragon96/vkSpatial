@@ -1,6 +1,8 @@
 #include "VoxelFillRenderStrategy.h"
 
 #include "ImGuiPass.h"
+#include "Mesh/ExtractorRegistry.h"
+#include "Mesh/VoxelField.h"
 #include "PointCloudPass.h"
 
 #include "Engine/Core/Context.h"
@@ -11,6 +13,7 @@
 #include "imgui.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <utility>
 
@@ -90,6 +93,7 @@ namespace {
 VoxelFillRenderStrategy::VoxelFillRenderStrategy(Params params) : m_p(std::move(params)) {
     m_state.wThresh = m_p.wThresh;
     m_opts = m_p.opts;
+    m_map = m_p.map;
 }
 
 void VoxelFillRenderStrategy::Build(ep::Pipeline &pipe, Engine::Render::Application &app,
@@ -100,6 +104,14 @@ void VoxelFillRenderStrategy::Build(ep::Pipeline &pipe, Engine::Render::Applicat
     auto pcOwned = std::make_unique<PointCloudPass>(*m_ctx, app.GetSwapChain().Format(), shaderDir);
     m_pc = pcOwned.get();
     graph.AddPass(std::move(pcOwned));
+
+    // Triangle mesh of the extracted iso-surface. Added before ImGuiPass so the UI draws on top.
+    auto meshOwned = std::make_unique<IsosurfaceMeshPass>(*m_ctx, app.GetSwapChain().Format(),
+                                                          VOXDBG_SHADER_DIR);
+    m_mesh = meshOwned.get();
+    m_mesh->SetClears(false); // PointCloudPass already cleared and drew
+
+    graph.AddPass(std::move(meshOwned));
 
     auto &glfwWindow = static_cast<Engine::Render::GlfwWindow &>(app.GetWindow());
     auto imguiOwned = std::make_unique<ImGuiPass>(*m_ctx, glfwWindow.Handle(),
@@ -123,6 +135,7 @@ void VoxelFillRenderStrategy::OnModel(std::shared_ptr<const ep::ModelSnapshot> s
     for (const auto &e: m_snap->entries) m_state.wMax = std::max(m_state.wMax, e.weight);
     m_state.wThresh = std::min(m_state.wThresh, m_state.wMax);
     m_state.dirty = true;
+    m_meshDirty = true;
 
     // Accumulate this frame's worker-stage times so the UI can show a running average per stage.
     m_workerProf.Add("integrate", m_snap->integrateMs);
@@ -136,11 +149,18 @@ void VoxelFillRenderStrategy::OnFrame() {
         if (m_p.onRebuild) {
             // no frame in flight -> safe to reupload point sets
             vkDeviceWaitIdle(m_ctx->device);
-            m_p.onRebuild(m_opts);
+            m_p.onRebuild(m_opts, m_map);
+            // The render side sizes its box outlines off the voxel, so it follows the edit.
+            m_p.voxel = m_map.baseVoxel;
+            m_p.trunc = m_map.truncation;
             m_snap.reset();
             m_pc->SetPointSet(0, {}); // occupied voxels
             m_pc->SetPointSet(1, {}); // new-this-frame voxels
         }
+    }
+    if (m_pendingExtract) {
+        m_pendingExtract = false;
+        extractMesh();
     }
     if (m_state.dirty && m_snap) {
         refresh();
@@ -191,6 +211,49 @@ void VoxelFillRenderStrategy::refresh() {
     m_pc->SetPointSet(6, submapBoxes);
 }
 
+// Marching-Cubes family extraction over the whole downloaded map. CPU, seconds on a large scan --
+// hence the explicit button rather than a per-frame refresh.
+// Single place that decides what is drawn: the mode gates whole families, the per-layer flags
+// pick within the point cloud. Anything that changes either calls this rather than poking a pass.
+void VoxelFillRenderStrategy::applyVisibility() {
+    const bool points = m_renderMode != RenderMode::Mesh;
+    if (m_pc) {
+        m_pc->SetVisible(0, points && m_state.showOccupied);
+        m_pc->SetVisible(1, points && m_state.showNew);
+        m_pc->SetVisible(2, points && m_state.showInput);
+        m_pc->SetVisible(3, points && m_state.showCamera);
+        m_pc->SetVisible(4, points && m_state.showWindowBox);
+        m_pc->SetVisible(5, points && m_state.showAllocBox);
+        m_pc->SetVisible(6, points && m_state.showSubmapBox);
+    }
+    // Nothing extracted yet -> nothing to show, whatever the mode says.
+    if (m_mesh) m_mesh->SetVisible(m_renderMode != RenderMode::Points && m_meshTriangles > 0);
+}
+
+void VoxelFillRenderStrategy::extractMesh() {
+    if (!m_snap || !m_mesh) return;
+
+    const auto start = std::chrono::steady_clock::now();
+    const Mesh::VoxelField field = Mesh::FromVoxels(m_snap->entries, m_p.voxel);
+
+    Mesh::ExtractorRegistry registry = Mesh::ExtractorRegistry::Default();
+    std::unique_ptr<Mesh::IsoSurfaceExtractor> extractor = registry.Create(m_extractorName);
+    if (!extractor) return;
+
+    Mesh::ExtractParams params;
+    params.isoLevel = 0.0f;
+    const Mesh::SurfaceMesh mesh = extractor->Extract(field, params);
+
+    vkDeviceWaitIdle(m_ctx->device); // SetMesh reallocates buffers a frame may still reference
+    m_mesh->SetMesh(mesh, Eigen::Vector3f(0.85f, 0.85f, 0.90f));
+    m_meshTriangles = mesh.triangles.size();
+    m_meshExtractMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    m_meshDirty = false;
+    if (m_renderMode == RenderMode::Points) m_renderMode = RenderMode::Both;
+    applyVisibility();
+}
+
 void VoxelFillRenderStrategy::drawStatsPanel(ep::Pipeline &pipe) {
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     const float margin = 10.0f;
@@ -201,6 +264,104 @@ void VoxelFillRenderStrategy::drawStatsPanel(ep::Pipeline &pipe) {
     ImGui::SetNextWindowSize({width, viewport->WorkSize.y - 2.0f * margin}, ImGuiCond_Always);
     ImGui::Begin("Pipeline Stats", nullptr,
                  ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
+
+    // Editable while paused, locked while playing: every field here forces a full rebuild and a
+    // replay from frame 0, so changing one mid-scan would silently discard the map being watched.
+    if (ImGui::CollapsingHeader("Configuration", ImGuiTreeNodeFlags_DefaultOpen)) {
+        const bool locked = !pipe.IsPaused();
+        if (locked) ImGui::TextDisabled("(pause to edit)");
+
+        ImGui::BeginDisabled(locked);
+        bool edited = false;
+
+        // Typed, not dragged: these are exact values an experiment is defined by (voxel 0.05, hash
+        // 1<<19), and a drag can never land on them. Commit on Enter so a half-typed field never
+        // reaches the config.
+        const ImGuiInputTextFlags commit = ImGuiInputTextFlags_EnterReturnsTrue;
+
+        // A third of ImGui's default field width: these hold short numbers, and the narrow field
+        // leaves room for the derived value printed beside it.
+        ImGui::PushItemWidth(ImGui::CalcItemWidth() / 3.0f);
+
+        if (ImGui::InputFloat("base voxel (m)", &m_map.baseVoxel, 0.0f, 0.0f, "%.4f", commit)) {
+            m_map.baseVoxel = std::max(1e-4f, m_map.baseVoxel);
+            edited = true;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("detail %.4f", m_map.baseVoxel * 0.5f);
+
+        // The integrate splat cost scales ~(truncation/voxel)^3, so the ratio is what is actually
+        // tuned -- typed in voxels, stored in metres.
+        float truncationVoxels = m_map.baseVoxel > 0.0f ? m_map.truncation / m_map.baseVoxel : 2.0f;
+        if (ImGui::InputFloat("truncation (voxels)", &truncationVoxels, 0.0f, 0.0f, "%.4f", commit)) {
+            m_map.truncation = std::max(0.1f, truncationVoxels) * m_map.baseVoxel;
+            edited = true;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("%.4f m", m_map.truncation);
+
+        int hashSlots = int(m_map.tileHash);
+        if (ImGui::InputInt("hash slots/window", &hashSlots, 0, 0, commit)) {
+            m_map.tileHash = uint32_t(std::max(1024, hashSlots));
+            edited = true;
+        }
+
+        int maxPoints = int(m_map.maxPoints);
+        if (ImGui::InputInt("max points/frame", &maxPoints, 0, 0, commit)) {
+            m_map.maxPoints = uint32_t(std::max(1024, maxPoints));
+            edited = true;
+        }
+
+        // The classifier packs a cell coordinate within its block into 6 bits per axis, so wider
+        // than 32 aliases distinct cells onto one key.
+        if (ImGui::InputInt("splitter block (vox)", &m_map.blockVoxels, 0, 0, commit)) {
+            m_map.blockVoxels = std::clamp(m_map.blockVoxels, 1, 32);
+            edited = true;
+        }
+
+        int directions = int(m_map.maxDirections);
+        if (ImGui::InputInt("max directions", &directions, 0, 0, commit)) {
+            m_map.maxDirections = uint32_t(std::clamp(directions, 1, 6));
+            edited = true;
+        }
+
+        int exponent = int(m_map.directionExponent);
+        if (ImGui::InputInt("direction exponent", &exponent, 0, 0, commit)) {
+            m_map.directionExponent = uint32_t(std::clamp(exponent, 1, 8));
+            edited = true;
+        }
+
+        ImGui::PopItemWidth();
+
+        edited |= ImGui::Checkbox("view-angle weight", &m_map.viewAngleWeight);
+        ImGui::SameLine();
+        edited |= ImGui::Checkbox("probe stats", &m_map.probeStats);
+
+        if (edited) m_configDirty = true;
+
+        if (m_configDirty) {
+            ImGui::TextColored(ImVec4(1.0f, 0.80f, 0.35f, 1.0f), "edited -- apply to rebuild");
+            if (ImGui::Button("Apply & replay")) {
+                m_configDirty = false;
+                m_pendingRebuild = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Revert")) {
+                m_map = m_p.map;
+                m_configDirty = false;
+            }
+        }
+        ImGui::EndDisabled();
+
+        ImGui::Separator();
+        ImGui::Text("window: 512 vox  (%.2f m)", m_map.baseVoxel * 512.0f);
+        ImGui::Text("toggles: submap %s, p2p %s, conf %.2f, hermite %s", m_opts.submap ? "on" : "off",
+                    m_opts.pointToPlane ? "on" : "off", m_opts.confidence ? m_map.confidence : 0.0f,
+                    m_opts.hermite ? "on" : "off");
+        ImGui::Text("source: %d frames, interval %.0f ms%s", m_p.nFrames, m_p.intervalMs,
+                    m_p.loop ? ", loop" : "");
+        ImGui::Text("tracker: %s", m_p.trackerName.c_str());
+    }
 
     const ep::PipelineStats ps = pipe.GetStats();
 
@@ -316,17 +477,57 @@ void VoxelFillRenderStrategy::drawUi(ep::Pipeline &pipe) {
     if (ImGui::SliderFloat("weight thresh", &m_state.wThresh, 0.0f, m_state.wMax, "%.3f"))
         m_state.dirty = true;
     if (ImGui::Checkbox("hide below thresh", &m_state.hideBelow)) m_state.dirty = true;
+    ImGui::SeparatorText("Render");
+    {
+        int mode = int(m_renderMode);
+        bool changed = ImGui::RadioButton("point cloud", &mode, 0);
+        ImGui::SameLine();
+        changed |= ImGui::RadioButton("mesh", &mode, 1);
+        ImGui::SameLine();
+        changed |= ImGui::RadioButton("both", &mode, 2);
+        if (changed) {
+            m_renderMode = RenderMode(mode);
+            applyVisibility();
+        }
+        if (m_renderMode != RenderMode::Points && m_meshTriangles == 0)
+            ImGui::TextDisabled("no mesh yet -- extract below");
+    }
+
+    ImGui::SeparatorText("Iso-surface mesh");
+    {
+        static const char *kExtractors[] = {"mc", "mc33", "mtet", "emc", "dc", "dmc", "cms"};
+        int current = 0;
+        for (int i = 0; i < IM_ARRAYSIZE(kExtractors); ++i)
+            if (m_extractorName == kExtractors[i]) current = i;
+        ImGui::PushItemWidth(ImGui::CalcItemWidth() / 3.0f);
+        if (ImGui::Combo("extractor", &current, kExtractors, IM_ARRAYSIZE(kExtractors))) {
+            m_extractorName = kExtractors[current];
+            m_meshDirty = true;
+        }
+        ImGui::PopItemWidth();
+
+        // Extraction walks the whole map on the CPU, so it never runs per frame.
+        if (ImGui::Button("Extract mesh")) m_pendingExtract = true;
+        ImGui::SameLine();
+        if (ImGui::Checkbox("wireframe", &m_meshWireframe)) m_mesh->SetWireframe(m_meshWireframe);
+
+        if (m_meshTriangles > 0)
+            ImGui::Text("%zu triangles   %.0f ms", m_meshTriangles, m_meshExtractMs);
+        if (m_meshDirty && m_meshTriangles > 0)
+            ImGui::TextColored(ImVec4(1.0f, 0.80f, 0.35f, 1.0f), "map changed -- re-extract");
+    }
+
     ImGui::SeparatorText("Layers");
-    if (ImGui::Checkbox("occupied", &m_state.showOccupied)) m_pc->SetVisible(0, m_state.showOccupied);
-    if (ImGui::Checkbox("new this frame", &m_state.showNew)) m_pc->SetVisible(1, m_state.showNew);
-    if (ImGui::Checkbox("input", &m_state.showInput)) m_pc->SetVisible(2, m_state.showInput);
-    if (ImGui::Checkbox("camera", &m_state.showCamera)) m_pc->SetVisible(3, m_state.showCamera);
+    if (ImGui::Checkbox("occupied", &m_state.showOccupied)) applyVisibility();
+    if (ImGui::Checkbox("new this frame", &m_state.showNew)) applyVisibility();
+    if (ImGui::Checkbox("input", &m_state.showInput)) applyVisibility();
+    if (ImGui::Checkbox("camera", &m_state.showCamera)) applyVisibility();
     if (ImGui::Checkbox("base tile windows", &m_state.showWindowBox))
-        m_pc->SetVisible(4, m_state.showWindowBox);
+        applyVisibility();
     if (ImGui::Checkbox("allocated box", &m_state.showAllocBox))
-        m_pc->SetVisible(5, m_state.showAllocBox);
+        applyVisibility();
     if (ImGui::Checkbox("submap regions (detail)", &m_state.showSubmapBox))
-        m_pc->SetVisible(6, m_state.showSubmapBox);
+        applyVisibility();
 
     // Per-stage option toggles. Flipping any checkbox rebuilds the pipeline with the new config and
     // replays from frame 0 (handled in OnFrame via m_p.onRebuild). Only shown when a rebuild hook exists.
