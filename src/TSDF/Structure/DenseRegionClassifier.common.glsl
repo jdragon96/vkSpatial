@@ -1,12 +1,19 @@
 /// Shared by all three DenseRegionClassifier passes (clear, accumulate, classify). Include AFTER
 /// #version, following voxel_common.glsl's precedent.
 ///
+/// Guarded because it defines a struct and a constant: each pass includes it exactly once today, so
+/// nothing needs the guard yet, but a transitive include would be a redefinition error rather than
+/// a warning.
+///
 /// BlockRecord used to be duplicated verbatim in all three shaders with nothing keeping the copies
 /// in step. The clear pass is the sharp case: it addresses one field BY NAME, so a field inserted
 /// above that name in the other two -- but missed there -- would silently zero the wrong field
 /// every frame, with no compile error and no test failure. One definition removes that failure
 /// mode for the GLSL side; the C++ mirror in DenseRegionClassifier.h is a fourth copy that still
 /// has to be edited by hand, and its static_assert on sizeof is what pins the two together.
+
+#ifndef DENSE_REGION_CLASSIFIER_COMMON_GLSL
+#define DENSE_REGION_CLASSIFIER_COMMON_GLSL
 
 /// Per-block statistics. Every field is a 4-byte scalar, so the std430 array stride is exactly
 /// sizeof(BlockRecord) and the C++ mirror needs no padding.
@@ -43,7 +50,16 @@ struct BlockRecord
 /// does not give a more confident estimate, it gives a mixture of differently-misregistered ones,
 /// and inter-frame registration error exceeds the detail voxel.
 ///
-/// The remaining bound is one frame, one block: 2^31 / 10000 = 214,748 points before int32 wraps.
+/// The remaining INT32 bound is one frame, one block: 2^31 / 10000 = 214,748 points before it wraps.
 /// A 0.32 m block receiving 214k points in a SINGLE frame is about 3.5x the worst real scan density
 /// measured for this component, so there is no counter for it.
+///
+/// It is not the only bound, only the only int32 one. Cumulative pointCount is an
+/// unbounded-across-frames uint32 that wraps at 4.295e9 points in one block -- before fineOccupied
+/// or coarseOccupied can, since a cell claim requires a point. That one is benign and therefore
+/// documented rather than guarded: right after the wrap keepsSignal fails, and once the count wraps
+/// to 0 classify's `pointCount < 1` guard returns early, so the block simply stops being able to
+/// latch. Conservative, and -- unlike the normal sum -- not selective for the flat wall.
 const float NORMAL_FIXED_POINT_SCALE = 10000.0;
+
+#endif // DENSE_REGION_CLASSIFIER_COMMON_GLSL

@@ -35,7 +35,17 @@ namespace TSDF {
         float normalCoherence = 0.9f;
         // Samples per fine cell after refinement. Below this the refined voxels are noise.
         float samplesPerFineCell = 3.0f;
-        // Absolute floor so a block glimpsed by a handful of points cannot latch to dense.
+        // Absolute floor, measured over ONE frame, so a block glimpsed by a handful of points cannot
+        // latch to dense. Per-frame rather than cumulative or remembered-maximum, so that this and
+        // normalCoherence describe the same frame: a block earns its detail level from a single
+        // viewpoint that saw both the extent and the curvature, never from extent remembered off an
+        // earlier frame and curvature measured on this one.
+        //
+        // That makes it a strictly tighter floor than a maximum-over-frames reading would be, and a
+        // SWEEPING scanner feels the difference first: a sensor crossing a block sees a different
+        // part of it each frame, so the block can fail this floor on every individual frame while
+        // the union of those frames would clear it easily. A caller whose trajectory sweeps rather
+        // than dwells should lower this to the footprint one pass actually delivers.
         uint32_t minimumFineOccupied = 64u;
     };
 
@@ -47,9 +57,16 @@ namespace TSDF {
     // The "Frame" fields hold THIS frame only and are zeroed by the clear pass every frame. The
     // normal sum in particular is per-frame ON PURPOSE: summed cumulatively it overflows int32 on
     // exactly the dense flat wall its veto exists for, and averaging normals across viewpoints
-    // mixes differently-misregistered estimates rather than sharpening one. The remaining bound is
-    // one frame, one block: 2^31 / 10000 = 214,748 points before int32 wraps -- about 3.5x the
-    // worst real scan density measured for a 0.32 m block, so it carries no counter.
+    // mixes differently-misregistered estimates rather than sharpening one. The remaining INT32
+    // bound is one frame, one block: 2^31 / 10000 = 214,748 points before it wraps -- about 3.5x
+    // the worst real scan density measured for a 0.32 m block, so it carries no counter.
+    //
+    // Cumulative pointCount is a separate, much larger bound: an unbounded-across-frames uint32 that
+    // wraps at 4.295e9 points in one block, before fineOccupied or coarseOccupied can, since a cell
+    // claim requires a point. Its consequence is benign, which is why it is documented rather than
+    // guarded: right after the wrap keepsSignal fails, and once the count wraps to 0 the
+    // `pointCount < 1` guard returns early, so the block simply stops being able to latch. It is
+    // conservative, and -- unlike the int32 normal sum -- not selective for the flat wall.
     struct BlockRecord {
         uint32_t blockKey;          // packed block coordinate; 0xFFFFFFFF = empty slot
         uint32_t pointCount;        // cumulative
