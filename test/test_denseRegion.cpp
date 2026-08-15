@@ -445,3 +445,67 @@ TEST(DenseRegionPartition, HashInsertFailureStillConservesEveryPoint) {
     EXPECT_EQ(size_t(std::count(seen.begin(), seen.end(), 1)), points.size())
             << "a frame that overflows the block table must still lose no points";
 }
+
+// Build-time maxPointPerFrame is a hint, not a cap. A larger frame must grow the buffers, because
+// clamping would drop points with no counter and no symptom -- growPointBuffers' own comment names
+// this as deliberate, and it is the same failure shape task 1's FIX 1 found already shipped once in
+// this repository (cellCapacity silently drifting past the buffers' true allocation). This is a
+// regression latch for that already-fixed behaviour, not a red/green TDD test: growPointBuffers
+// already grows the point/normal/blockIndex/base/detail buffers AND the cell hashes together (see
+// DenseRegionClassifier.cpp:111-152), so this is expected to pass on first run.
+TEST(DenseRegionPartition, LargeFrameGrowsInsteadOfTruncating) {
+    Engine::Core::Context context;
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, 0.01f, 32, /*maxPointPerFrame=*/1024u);
+
+    std::vector<Vector3f> points, normals;
+    MakePlane(points, normals, 0.0025f, 64); // 4096 points, four times the hint
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    classifier.Classify(batch);
+    classifier.Partition(batch);
+    batch.Submit();
+
+    std::vector<uint32_t> base, detail;
+    classifier.ReadPartition(base, detail);
+    EXPECT_EQ(base.size() + detail.size(), points.size())
+            << "the frame must not have been truncated to the build-time hint";
+
+    // A capacity-clamped run would drop points with no crash and no error. BlockInsertFailureCount
+    // guards a DIFFERENT ceiling (the 8192-slot block table; this fixture touches only 4 blocks, see
+    // MakePlane's comment on the block-corner straddle -- nowhere near that limit), but a grown frame
+    // must not be quietly failing through THAT counter either, so it is checked here too.
+    EXPECT_EQ(classifier.BlockInsertFailureCount(), 0u)
+            << "a grown frame must not be silently dropping points through the block-table ceiling";
+
+    // Second, independent channel: the ACCUMULATE pass (upstream of Partition) must also have seen
+    // every point, not just the build-time hint's worth. This exercises growPointBuffers' point/
+    // normal/blockIndex growth specifically, through BlockRecord::pointCount's atomicAdd -- a
+    // different buffer and a different kernel than the base/detail partition lists checked above and
+    // below, so a growth failure isolated to only one of the two buffer groups cannot hide from both
+    // checks at once.
+    uint32_t totalBlockPointCount = 0;
+    const std::vector<TSDF::BlockRecord> blocks = classifier.ReadBlocks();
+    for (const auto &block : blocks) totalBlockPointCount += block.pointCount;
+    EXPECT_EQ(totalBlockPointCount, points.size())
+            << "the accumulate pass must also have recorded the full frame, not just the hint";
+
+    // base.size()+detail.size() == points.size() alone does not prove every INDEX landed exactly
+    // once -- see EveryPointLandsInExactlyOneLevel's comment for why. Reusing that test's seen-map
+    // shape here rather than inventing a new one.
+    std::vector<uint8_t> seen(points.size(), 0);
+    for (uint32_t index : base)   { ASSERT_LT(index, points.size()); EXPECT_EQ(seen[index]++, 0); }
+    for (uint32_t index : detail) { ASSERT_LT(index, points.size()); EXPECT_EQ(seen[index]++, 0); }
+    EXPECT_EQ(size_t(std::count(seen.begin(), seen.end(), 1)), points.size())
+            << "a grown frame must still conserve every point exactly once, not just sum to the "
+               "right total";
+
+    // m_maxPointPerFrame is private and intentionally has no accessor (not adding one just for this
+    // test). The checks above ARE the observable consequence of growth: growPointBuffers is the only
+    // place that field changes, a single Record(4096 points) call against a fresh 1024-hint Build()
+    // either grows it to 6144 in that one call or does not grow it at all (there is no partial-growth
+    // case to worry about here), and the accumulate-pass and partition-list conservation checks above
+    // -- through two independent buffer groups and kernels -- both fail immediately the moment growth
+    // does not happen. Confirmed by mutation, not just by this argument: see task-4-report.md.
+}
