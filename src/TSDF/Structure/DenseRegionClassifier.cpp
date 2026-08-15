@@ -40,12 +40,14 @@ namespace TSDF {
 
         m_blockRecords = std::make_unique<Engine::Core::Buffer>(context);
         m_blockCount = std::make_unique<Engine::Core::Buffer>(context);
+        m_blockInsertFailureCount = std::make_unique<Engine::Core::Buffer>(context);
         m_fineCells = std::make_unique<Engine::Core::Buffer>(context);
         m_coarseCells = std::make_unique<Engine::Core::Buffer>(context);
         m_blockIndex = std::make_unique<Engine::Core::Buffer>(context);
 
         m_blockRecords->AllocateHostVisibleReadback(kBlockCapacity * sizeof(BlockRecord));
         m_blockCount->AllocateHostVisibleReadback(sizeof(uint32_t));
+        m_blockInsertFailureCount->AllocateHostVisibleReadback(sizeof(uint32_t));
         m_fineCells->Allocate(cellCapacity * sizeof(uint32_t));
         m_coarseCells->Allocate(cellCapacity * sizeof(uint32_t));
         m_blockIndex->Allocate(maxPointPerFrame * sizeof(uint32_t));
@@ -64,7 +66,8 @@ namespace TSDF {
                 .Bind(3, *m_blockCount)
                 .Bind(4, *m_blockIndex)
                 .Bind(5, *m_fineCells)
-                .Bind(6, *m_coarseCells);
+                .Bind(6, *m_coarseCells)
+                .Bind(7, *m_blockInsertFailureCount);
 
         Reset();
     }
@@ -80,8 +83,23 @@ namespace TSDF {
         m_normalBuffer->AllocateHostVisible(grown * 3u * sizeof(float));
         m_blockIndex = std::make_unique<Engine::Core::Buffer>(*m_context);
         m_blockIndex->Allocate(grown * sizeof(uint32_t));
+
+        // The cell hashes are sized off maxPointPerFrame too (a frame can never occupy more cells
+        // than it has points), so they must grow in lockstep with it, here, in the one place
+        // m_maxPointPerFrame itself changes. Previously they were sized once in Build() from the
+        // raw, pre-grow parameter, while Record() kept recomputing cellCapacity from the (now
+        // inflated) member -- the two could silently drift apart the moment this function's own
+        // 1.5x growth ran, handing the kernels a cellCapacity past the buffers' true allocation.
+        const uint32_t cellCapacity = uint32_t(float(grown) * kCellCapacityFactor);
+        m_fineCells = std::make_unique<Engine::Core::Buffer>(*m_context);
+        m_coarseCells = std::make_unique<Engine::Core::Buffer>(*m_context);
+        m_fineCells->Allocate(cellCapacity * sizeof(uint32_t));
+        m_coarseCells->Allocate(cellCapacity * sizeof(uint32_t));
+
         m_maxPointPerFrame = grown;
-        if (kernel_accumulate) kernel_accumulate->Bind(4, *m_blockIndex);
+        if (kernel_accumulate)
+            kernel_accumulate->Bind(4, *m_blockIndex).Bind(5, *m_fineCells).Bind(6, *m_coarseCells);
+        if (kernel_clearCells) kernel_clearCells->Bind(0, *m_fineCells).Bind(1, *m_coarseCells);
     }
 
     void DenseRegionClassifier::Reset() {
@@ -93,6 +111,8 @@ namespace TSDF {
         m_blockRecords->MakeVisibleToGPU(kBlockCapacity * sizeof(BlockRecord));
         *static_cast<uint32_t *>(m_blockCount->MappedPtr()) = 0;
         m_blockCount->MakeVisibleToGPU(sizeof(uint32_t));
+        *static_cast<uint32_t *>(m_blockInsertFailureCount->MappedPtr()) = 0;
+        m_blockInsertFailureCount->MakeVisibleToGPU(sizeof(uint32_t));
     }
 
     void DenseRegionClassifier::Record(const std::vector<Eigen::Vector3f> &points,
@@ -117,6 +137,12 @@ namespace TSDF {
         kernel_clearCells->Args(ClearPC{cellCapacity, kBlockCapacity});
         batch.DispatchElements(*kernel_clearCells, std::max(cellCapacity, kBlockCapacity));
 
+        // Orders the accumulate dispatch after the clear dispatch's writes to the cell hashes and
+        // fineOccupiedFrame: Vulkan gives no ordering guarantee between two dispatches recorded back
+        // to back, so without this the accumulate kernel could read a stale or partially-cleared
+        // hash from a previous frame.
+        batch.Barrier();
+
         kernel_accumulate->Bind(0, *m_pointBuffer).Bind(1, *m_normalBuffer);
         kernel_accumulate->Args(AccumulatePC{n, kBlockCapacity, cellCapacity, m_baseVoxel,
                                              int32_t(m_blockVoxels)});
@@ -127,6 +153,12 @@ namespace TSDF {
         if (!m_blockCount) return 0;
         m_blockCount->MakeVisibleToCPU(sizeof(uint32_t));
         return *static_cast<const uint32_t *>(m_blockCount->MappedPtr());
+    }
+
+    uint32_t DenseRegionClassifier::BlockInsertFailureCount() const {
+        if (!m_blockInsertFailureCount) return 0;
+        m_blockInsertFailureCount->MakeVisibleToCPU(sizeof(uint32_t));
+        return *static_cast<const uint32_t *>(m_blockInsertFailureCount->MappedPtr());
     }
 
     std::vector<BlockRecord> DenseRegionClassifier::ReadBlocks() const {

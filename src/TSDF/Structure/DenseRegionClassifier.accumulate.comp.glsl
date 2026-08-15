@@ -32,6 +32,9 @@ layout(std430, set = 0, binding = 3) buffer BlockCount { uint g_blockCount; };
 layout(std430, set = 0, binding = 4) buffer BlockIndex { uint g_blockIndex[]; };
 layout(std430, set = 0, binding = 5) buffer FineCells   { uint g_fineCells[]; };
 layout(std430, set = 0, binding = 6) buffer CoarseCells { uint g_coarseCells[]; };
+// Points dropped because the block table's probing gave up before finding a slot. Must stay 0 in a
+// healthy run -- a non-zero value means kBlockCapacity is too small for the scene.
+layout(std430, set = 0, binding = 7) buffer BlockInsertFailures { uint g_blockInsertFailureCount; };
 
 layout(push_constant) uniform PC
 {
@@ -48,13 +51,14 @@ const int NORMAL_SCALE = 10000;
 /// what makes "distinct cells this frame" countable without a second pass. Two near-identical
 /// functions rather than one: GLSL has no reference-to-array parameter to pass the table with.
 
-/// 21-bit-per-axis block coordinate. Blocks are 32 base voxels, so this spans a 67 km cube at
-/// 1 mm voxels -- far past any scan.
+/// Disjoint 10-bit fields, spaced exactly 10 apart -- the XOR-with-overlapping-shifts form this
+/// replaced aliased distinct blocks onto one key. Range is +/-512 blocks (about +/-163 m at 0.32 m
+/// blocks); the maximum value is 0x3FFFFFFF, so a real key can never equal EMPTY_KEY.
 uint packBlockKey(ivec3 block)
 {
-	return ((uint(block.x + 1048576) & 0x1FFFFFu) << 11)
-	     ^ ((uint(block.y + 1048576) & 0x1FFFFFu) << 5)
-	     ^  (uint(block.z + 1048576) & 0x1FFFFFu);
+	return ((uint(block.x + 512) & 0x3FFu) << 20)
+	     | ((uint(block.y + 512) & 0x3FFu) << 10)
+	     |  (uint(block.z + 512) & 0x3FFu);
 }
 
 uint findOrInsertBlock(uint key)
@@ -112,7 +116,11 @@ void main()
 
 	// 2. Block record.
 	uint blockSlot = findOrInsertBlock(packBlockKey(block));
-	if (blockSlot == EMPTY_KEY) { g_blockIndex[i] = EMPTY_KEY; return; }
+	if (blockSlot == EMPTY_KEY) {
+		atomicAdd(g_blockInsertFailureCount, 1u); // table full -- drop is counted, not silent
+		g_blockIndex[i] = EMPTY_KEY;
+		return;
+	}
 	g_blockIndex[i] = blockSlot;
 
 	// 3. Point and normal.

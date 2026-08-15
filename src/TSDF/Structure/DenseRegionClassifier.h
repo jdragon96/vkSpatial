@@ -62,6 +62,12 @@ namespace TSDF {
 
         uint32_t BlockCount() const;
 
+        // Points dropped because the block table's probing gave up before finding a slot. Zero in a
+        // healthy run; non-zero means kBlockCapacity is too small for the scene. Mirrors how the TSDF
+        // backends (e.g. AdvancedTSDF::InsertFailureCount) surface their own insert failures: a
+        // counter the caller can observe rather than a silent drop.
+        uint32_t BlockInsertFailureCount() const;
+
         // Occupied block records, for tests and diagnostics. Not a per-frame path.
         std::vector<BlockRecord> ReadBlocks() const;
 
@@ -78,6 +84,7 @@ namespace TSDF {
         std::unique_ptr<Engine::Core::Buffer> m_normalBuffer;
         std::unique_ptr<Engine::Core::Buffer> m_blockRecords;
         std::unique_ptr<Engine::Core::Buffer> m_blockCount;
+        std::unique_ptr<Engine::Core::Buffer> m_blockInsertFailureCount;
         std::unique_ptr<Engine::Core::Buffer> m_blockIndex;   // per point -> record index
         std::unique_ptr<Engine::Core::Buffer> m_fineCells;    // per-frame key-only hash
         std::unique_ptr<Engine::Core::Buffer> m_coarseCells;  // per-frame key-only hash

@@ -4,6 +4,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -54,6 +55,8 @@ TEST(DenseRegionAccumulate, CountsPointsAndOccupancyPerBlock) {
     EXPECT_GT(blocks[0].coarseOccupied, 0u);
     EXPECT_GE(blocks[0].fineOccupied, blocks[0].coarseOccupied)
             << "a finer grid can never have fewer occupied cells";
+    EXPECT_EQ(classifier.BlockInsertFailureCount(), 0u)
+            << "a healthy run must not report a full block table";
 }
 
 // The ratio is the whole spacing estimate: occupiedFine/occupiedCoarse = min(4, (v/s)^2).
@@ -79,4 +82,50 @@ TEST(DenseRegionAccumulate, OccupancyRatioTracksSampleSpacing) {
 
     EXPECT_NEAR(ratioAt(baseVoxel * 0.25f, 64), 4.0, 0.6) << "s = v/4 resolves the fine grid";
     EXPECT_NEAR(ratioAt(baseVoxel * 2.0f, 8), 1.0, 0.3) << "s = 2v resolves neither grid";
+}
+
+// Regression for a packBlockKey collision review found: under the old XOR-with-overlapping-shifts
+// formula, blocks (-32,-32,32) and (-32,-31,0) -- 10+ metres apart at 0.32 m blocks -- both packed
+// to 0x7e10fc20, silently merging their two records into one (corrupting point count, normal sum,
+// and, through the shared blockSlot, occupancy). Confirmed to fail against the old packBlockKey
+// before the disjoint-field fix landed; must keep passing after.
+TEST(DenseRegionAccumulate, DistantBlocksDoNotCollide) {
+    Engine::Core::Context context;
+    const float baseVoxel = 0.01f;
+    const int blockVoxels = 32;
+    const float blockWorld = baseVoxel * float(blockVoxels);
+
+    TSDF::DenseRegionClassifier classifier;
+    classifier.Build(context, baseVoxel, blockVoxels, /*maxPointPerFrame=*/1u << 12);
+
+    auto blockCentre = [&](int blockX, int blockY, int blockZ) {
+        return Vector3f((float(blockX) + 0.5f) * blockWorld, (float(blockY) + 0.5f) * blockWorld,
+                        (float(blockZ) + 0.5f) * blockWorld);
+    };
+
+    // Cluster A: 5 points near the centre of block (-32,-32,32).
+    // Cluster B: 3 points near the centre of block (-32,-31,0) -- the reviewer's colliding pair.
+    std::vector<Vector3f> points, normals;
+    const Vector3f centreA = blockCentre(-32, -32, 32);
+    const Vector3f centreB = blockCentre(-32, -31, 0);
+    for (int i = 0; i < 5; ++i) {
+        points.push_back(centreA + Vector3f(float(i) * 0.001f, 0.0f, 0.0f));
+        normals.emplace_back(0.0f, 0.0f, 1.0f);
+    }
+    for (int i = 0; i < 3; ++i) {
+        points.push_back(centreB + Vector3f(float(i) * 0.001f, 0.0f, 0.0f));
+        normals.emplace_back(0.0f, 0.0f, 1.0f);
+    }
+
+    Engine::Compute::CommandBatch batch(context);
+    classifier.Record(points, normals, batch);
+    batch.Submit();
+
+    const std::vector<TSDF::BlockRecord> blocks = classifier.ReadBlocks();
+    ASSERT_EQ(blocks.size(), 2u) << "two blocks 10+ m apart must not collide onto one record";
+    std::vector<uint32_t> pointCounts;
+    for (const auto &block : blocks) pointCounts.push_back(block.pointCount);
+    std::sort(pointCounts.begin(), pointCounts.end());
+    EXPECT_EQ(pointCounts, (std::vector<uint32_t>{3u, 5u}))
+            << "point counts must match the two clusters exactly -- a merge would sum them to 8";
 }
