@@ -4,6 +4,8 @@
 
 #include <Eigen/Core>
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <memory>
 #include <vector>
@@ -34,9 +36,18 @@ namespace Pipeline {
         virtual bool Grab(DepthFrame &out) = 0; // false when the stream ends
     };
 
+    struct DepthFilterOptions {
+        // Reject a neighbour whose depth differs by more than max(minimumDepthJump,
+        // relativeDepthJump * z). Relative because stereo depth error grows as z^2/(f*baseline): a
+        // fixed threshold over-rejects near the camera and under-rejects far from it.
+        float relativeDepthJump = 0.02f;  // 2 % of range
+        float minimumDepthJump = 0.005f;  // 5 mm floor, for the near field
+    };
+
     // Back-project a depth image to camera-frame points + normals (normals from the organized-grid
     // neighbours, oriented toward the camera). Reusable across any depth device.
-    inline Frame BackprojectDepth(const DepthFrame &d, const CameraIntrinsics &k) {
+    inline Frame BackprojectDepth(const DepthFrame &d, const CameraIntrinsics &k,
+                                   const DepthFilterOptions &filter = {}) {
         Frame fr;
         const int W = k.width, H = k.height;
         if (W <= 0 || H <= 0 || int(d.depth.size()) < W * H) return fr;
@@ -56,6 +67,15 @@ namespace Pipeline {
             for (int u = 0; u + 1 < W; ++u) {
                 const std::size_t i = std::size_t(v) * W + u;
                 if (!valid[i] || !valid[i + 1] || !valid[i + W]) continue;
+
+                // A step in depth is two surfaces, not one: differencing across it yields a normal
+                // belonging to neither. The point goes with the normal -- Frame's contract is
+                // pts.size() == nrm.size(), and the whole pipeline assumes it.
+                const float z = grid[i].z();
+                const float maxJump = std::max(filter.minimumDepthJump, filter.relativeDepthJump * z);
+                if (std::abs(grid[i + 1].z() - z) > maxJump) continue;
+                if (std::abs(grid[i + W].z() - z) > maxJump) continue;
+
                 Eigen::Vector3f n = (grid[i + 1] - grid[i]).cross(grid[i + W] - grid[i]);
                 if (n.norm() < 1e-9f) continue;
                 n.normalize();
