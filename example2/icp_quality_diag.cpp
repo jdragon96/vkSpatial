@@ -7,10 +7,19 @@
 // directions) plus each tracker's average residual RMSE / align time -- a headless stand-in for the
 // GUI viewer's live quality, so icp-vs-identity (and clean-map-vs-WIP-map) can be A/B'd with numbers.
 //
-// Usage: icp_quality_diag --dir <folder> [--voxel v] [--trackers identity,icp[,icp-cpu]]
+// Usage: icp_quality_diag --dir <folder of frame_*.ply> [--voxel v] [--trackers identity,icp]
+//        icp_quality_diag --replay <depth recording>   [--voxel v] [--trackers identity,icp]
+//
+// --replay drives the same comparison from a raw depth recording, so a real camera capture can be
+// scored the same way. Note what "identity" means there: a hand-held camera's frames are NOT
+// pre-registered, so identity is no longer ground truth -- it is the null hypothesis, the
+// reconstruction you get by pretending the sensor never moved. Drift away from it is the signal
+// that ICP found motion, not that ICP is wrong.
 
 #include "Pipeline/Pipeline.h"
 #include "Pipeline/Registration/Tracker.h"       // TrackerRegistry
+#include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
+#include "Pipeline/Reconstruction/DepthRecording.h"
 #include "Pipeline/Reconstruction/FrameLoader.h" // LoadFrames / ComputeBounds
 #include "Engine/Eval/RmseMetrics.h"                     // NearestNeighbourRMSE
 #include "utilities/ArgParser.h"
@@ -18,6 +27,8 @@
 #include <Eigen/Core>
 
 #include <chrono>
+#include <cstdint>
+#include <memory>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -48,34 +59,53 @@ namespace {
         double alignMsAvg = 0.0;
         double trackerRmseAvg = 0.0;
         std::size_t entries = 0;
+        // Per-stage counters. The headline "frames" is the last INTEGRATED frame index, which on
+        // its own cannot say whether a short run means the source ended, the tracker stalled, or
+        // the lossy trackedFrames channel threw the rest away.
+        std::uint64_t acquired = 0, aligned = 0, integrated = 0;
+        std::size_t dropped = 0;
     };
 
     // Drive the pipeline to completion over all frames, then snapshot the final model + stats.
-    RunResult runTracker(const std::vector<std::string> &framePaths, float voxel,
-                         const std::string &trackerName) {
+    RunResult runTracker(const ep::AcquisitionConfig &acquisition, int lastFrame, float voxel,
+                         float truncation, const std::string &trackerName) {
         ep::Pipeline::Config config;
         config.map.baseVoxel = voxel;
-        config.acquisition.type = ep::EAcquisitionType::File;
-        config.acquisition.framePaths = framePaths;
-        config.acquisition.intervalMs = 0.0; // as fast as the stages allow
-        config.acquisition.loop = false;
+        if (truncation > 0.0f) config.map.truncation = truncation;
+        config.acquisition = acquisition;
 
         ep::TrackerRegistry registry = ep::TrackerRegistry::Default();
         ep::Pipeline pipe(config, registry.Create(trackerName));
         pipe.Start();
         pipe.SetPaused(false);
 
-        const int lastFrame = int(framePaths.size()) - 1;
-        int seen = -1, stableAtEnd = 0;
+        // Two completion tests, because reaching the last frame is not guaranteed: trackedFrames
+        // is a lossy channel (capacity 4, drops when full), so whenever integration is slower than
+        // tracking the final frame index is simply never processed. Waiting only on that burns the
+        // whole timeout on a run that finished long ago.
+        static constexpr int kStallTicks = 100; // 100 * 20 ms = 2 s of no new integration
+        int seen = -1, stableAtEnd = 0, stalledTicks = 0;
+        std::uint64_t lastIntegrated = 0;
         const auto start = std::chrono::steady_clock::now();
         while (true) {
             pipe.CheckErrors(); // rethrow any worker-stage exception
+            const ep::PipelineStats live = pipe.GetStats();
             const int processed = pipe.ProcessedFrame();
-            if (processed >= lastFrame) {
+            if (lastFrame >= 0 && processed >= lastFrame) {
                 if (++stableAtEnd > 15) break; // all frames integrated + settled
             } else {
                 stableAtEnd = 0;
             }
+            if (live.integratedFrames == lastIntegrated) {
+                if (live.integratedFrames > 0 && ++stalledTicks > kStallTicks) break;
+            } else {
+                stalledTicks = 0;
+                lastIntegrated = live.integratedFrames;
+            }
+            if (processed != seen && processed % 25 == 0)
+                std::printf("  [%s] frame %d/%d  integrated %llu  dropped %zu\n",
+                            trackerName.c_str(), processed, lastFrame,
+                            (unsigned long long) live.integratedFrames, live.trackDropped);
             seen = processed;
             if (std::chrono::steady_clock::now() - start > std::chrono::seconds(180)) {
                 std::printf("  [warn] tracker '%s' timed out at frame %d/%d\n", trackerName.c_str(), seen,
@@ -90,6 +120,10 @@ namespace {
         r.processedFrames = stats.processedFrame;
         r.alignMsAvg = stats.alignMsAvg;
         r.trackerRmseAvg = stats.trackerRmseAvg;
+        r.acquired = stats.acquiredFrames;
+        r.aligned = stats.alignedFrames;
+        r.integrated = stats.integratedFrames;
+        r.dropped = stats.trackDropped;
         if (const std::shared_ptr<const ep::ModelSnapshot> model = pipe.LatestModel()) {
             r.entries = model->entries.size();
             r.reconPoints.reserve(model->entries.size());
@@ -102,24 +136,67 @@ namespace {
 } // namespace
 
 int main(int argc, char **argv) {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     try {
         util::ArgParser arg =
                 util::BuildArgParser(argc, argv)
-                        .Must("--dir",
-                              "usage: icp_quality_diag --dir <folder> [--voxel v] [--trackers identity,icp]")
-                        .Option("--voxel")                  // default runtime-computed (extent / 200)
+                        .Option("--dir")
+                        .Option("--replay")
+                        .Option("--voxel")     // default runtime-computed (extent / 200)
+                        .Option("--truncation")// default: MapConfig's, or 3 voxels for --replay
                         .Option("--trackers", "identity,icp");
-        if (!arg) return 2; // a Must was unsatisfied (usage already printed)
 
         const std::string dir = arg.Value("--dir");
-        const std::vector<std::string> framePaths = collectFramePaths(dir);
-        if (framePaths.empty()) {
-            std::printf("no frame_*.ply found in %s\n", dir.c_str());
-            return 1;
+        const std::string replayDirectory = arg.Value("--replay");
+        if (dir.empty() == replayDirectory.empty()) {
+            std::printf("usage: icp_quality_diag --dir <folder of frame_*.ply> [--voxel v] "
+                        "[--trackers identity,icp]\n"
+                        "       icp_quality_diag --replay <depth recording> [--voxel v] "
+                        "[--truncation t] [--trackers identity,icp]\n");
+            return 2;
         }
-        const std::vector<ep::Frame> frames = ep::LoadFrames(framePaths);
-        const ep::FrameBounds bounds = ep::ComputeBounds(frames);
-        const float voxel = arg.ValueFloat("--voxel", bounds.Extent() / 200.0f);
+
+        ep::AcquisitionConfig acquisition;
+        int lastFrame = -1;
+        float voxel = 0.0f;
+        float truncation = arg.ValueFloat("--truncation", 0.0f);
+        std::string label;
+
+        if (!dir.empty()) {
+            const std::vector<std::string> framePaths = collectFramePaths(dir);
+            if (framePaths.empty()) {
+                std::printf("no frame_*.ply found in %s\n", dir.c_str());
+                return 1;
+            }
+            const ep::FrameBounds bounds = ep::ComputeBounds(ep::LoadFrames(framePaths));
+            voxel = arg.ValueFloat("--voxel", bounds.Extent() / 200.0f);
+            acquisition.type = ep::EAcquisitionType::File;
+            acquisition.framePaths = framePaths;
+            acquisition.intervalMs = 0.0; // as fast as the stages allow
+            acquisition.loop = false;
+            lastFrame = int(framePaths.size()) - 1;
+            char buf[512];
+            std::snprintf(buf, sizeof buf, "%s  (%zu frames, extent %.4f)", dir.c_str(),
+                          framePaths.size(), bounds.Extent());
+            label = buf;
+        } else {
+            // Opened once here for its frame count and intrinsics; each run builds its own.
+            const ep::RecordedDepthProvider probe(replayDirectory);
+            const ep::CameraIntrinsics k = probe.Intrinsics();
+            lastFrame = probe.FrameCount() - 1;
+            voxel = arg.ValueFloat("--voxel", 0.01f); // indoor scale, not the 190 m synthetic default
+            if (truncation <= 0.0f) truncation = 3.0f * voxel;
+
+            acquisition.type = ep::EAcquisitionType::DepthCamera;
+            acquisition.makeSource = [replayDirectory]() -> std::unique_ptr<ep::IFrameSource> {
+                return std::make_unique<ep::DepthCameraFrameSource>(
+                        std::make_unique<ep::RecordedDepthProvider>(replayDirectory));
+            };
+            char buf[512];
+            std::snprintf(buf, sizeof buf, "%s  (%d depth frames, %dx%d, fx %.2f)",
+                          replayDirectory.c_str(), probe.FrameCount(), k.width, k.height, k.fx);
+            label = buf;
+        }
 
         // Split "identity,icp" into names.
         std::vector<std::string> trackers;
@@ -134,18 +211,21 @@ int main(int argc, char **argv) {
             }
         }
 
-        std::printf("dir      : %s  (%zu frames, extent %.4f)\n", dir.c_str(), framePaths.size(),
-                    bounds.Extent());
-        std::printf("voxel    : %.4f\n\n", voxel);
-        std::printf("%-10s | %8s | %10s | %13s | %9s\n", "tracker", "frames", "align ms", "trackerRmse",
-                    "entries");
-        std::printf("-----------|----------|------------|---------------|----------\n");
+        std::printf("source   : %s\n", label.c_str());
+        std::printf("voxel    : %.4f   truncation : %.4f\n\n", voxel,
+                    truncation > 0.0f ? truncation : 1.5f);
+        std::printf("%-10s | %6s | %8s | %11s | %9s | %6s %6s %6s %6s\n", "tracker", "frames",
+                    "align ms", "trackerRmse", "entries", "acq", "align", "integ", "drop");
+        std::printf("-----------|--------|----------|-------------|-----------|"
+                    "-------------------------------\n");
 
         std::vector<RunResult> results;
         for (const std::string &t: trackers) {
-            RunResult r = runTracker(framePaths, voxel, t);
-            std::printf("%-10s | %8d | %10.2f | %13.6f | %9zu\n", t.c_str(), r.processedFrames, r.alignMsAvg,
-                        r.trackerRmseAvg, r.entries);
+            RunResult r = runTracker(acquisition, lastFrame, voxel, truncation, t);
+            std::printf("%-10s | %6d | %8.2f | %11.6f | %9zu | %6llu %6llu %6llu %6zu\n", t.c_str(),
+                        r.processedFrames, r.alignMsAvg, r.trackerRmseAvg, r.entries,
+                        (unsigned long long) r.acquired, (unsigned long long) r.aligned,
+                        (unsigned long long) r.integrated, r.dropped);
             results.push_back(std::move(r));
         }
 
