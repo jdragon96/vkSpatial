@@ -48,6 +48,14 @@ target_link_libraries(tsdf_pipeline_debugger PRIVATE Engine::Core Pipeline)
 add_spatial_example(icp_quality_diag icp_quality_diag.cpp)
 target_link_libraries(icp_quality_diag PRIVATE Pipeline Engine::Core)
 
+# RealSense D435 depth-camera capture/replay tool: --record drives a live device through
+# DepthRecorder to a directory; --replay reads a recording back through RecordedDepthProvider +
+# BackprojectDepth with no camera or SDK required (no window -- headless, like the diagnostics
+# above). --record prints a reason and exits when built without librealsense2 (VKBVH_HAS_REALSENSE
+# not defined by src/Pipeline/CMakeLists.txt's optional find_package(realsense2)).
+add_spatial_example(depth_capture depth_capture.cpp)
+target_link_libraries(depth_capture PRIVATE Pipeline)
+
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
 if (GLSLC_EXECUTABLE)
     function(add_compiled_shaders target define)

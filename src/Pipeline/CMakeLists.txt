@@ -18,3 +18,14 @@ target_include_directories(EnginePipeline
             /opt/homebrew/opt/eigen/include/eigen3
         PRIVATE
             "${VULKAN_SDK}/include")
+
+# Optional: the RealSense provider compiles only where librealsense2 is installed, so the build
+# works unchanged on a machine without the SDK (or without the camera).
+find_package(realsense2 QUIET)
+if (realsense2_FOUND)
+    target_link_libraries(EnginePipeline PUBLIC realsense2::realsense2)
+    target_compile_definitions(EnginePipeline PUBLIC VKBVH_HAS_REALSENSE)
+    message(STATUS "librealsense2 found -- RealSenseDepthProvider enabled")
+else ()
+    message(STATUS "librealsense2 not found -- RealSenseDepthProvider disabled")
+endif ()
