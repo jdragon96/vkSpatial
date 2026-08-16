@@ -69,7 +69,7 @@ namespace {
         std::uint64_t acquired = 0, aligned = 0, integrated = 0;
         std::size_t dropped = 0;
         double stepAvg = 0.0, stepMax = 0.0, turnMax = 0.0, pathLength = 0.0;
-        std::uint64_t rejected = 0;
+        std::uint64_t rejected = 0, noModel = 0, noLocal = 0, fewInliers = 0, lowOverlap = 0;
     };
 
     // Drive the pipeline to completion over all frames, then snapshot the final model + stats.
@@ -135,6 +135,10 @@ namespace {
         r.integrated = stats.integratedFrames;
         r.dropped = stats.trackDropped;
         r.rejected = stats.trackRejected;
+        r.noModel = stats.rejectedNoModel;
+        r.noLocal = stats.rejectedNoLocalTarget;
+        r.fewInliers = stats.rejectedTooFewInliers;
+        r.lowOverlap = stats.rejectedLowOverlap;
         r.stepAvg = stats.poseDeltaMetersAvg;
         r.stepMax = stats.poseDeltaMetersMax;
         r.turnMax = stats.poseDeltaDegreesMax;
@@ -272,6 +276,18 @@ int main(int argc, char **argv) {
             std::printf("%-10s | %10.4f | %10.4f | %9.2f d | %12.3f | %8llu\n", trackers[i].c_str(),
                         results[i].stepAvg, results[i].stepMax, results[i].turnMax,
                         results[i].pathLength, (unsigned long long) results[i].rejected);
+
+        std::printf("\nWhy tracks were rejected (a rejected frame is integrated at the PREVIOUS "
+                    "pose):\n");
+        std::printf("%-10s | %9s | %13s | %14s | %11s\n", "tracker", "no model", "no local map",
+                    "too few inliers", "low overlap");
+        std::printf("-----------|-----------|---------------|----------------|------------\n");
+        for (std::size_t i = 0; i < trackers.size(); ++i)
+            std::printf("%-10s | %9llu | %13llu | %14llu | %11llu\n", trackers[i].c_str(),
+                        (unsigned long long) results[i].noModel,
+                        (unsigned long long) results[i].noLocal,
+                        (unsigned long long) results[i].fewInliers,
+                        (unsigned long long) results[i].lowOverlap);
 
         // If an `identity` run exists, score every other tracker's reconstruction against it (identity
         // == the pre-registered ground-truth reference). Higher RMSE => that tracker drifted the surface.

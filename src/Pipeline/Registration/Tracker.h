@@ -13,12 +13,24 @@
 
 namespace Pipeline {
 
+    // Why a track was not adopted. All of these currently surface as valid == false, which cannot
+    // be acted on: "the map has not been built yet" and "the solve latched onto strays" call for
+    // opposite responses, and only the counts distinguish them.
+    enum class ETrackFailure {
+        None,           // the track was adopted
+        NoModel,        // no map yet, or an empty frame -- expected on the first frames
+        NoLocalTarget,  // the frame's neighbourhood holds almost no map: it is somewhere new
+        TooFewInliers,  // the solve found fewer correspondences than minInliers
+        LowOverlap,     // enough inliers, but too small a share of the frame -- the fitness gate
+    };
+
     struct TrackingResult {
         Eigen::Isometry3f pose = Eigen::Isometry3f::Identity(); // sensor -> world
         float fitness = 0.0f;
         std::size_t inliers = 0;
         float rmse = 0.0f; // residual rmse (0 if the tracker doesn't compute one, e.g. identity)
         bool valid = false;
+        ETrackFailure failure = ETrackFailure::NoModel;
     };
 
     class Tracker {

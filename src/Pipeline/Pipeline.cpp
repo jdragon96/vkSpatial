@@ -75,6 +75,10 @@ namespace Pipeline {
         s.alignedFrames = m_registration->AlignedFrames();
         s.trackerRmseAvg = m_registration->TrackerRmseAvg();
         s.trackRejected = m_registration->Rejected();
+        s.rejectedNoModel = m_registration->RejectedNoModel();
+        s.rejectedNoLocalTarget = m_registration->RejectedNoLocalTarget();
+        s.rejectedTooFewInliers = m_registration->RejectedTooFewInliers();
+        s.rejectedLowOverlap = m_registration->RejectedLowOverlap();
         s.poseDeltaMetersAvg = m_registration->PoseDeltaMetersAvg();
         s.poseDeltaMetersMax = m_registration->PoseDeltaMetersMax();
         s.poseDeltaDegreesMax = m_registration->PoseDeltaDegreesMax();

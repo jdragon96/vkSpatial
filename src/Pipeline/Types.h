@@ -103,6 +103,11 @@ namespace Pipeline {
         // diverged -- which the residual rmse cannot do, since it only scores the correspondences
         // the tracker itself chose.
         std::uint64_t trackRejected = 0; // tracker returned invalid -> previous pose reused
+        // Rejections split by cause. One total cannot be acted on: a run rejecting frames because
+        // the map is not built yet needs nothing done, while one rejecting them for low overlap has
+        // a tracking problem.
+        std::uint64_t rejectedNoModel = 0, rejectedNoLocalTarget = 0;
+        std::uint64_t rejectedTooFewInliers = 0, rejectedLowOverlap = 0;
         double poseDeltaMetersAvg = 0.0, poseDeltaMetersMax = 0.0;
         double poseDeltaDegreesMax = 0.0;
         double trajectoryLengthMeters = 0.0;

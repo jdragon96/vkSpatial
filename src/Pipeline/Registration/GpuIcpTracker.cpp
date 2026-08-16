@@ -1,5 +1,7 @@
 #include "Pipeline/Registration/GpuIcpTracker.h"
 
+#include <cstddef>
+
 namespace Pipeline {
 
     TrackingResult GpuIcpTracker::Track(const Frame &frame,
@@ -7,6 +9,7 @@ namespace Pipeline {
                                         const Eigen::Isometry3f &priorPose) {
         TrackingResult r;
         r.pose = priorPose;
+        r.failure = ETrackFailure::NoModel;
         if (model == nullptr || model->entries.empty() || frame.pts.empty()) return r;
         if (!m_ctx) {
             m_ctx = std::make_unique<Engine::Core::Context>();
@@ -45,7 +48,10 @@ namespace Pipeline {
                 tgt.points.push_back(surfacePoint);
                 tgt.normals.push_back(entry.normal);
             }
-        if (tgt.points.size() < 3) return r; // nothing local to align to -> keep prior
+        if (tgt.points.size() < 3) {
+            r.failure = ETrackFailure::NoLocalTarget;
+            return r; // nothing local to align to -> keep prior
+        }
 
         const Engine::Registration::RegistrationResult icp =
                 m_gpu->Solve(frame.pts, frame.nrm, tgt, priorPose.matrix(), params);
@@ -54,6 +60,10 @@ namespace Pipeline {
         r.inliers = icp.numInliers;
         r.rmse = icp.rmse;
         r.valid = icp.valid;
+        r.failure = icp.valid ? ETrackFailure::None
+                              : (icp.numInliers < std::size_t(params.minInliers)
+                                         ? ETrackFailure::TooFewInliers
+                                         : ETrackFailure::LowOverlap);
         return r;
     }
 

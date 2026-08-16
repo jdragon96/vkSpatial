@@ -52,6 +52,13 @@ namespace Pipeline {
             } else {
                 haveTwoPoses = false;
                 m_rejected.fetch_add(1);
+                switch (a.failure) {
+                    case ETrackFailure::NoModel: m_rejectedNoModel.fetch_add(1); break;
+                    case ETrackFailure::NoLocalTarget: m_rejectedNoLocalTarget.fetch_add(1); break;
+                    case ETrackFailure::TooFewInliers: m_rejectedTooFewInliers.fetch_add(1); break;
+                    case ETrackFailure::LowOverlap: m_rejectedLowOverlap.fetch_add(1); break;
+                    case ETrackFailure::None: break;
+                }
             }
 
             TrackedFrame tf;
