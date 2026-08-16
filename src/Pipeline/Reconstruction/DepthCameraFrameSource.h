@@ -34,6 +34,12 @@ namespace Pipeline {
         virtual ~IDepthProvider() = default;
         virtual const CameraIntrinsics &Intrinsics() const = 0;
         virtual bool Grab(DepthFrame &out) = 0; // false when the stream ends
+
+        // Release the device. Called when acquisition ends -- not only when the object dies -- so
+        // a sensor is freed the moment the pipeline stops rather than at process teardown. Must be
+        // idempotent: the pipeline closes on both the exhausted-stream path and the interrupt
+        // path, and a destructor closes again after that.
+        virtual void Close() {}
     };
 
     struct DepthFilterOptions {
@@ -106,6 +112,10 @@ namespace Pipeline {
             if (!m_device || !m_device->Grab(d)) return false;
             out = BackprojectDepth(d, m_device->Intrinsics());
             return true;
+        }
+
+        void Close() override {
+            if (m_device) m_device->Close();
         }
 
     private:

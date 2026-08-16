@@ -32,6 +32,9 @@ namespace Pipeline {
     public:
         DepthRecorder(std::unique_ptr<IDepthProvider> device, std::string directory);
 
+        // A decorator that swallowed Close() would leave the wrapped camera streaming.
+        void Close() override { m_device->Close(); }
+
         const CameraIntrinsics &Intrinsics() const override;
         bool Grab(DepthFrame &out) override;
 

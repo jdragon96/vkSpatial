@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <csignal>
 #include <cstdio>
 #include <iostream>
 #include <memory>
@@ -143,7 +144,36 @@ namespace {
 
 } // namespace
 
+namespace {
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    // Interrupt handling
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+
+    // Ctrl-C is how a live viewer actually gets stopped, and a signal that kills the process
+    // unwinds nothing: no destructor runs, so the camera is left streaming with its USB interface
+    // claimed and the next run cannot open it. Catching the signal turns it into a normal exit
+    // through the same shutdown path as closing the window.
+    //
+    // A handler may only touch a volatile sig_atomic_t, so it sets a flag and the render loop acts
+    // on it. The default disposition is restored first, so a second Ctrl-C still kills a process
+    // that has become wedged.
+    volatile std::sig_atomic_t g_interrupted = 0;
+
+    void HandleInterrupt(int signalNumber) {
+        std::signal(signalNumber, SIG_DFL);
+        g_interrupted = 1;
+    }
+
+    void InstallInterruptHandler() {
+        std::signal(SIGINT, HandleInterrupt);
+        std::signal(SIGTERM, HandleInterrupt);
+    }
+
+} // namespace
+
 int main(int argc, char **argv) {
+    InstallInterruptHandler();
     try {
         auto arg = util::BuildArgParser(argc, argv)
                            .Option("--replay")
@@ -359,7 +389,7 @@ int main(int argc, char **argv) {
         EColorMode uploadedColorMode = state.colorMode;
         float uploadedMinimumWeight = state.minimumWeight;
         try {
-            while (!app.GetWindow().ShouldClose()) {
+            while (!app.GetWindow().ShouldClose() && !g_interrupted) {
                 app.GetWindow().PollEvents();
                 const VkExtent2D size = app.GetWindow().FramebufferSize();
                 if (size.width == 0 || size.height == 0) continue;

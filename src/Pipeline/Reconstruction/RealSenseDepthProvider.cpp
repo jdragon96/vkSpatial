@@ -73,6 +73,7 @@ namespace Pipeline {
                 profile.get_stream(RS2_STREAM_DEPTH).as<rs2::video_stream_profile>().get_intrinsics();
         m_intrinsics = {intrinsics.fx, intrinsics.fy, intrinsics.ppx, intrinsics.ppy,
                         intrinsics.width, intrinsics.height};
+        m_streaming = true;
     }
 
     // D435 defaults: 640x480 depth @ 30 fps -- the highest depth mode BOTH USB 2.1 and USB 3.x
@@ -116,17 +117,24 @@ namespace Pipeline {
                 "plug it back in.]");
     }
 
-    // Stopping explicitly is what keeps the NEXT run from meeting a stuck device. Relying on
-    // rs2::pipeline's own destructor is not enough during exception unwinding, which is exactly
-    // when a stream is most likely to be abandoned mid-flight.
-    RealSenseDepthProvider::~RealSenseDepthProvider() {
+    // Stopping explicitly is what keeps the NEXT run from meeting a stuck device: a D435 left
+    // streaming keeps its interface claimed, and every later open fails with "failed to set power
+    // state" until the cable is re-seated.
+    //
+    // Called on the pipeline's own shutdown path, so the camera is released when acquisition ends
+    // rather than at process teardown -- and idempotent, because that path and the destructor both
+    // run. rs2::pipeline::stop() throws on a pipeline that was never started.
+    void RealSenseDepthProvider::Close() {
+        if (!m_streaming) return;
+        m_streaming = false;
         try {
             m_pipeline.stop();
         } catch (const rs2::error &) {
-            // Already stopped, or the device is gone. Either way there is nothing left to do and a
-            // destructor must not throw.
+            // The device is already gone. Nothing left to release.
         }
     }
+
+    RealSenseDepthProvider::~RealSenseDepthProvider() { Close(); }
 
     bool RealSenseDepthProvider::Grab(DepthFrame &out) {
         static constexpr unsigned kFrameTimeoutMs = 1000;

@@ -35,6 +35,7 @@ namespace Pipeline {
 
         const CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
         bool Grab(DepthFrame &out) override;
+        void Close() override;
 
     private:
         // Starts the depth stream and fills m_intrinsics/m_depthScale, or throws rs2::error. Split
@@ -44,6 +45,7 @@ namespace Pipeline {
 
         rs2::pipeline m_pipeline;
         CameraIntrinsics m_intrinsics;
+        bool m_streaming = false; // guards Close(): rs2::pipeline::stop() throws if not started
         float m_depthScale = 0.0f; // metres per raw depth unit; rs2::depth_sensor::get_depth_scale()
     };
 

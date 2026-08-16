@@ -4,6 +4,7 @@
 #include "Pipeline/Registration/RegistrationThread.h"
 #include "Pipeline/Reconstruction/ReconstructionThread.h" // MakeAcquisitionSource
 #include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
+#include "Pipeline/Reconstruction/DepthRecording.h"
 
 #include "utilities/PointCloudIO.h"
 
@@ -636,4 +637,85 @@ TEST(Pipeline, IcpOnAStaticSceneKeepsTheMapTheSizeOfOneFrame) {
     EXPECT_LT(icpExtent.maxCoeff(), identityExtent.maxCoeff() * 1.5f + 0.05f)
             << "ICP smeared a static scene: identity extent " << identityExtent.transpose()
             << ", icp extent " << icpExtent.transpose();
+}
+
+// Closing the device is what keeps the NEXT run able to open it: a RealSense left streaming holds
+// its USB interface and every later open fails until the cable is re-seated. So the pipeline must
+// release the device when acquisition ENDS -- not merely when the objects are destroyed.
+namespace {
+
+    class CloseCountingDepthProvider : public ep::IDepthProvider {
+    public:
+        CloseCountingDepthProvider(int frames, int *closeCount)
+            : m_left(frames), m_closeCount(closeCount) {
+            m_intrinsics.width = 8;
+            m_intrinsics.height = 6;
+            m_intrinsics.fx = m_intrinsics.fy = 10.0f;
+            m_intrinsics.cx = 4.0f;
+            m_intrinsics.cy = 3.0f;
+        }
+
+        const ep::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
+
+        bool Grab(ep::DepthFrame &out) override {
+            if (m_left-- <= 0) return false;
+            out.depth.assign(std::size_t(m_intrinsics.width) * m_intrinsics.height, 1.0f);
+            return true;
+        }
+
+        void Close() override { ++(*m_closeCount); }
+
+    private:
+        int m_left;
+        int *m_closeCount;
+        ep::CameraIntrinsics m_intrinsics;
+    };
+
+} // namespace
+
+TEST(DepthFrontend, FrameSourceForwardsCloseToTheDevice) {
+    int closeCount = 0;
+    {
+        ep::DepthCameraFrameSource source(
+                std::make_unique<CloseCountingDepthProvider>(1, &closeCount));
+        source.Close();
+        EXPECT_EQ(closeCount, 1) << "the frame source swallowed Close(), so the device kept running";
+    }
+}
+
+// DepthRecorder decorates a provider. A decorator that swallows Close() leaves the wrapped camera
+// streaming while looking perfectly correct at the call site.
+TEST(DepthFrontend, RecorderForwardsCloseToTheWrappedDevice) {
+    int closeCount = 0;
+    const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() / "vkbvh_depth_close_forward";
+    std::filesystem::remove_all(dir);
+
+    ep::DepthRecorder recorder(std::make_unique<CloseCountingDepthProvider>(1, &closeCount),
+                               dir.string());
+    recorder.Close();
+    EXPECT_EQ(closeCount, 1);
+    std::filesystem::remove_all(dir);
+}
+
+// The end that matters: running the pipeline to the end of its source must release the device.
+TEST(Pipeline, ReleasesTheDeviceWhenAcquisitionEnds) {
+    int closeCount = 0;
+    ep::Pipeline::Config cfg;
+    cfg.map.baseVoxel = 0.05f;
+    cfg.map.truncation = 0.15f;
+    cfg.map.submap = false;
+    cfg.acquisition.type = ep::EAcquisitionType::DepthCamera;
+    cfg.acquisition.makeSource = [&] {
+        return std::make_unique<ep::DepthCameraFrameSource>(
+                std::make_unique<CloseCountingDepthProvider>(2, &closeCount));
+    };
+
+    {
+        ep::Pipeline pipe(cfg, ep::TrackerRegistry::Default().Create("identity"));
+        pipe.Start();
+        pipe.Stop();
+        pipe.CheckErrors();
+        EXPECT_GT(closeCount, 0) << "the pipeline stopped without releasing the device";
+    }
 }
