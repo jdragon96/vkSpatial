@@ -26,7 +26,20 @@ namespace Pipeline {
             m_intrinsics = {intrinsics.fx, intrinsics.fy, intrinsics.ppx, intrinsics.ppy,
                             intrinsics.width, intrinsics.height};
         } catch (const rs2::error &e) {
-            throw std::runtime_error(std::string("RealSenseDepthProvider: ") + e.what());
+            // Two failures dominate here and neither is obvious from librealsense's own message:
+            //   * RS2_USB_STATUS_ACCESS / "failed to set power state" -- macOS has not granted the
+            //     terminal camera access, so libusb cannot claim the interface. `sudo
+            //     rs-enumerate-devices` succeeding while a plain run fails is the signature.
+            //   * an unsupported mode -- the depth modes on offer depend on the link. Over USB 2.1
+            //     (a hub or dock will do that) 848x480 tops out at 10 Hz; 640x480 @ 30 is the
+            //     highest mode both USB 2.1 and USB 3.x support. `rs-enumerate-devices` lists them.
+            throw std::runtime_error(
+                    std::string("RealSenseDepthProvider: ") + e.what() +
+                    "  [requested " + std::to_string(width) + "x" + std::to_string(height) + " @ " +
+                    std::to_string(fps) + " Hz Z16. If this is a permission error, grant the "
+                    "terminal Camera access in System Settings > Privacy & Security. If it is an "
+                    "unsupported mode, run rs-enumerate-devices to see what this link offers -- "
+                    "over USB 2.1, 848x480 depth is limited to 10 Hz.]");
         }
     }
 

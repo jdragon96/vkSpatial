@@ -6,7 +6,7 @@
 // is exercisable in a session where the device is not attached.
 //
 // Usage:
-//   depth_capture --record <dir> [--frames N] [--width 848] [--height 480] [--fps 30]
+//   depth_capture --record <dir> [--frames N] [--width 640] [--height 480] [--fps 30]
 //   depth_capture --replay <dir>
 
 #include "Pipeline/Reconstruction/DepthCameraFrameSource.h" // BackprojectDepth, DepthFrame, IDepthProvider
@@ -81,7 +81,7 @@ int main(int argc, char **argv) {
                                        .Option("--record")
                                        .Option("--replay")
                                        .Option("--frames", 30)
-                                       .Option("--width", 848)
+                                       .Option("--width", 640)
                                        .Option("--height", 480)
                                        .Option("--fps", 30);
 
@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
                               arg.ValueInt("--height"), arg.ValueInt("--fps"));
 
         std::fprintf(stderr,
-                     "usage: depth_capture --record <dir> [--frames N] [--width 848] [--height 480] [--fps 30]\n"
+                     "usage: depth_capture --record <dir> [--frames N] [--width 640] [--height 480] [--fps 30]\n"
                      "       depth_capture --replay <dir>            replay a recording; prints "
                      "per-frame point/normal counts\n");
         return 2;
