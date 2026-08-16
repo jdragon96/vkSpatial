@@ -1,8 +1,12 @@
 #include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
+#include "Pipeline/Reconstruction/DepthRecording.h"
 
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
 #include <vector>
 
 using Pipeline::BackprojectDepth;
@@ -87,4 +91,81 @@ TEST(DepthFrontend, FarSlantedPlaneNeedsTheDepthScaledThreshold) {
     const Pipeline::Frame out = BackprojectDepth(frame, k, DepthFilterOptions{});
     EXPECT_EQ(out.pts.size(), std::size_t(k.width - 1) * (k.height - 1))
             << "a real surface 5 m out was cut: the jump threshold is not scaling with depth";
+}
+
+namespace {
+    // A provider that hands out a fixed number of synthetic frames -- stands in for the device so
+    // the round-trip test needs no hardware.
+    class FakeDepthProvider : public Pipeline::IDepthProvider {
+    public:
+        FakeDepthProvider(int frames, Pipeline::CameraIntrinsics k) : m_left(frames), m_k(k) {}
+        const Pipeline::CameraIntrinsics &Intrinsics() const override { return m_k; }
+        bool Grab(Pipeline::DepthFrame &out) override {
+            if (m_left-- <= 0) return false;
+            out.depth.assign(std::size_t(m_k.width) * m_k.height, 0.0f);
+            for (std::size_t i = 0; i < out.depth.size(); ++i)
+                out.depth[i] = 1.0f + 0.001f * float(i % 97) + 0.01f * float(m_left);
+            return true;
+        }
+    private:
+        int m_left;
+        Pipeline::CameraIntrinsics m_k;
+    };
+} // namespace
+
+// Recording stores the RAW depth, before back-projection, so replay runs the same normal
+// estimation the device path does. A lossy round trip would silently change every reconstruction
+// made from a recording.
+TEST(DepthFrontend, RecordingRoundTripsBitExact) {
+    const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() / "vkbvh_depth_roundtrip";
+    std::filesystem::remove_all(dir);
+
+    const Pipeline::CameraIntrinsics k = MakeIntrinsics(16, 12);
+    std::vector<Pipeline::DepthFrame> written;
+    {
+        Pipeline::DepthRecorder recorder(std::make_unique<FakeDepthProvider>(3, k), dir.string());
+        Pipeline::DepthFrame frame;
+        while (recorder.Grab(frame)) written.push_back(frame);
+        EXPECT_EQ(recorder.RecordedFrameCount(), 3);
+    }
+
+    Pipeline::RecordedDepthProvider replay(dir.string());
+    EXPECT_EQ(replay.FrameCount(), 3);
+    EXPECT_EQ(replay.Intrinsics().width, k.width);
+    EXPECT_FLOAT_EQ(replay.Intrinsics().fx, k.fx);
+
+    std::size_t read = 0;
+    Pipeline::DepthFrame frame;
+    while (replay.Grab(frame)) {
+        ASSERT_LT(read, written.size());
+        EXPECT_EQ(frame.depth, written[read].depth) << "frame " << read << " changed on round trip";
+        ++read;
+    }
+    EXPECT_EQ(read, written.size());
+    std::filesystem::remove_all(dir);
+}
+
+TEST(DepthFrontend, RecordedProviderRejectsAMissingDirectory) {
+    EXPECT_THROW(Pipeline::RecordedDepthProvider("/no/such/recording"), std::runtime_error);
+}
+
+// A short read that quietly yielded a partial depth image would corrupt a reconstruction with no
+// symptom -- a truncated recording must be rejected up front, not handed back silently.
+TEST(DepthFrontend, RecordedProviderRejectsATruncatedFrame) {
+    const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() / "vkbvh_depth_truncated";
+    std::filesystem::remove_all(dir);
+
+    const Pipeline::CameraIntrinsics k = MakeIntrinsics(16, 12);
+    {
+        Pipeline::DepthRecorder recorder(std::make_unique<FakeDepthProvider>(1, k), dir.string());
+        Pipeline::DepthFrame frame;
+        recorder.Grab(frame);
+    }
+
+    // Chop depth_0000.bin down from width*height*4 = 768 bytes to 4.
+    std::filesystem::resize_file(dir / "depth_0000.bin", 4);
+    EXPECT_THROW(Pipeline::RecordedDepthProvider(dir.string()), std::runtime_error);
+    std::filesystem::remove_all(dir);
 }

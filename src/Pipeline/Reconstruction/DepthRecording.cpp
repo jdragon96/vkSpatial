@@ -1,0 +1,144 @@
+#include "Pipeline/Reconstruction/DepthRecording.h"
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <stdexcept>
+
+namespace Pipeline {
+
+    namespace {
+
+        namespace fs = std::filesystem;
+
+        std::string FormatDepthFrameFilename(int frameIndex) {
+            char name[32];
+            std::snprintf(name, sizeof(name), "depth_%04d.bin", frameIndex);
+            return std::string(name);
+        }
+
+        // Every float printed with enough digits (max_digits10) to read back bit-for-bit.
+        void WriteIntrinsics(const fs::path &path, const CameraIntrinsics &intrinsics) {
+            std::ofstream file(path);
+            if (!file.is_open())
+                throw std::runtime_error("DepthRecorder: cannot write " + path.string());
+            file << std::setprecision(std::numeric_limits<float>::max_digits10) << intrinsics.fx
+                 << ' ' << intrinsics.fy << ' ' << intrinsics.cx << ' ' << intrinsics.cy << ' '
+                 << intrinsics.width << ' ' << intrinsics.height << '\n';
+        }
+
+        CameraIntrinsics ReadIntrinsics(const fs::path &path) {
+            std::ifstream file(path);
+            if (!file.is_open())
+                throw std::runtime_error("RecordedDepthProvider: cannot open " + path.string());
+
+            CameraIntrinsics intrinsics;
+            file >> intrinsics.fx >> intrinsics.fy >> intrinsics.cx >> intrinsics.cy >>
+                    intrinsics.width >> intrinsics.height;
+            if (!file) throw std::runtime_error("RecordedDepthProvider: malformed " + path.string());
+            if (intrinsics.width <= 0 || intrinsics.height <= 0)
+                throw std::runtime_error("RecordedDepthProvider: non-positive width/height in " +
+                                          path.string());
+            return intrinsics;
+        }
+
+        // Every depth_*.bin directly inside `directory`, sorted -- the zero-padded %04d name makes
+        // lexical order match recording order.
+        std::vector<std::string> ListDepthFrameFiles(const fs::path &directory) {
+            std::vector<std::string> paths;
+            for (const fs::directory_entry &entry: fs::directory_iterator(directory)) {
+                if (!entry.is_regular_file()) continue;
+                const fs::path &entryPath = entry.path();
+                if (entryPath.filename().string().rfind("depth_", 0) == 0 &&
+                    entryPath.extension() == ".bin")
+                    paths.push_back(entryPath.string());
+            }
+            std::sort(paths.begin(), paths.end());
+            return paths;
+        }
+
+    } // namespace
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    // DepthRecorder
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+
+    DepthRecorder::DepthRecorder(std::unique_ptr<IDepthProvider> device, std::string directory)
+        : m_device(std::move(device)), m_directory(std::move(directory)) {}
+
+    const CameraIntrinsics &DepthRecorder::Intrinsics() const { return m_device->Intrinsics(); }
+
+    bool DepthRecorder::Grab(DepthFrame &out) {
+        if (!m_device->Grab(out)) return false;
+
+        // On the first frame only: create the directory and write the one intrinsics.txt that
+        // describes every frame in it.
+        if (m_recordedFrameCount == 0) {
+            fs::create_directories(m_directory);
+            WriteIntrinsics(fs::path(m_directory) / "intrinsics.txt", m_device->Intrinsics());
+        }
+
+        const fs::path framePath =
+                fs::path(m_directory) / FormatDepthFrameFilename(m_recordedFrameCount);
+        std::ofstream frameFile(framePath, std::ios::binary);
+        if (!frameFile.is_open())
+            throw std::runtime_error("DepthRecorder: cannot write " + framePath.string());
+        frameFile.write(reinterpret_cast<const char *>(out.depth.data()),
+                         std::streamsize(out.depth.size() * sizeof(float)));
+        if (!frameFile)
+            throw std::runtime_error("DepthRecorder: write failed for " + framePath.string());
+
+        ++m_recordedFrameCount;
+        return true;
+    }
+
+    int DepthRecorder::RecordedFrameCount() const { return m_recordedFrameCount; }
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    // RecordedDepthProvider
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+
+    RecordedDepthProvider::RecordedDepthProvider(std::string directory)
+        : m_intrinsics(ReadIntrinsics(fs::path(directory) / "intrinsics.txt")),
+          m_framePaths(ListDepthFrameFiles(directory)) {
+        // A short read that quietly yielded a partial depth image would corrupt a reconstruction
+        // with no symptom, so every recorded frame's size is checked up front, not on first use.
+        const std::uintmax_t expectedBytes = std::uintmax_t(m_intrinsics.width) *
+                                              std::uintmax_t(m_intrinsics.height) * sizeof(float);
+        for (const std::string &framePath: m_framePaths) {
+            std::error_code errorCode;
+            const std::uintmax_t actualBytes = fs::file_size(framePath, errorCode);
+            if (errorCode || actualBytes != expectedBytes)
+                throw std::runtime_error(
+                        "RecordedDepthProvider: truncated or malformed recording: " + framePath);
+        }
+    }
+
+    const CameraIntrinsics &RecordedDepthProvider::Intrinsics() const { return m_intrinsics; }
+
+    bool RecordedDepthProvider::Grab(DepthFrame &out) {
+        if (m_nextFrame >= int(m_framePaths.size())) return false;
+
+        const std::string &framePath = m_framePaths[std::size_t(m_nextFrame)];
+        std::ifstream frameFile(framePath, std::ios::binary);
+        if (!frameFile.is_open())
+            throw std::runtime_error("RecordedDepthProvider: cannot open " + framePath);
+
+        const std::size_t sampleCount =
+                std::size_t(m_intrinsics.width) * std::size_t(m_intrinsics.height);
+        out.depth.assign(sampleCount, 0.0f);
+        frameFile.read(reinterpret_cast<char *>(out.depth.data()),
+                        std::streamsize(sampleCount * sizeof(float)));
+        if (!frameFile) throw std::runtime_error("RecordedDepthProvider: short read: " + framePath);
+
+        ++m_nextFrame;
+        return true;
+    }
+
+    int RecordedDepthProvider::FrameCount() const { return int(m_framePaths.size()); }
+
+} // namespace Pipeline
