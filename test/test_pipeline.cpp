@@ -585,3 +585,55 @@ TEST(Pipeline, DepthDeviceAccumulatesAMap) {
     EXPECT_GT(nearestZ, 0.5f);
     EXPECT_LT(farthestZ, 2.0f);
 }
+
+// Same depth source, but tracked by ICP instead of identity. The provider hands out an IDENTICAL
+// frame every time, so the true pose is identity throughout and the map must stay the size of one
+// frame. A tracker that diverges instead smears each frame to its own wrong pose and the map grows
+// without bound.
+//
+// Waits on integratedFrames, NOT on ProcessedFrame reaching a chosen number: trackedFrames is a
+// lossy channel (capacity 4, drops when full), so with integration slower than tracking a finite
+// source can never reach a fixed count. Demanding one just burns the deadline -- measured at
+// acq=9 align=8 integ=4 drop=4 on this fixture.
+TEST(Pipeline, IcpOnAStaticSceneKeepsTheMapTheSizeOfOneFrame) {
+    auto runWith = [](const char *trackerName) {
+        ep::Pipeline::Config cfg;
+        cfg.map.baseVoxel = 0.01f;
+        cfg.map.truncation = 0.03f;
+        cfg.map.submap = false;
+        cfg.acquisition.type = ep::EAcquisitionType::DepthCamera;
+        cfg.acquisition.makeSource = [] {
+            return std::make_unique<ep::DepthCameraFrameSource>(
+                    std::make_unique<SyntheticDepthProvider>(8));
+        };
+
+        ep::Pipeline pipe(cfg, ep::TrackerRegistry::Default().Create(trackerName));
+        pipe.Start();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (pipe.GetStats().integratedFrames < 3 && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        const std::uint64_t integrated = pipe.GetStats().integratedFrames;
+        pipe.Stop();
+        pipe.CheckErrors();
+
+        Vector3f low = Vector3f::Constant(1e9f), high = Vector3f::Constant(-1e9f);
+        const auto snapshot = pipe.LatestModel();
+        if (snapshot)
+            for (const TSDFVoxel &voxel: snapshot->entries) {
+                low = low.cwiseMin(voxel.center);
+                high = high.cwiseMax(voxel.center);
+            }
+        EXPECT_GE(integrated, 3u) << trackerName << " never integrated enough frames to judge";
+        return (high - low).eval();
+    };
+
+    const Vector3f identityExtent = runWith("identity");
+    const Vector3f icpExtent = runWith("icp");
+
+    // Identity is the reference: the true poses ARE identity here, so ICP cannot legitimately do
+    // better, and much worse means divergence.
+    ASSERT_GT(identityExtent.maxCoeff(), 0.1f) << "the reference run produced no map";
+    EXPECT_LT(icpExtent.maxCoeff(), identityExtent.maxCoeff() * 1.5f + 0.05f)
+            << "ICP smeared a static scene: identity extent " << identityExtent.transpose()
+            << ", icp extent " << icpExtent.transpose();
+}
