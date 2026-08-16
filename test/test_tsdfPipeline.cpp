@@ -209,3 +209,32 @@ TEST(TsdfHashStrategy, PipelineRunsWithBucketedAcrossWindows) {
     EXPECT_EQ(bucketed.insertFailureCount, 0u);
     EXPECT_EQ(linear.insertFailureCount, 0u);
 }
+
+// A point writes a band of radius `truncation`, and each window discards voxels outside its own
+// 512^3 range. Routing by the point alone left the part of the band crossing a window boundary
+// written by nobody -- a seam on every window face. A point sitting ON a boundary must therefore
+// reach BOTH windows, not just the one that formally contains it.
+TEST(TSDFPipeline, TruncationBandCrossesWindowBoundaries) {
+    Engine::Core::Context context;
+    TSDF tsdf;
+    TSDFConfiguration config = MakeConfig("none");
+    config.backendConfig.voxelSize = 0.01f;
+    config.backendConfig.truncation = 0.04f; // 4 voxels of band to clip
+    tsdf.Build(context, config);
+
+    // Window span is 0.01 * 512 = 5.12 m, so x = 5.12 is exactly a boundary between window 0 and 1.
+    // Every point sits within the truncation band of it.
+    constexpr float kBoundary = 5.12f;
+    std::vector<Vector3f> points, normals;
+    for (int j = -8; j <= 8; ++j)
+        for (int k = -8; k <= 8; ++k) {
+            // y/z parked mid-window (2.0 of a 5.12 span) so ONLY x straddles a boundary.
+            points.emplace_back(kBoundary, 2.0f + float(j) * 0.002f, 2.0f + float(k) * 0.002f);
+            normals.emplace_back(1.0f, 0.0f, 0.0f);
+        }
+    tsdf.Integrate(points, normals);
+
+    EXPECT_EQ(tsdf.WindowCount(), 2u)
+            << "a band straddling a window boundary must reach both windows, not just the owner";
+    EXPECT_EQ(tsdf.WindowLimitRefusalCount(), 0u);
+}

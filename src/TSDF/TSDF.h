@@ -119,6 +119,7 @@ private:
     std::vector<Eigen::Vector3f> m_gatheredPoints;
     std::vector<Eigen::Vector3f> m_gatheredNormals;
     std::unordered_map<VoxelKey, std::vector<uint32_t>, VoxelKeyHash> m_perWindowIndex;
+    std::vector<uint8_t> m_pointAccepted; // reused per level: did this point reach any window
     uint32_t m_windowLimitRefusalCount = 0;
     int m_frameIndex = -1;
 

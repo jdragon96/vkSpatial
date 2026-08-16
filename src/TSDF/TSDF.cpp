@@ -6,11 +6,31 @@
 
 namespace {
 
-    // Which window covers this point: floor(position / windowWorld), component-wise.
-    VoxelKey WindowKeyOf(const Eigen::Vector3f &p, float windowWorld) {
-        return VoxelKey{static_cast<int>(std::floor(p.x() / windowWorld)),
-                        static_cast<int>(std::floor(p.y() / windowWorld)),
-                        static_cast<int>(std::floor(p.z() / windowWorld))};
+    int WindowAxis(float coordinate, float windowWorld) {
+        return static_cast<int>(std::floor(coordinate / windowWorld));
+    }
+
+    // Every window the point's TRUNCATION BAND touches, not just the one holding the point.
+    //
+    // A point writes a band of radius `truncation` around itself, and each backend discards voxels
+    // outside its own 512^3 range. Routing by the point alone therefore left the part of the band
+    // that crosses a window boundary written by nobody: the owning window clipped it away and the
+    // neighbour never saw the point. That is a shell of thickness `truncation` under-integrated on
+    // every window face -- about 12*truncation/(voxel*512) of the volume, ~4.7% at the default
+    // 2-voxel band -- and it extracts as a seam.
+    //
+    // Handing the point to both windows is NOT double counting: the two windows own disjoint voxel
+    // sets, so each voxel is still updated exactly once.
+    template<typename Fn>
+    void ForEachTouchedWindow(const Eigen::Vector3f &p, float windowWorld, float truncation, Fn &&fn) {
+        const Eigen::Vector3f low = p - Eigen::Vector3f::Constant(truncation);
+        const Eigen::Vector3f high = p + Eigen::Vector3f::Constant(truncation);
+        const int x0 = WindowAxis(low.x(), windowWorld), x1 = WindowAxis(high.x(), windowWorld);
+        const int y0 = WindowAxis(low.y(), windowWorld), y1 = WindowAxis(high.y(), windowWorld);
+        const int z0 = WindowAxis(low.z(), windowWorld), z1 = WindowAxis(high.z(), windowWorld);
+        for (int x = x0; x <= x1; ++x)
+            for (int y = y0; y <= y1; ++y)
+                for (int z = z0; z <= z1; ++z) fn(VoxelKey{x, y, z});
     }
 
 } // namespace
@@ -79,23 +99,33 @@ void TSDF::IntegrateLevel(WindowMap &windows,
                           const std::vector<uint32_t> &index) {
     if (index.empty()) return;
 
-    for (auto &bucket: m_perWindowIndex) bucket.second.clear();
-    for (uint32_t i: index) m_perWindowIndex[WindowKeyOf(points[i], windowWorld)].push_back(i);
+    // Rebuilt rather than cleared in place: keeping the keys made every frame walk every window
+    // the scan had ever touched, for both levels.
+    m_perWindowIndex.clear();
+    for (uint32_t i: index)
+        ForEachTouchedWindow(points[i], windowWorld, config.truncation,
+                             [&](const VoxelKey &key) { m_perWindowIndex[key].push_back(i); });
+
+    // A point can now be routed to several windows (its band straddles a boundary), so a refused
+    // window is NOT a lost point -- only a point that reached NO window is lost. Counting per
+    // refused bucket would report one point many times.
+    m_pointAccepted.assign(points.size(), 0);
 
     for (const auto &[key, bucket]: m_perWindowIndex) {
         if (bucket.empty()) continue;
 
         TSDFBackend *backend = FindOrCreateWindow(windows, key, config, windowWorld);
-        if (!backend) {
-            m_windowLimitRefusalCount += uint32_t(bucket.size());
-            continue;
-        }
+        if (!backend) continue;
+        for (uint32_t i: bucket) m_pointAccepted[i] = 1;
 
         backend->SetFrameIndex(m_frameIndex);
         Gather(points, bucket, m_gatheredPoints);
         Gather(normals, bucket, m_gatheredNormals);
         backend->Integrate(m_gatheredPoints, m_gatheredNormals, cameraPosition);
     }
+
+    for (uint32_t i: index)
+        if (!m_pointAccepted[i]) ++m_windowLimitRefusalCount;
 }
 
 TSDFBackend *TSDF::FindOrCreateWindow(WindowMap &windows,
