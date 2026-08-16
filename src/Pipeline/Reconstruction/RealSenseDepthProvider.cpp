@@ -110,11 +110,14 @@ namespace Pipeline {
                 "RealSenseDepthProvider: could not start the depth stream, and a device reset did "
                 "not recover it.  [requested " +
                 std::to_string(width) + "x" + std::to_string(height) + " @ " + std::to_string(fps) +
-                " Hz Z16. If this is a permission error, grant the terminal Camera access in "
-                "System Settings > Privacy & Security, then restart the terminal. If it is an "
-                "unsupported mode, run rs-enumerate-devices to see what this link offers -- over "
-                "USB 2.1, 848x480 depth is limited to 10 Hz. If neither, unplug the camera and "
-                "plug it back in.]");
+                " Hz Z16.\n"
+                "  * Permission is the usual cause on macOS, and re-running under sudo is what "
+                "tells you: if sudo works, grant the terminal Camera access in System Settings > "
+                "Privacy & Security and restart the terminal.\n"
+                "  * Otherwise check the mode with rs-enumerate-devices -- the depth modes on "
+                "offer depend on the link, and over USB 2.1 (any hub or dock) 848x480 is limited "
+                "to 10 Hz.\n"
+                "  * If neither, unplug the camera and plug it back in.]");
     }
 
     // Stopping explicitly is what keeps the NEXT run from meeting a stuck device: a D435 left
