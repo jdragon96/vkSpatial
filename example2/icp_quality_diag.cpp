@@ -216,6 +216,11 @@ int main(int argc, char **argv) {
         // The map and the TRACKER want different things from the input. A point finer than a map
         // voxel is invisible to the map, but ICP still uses it to find correspondences, so tying
         // the two together is an assumption worth being able to break.
+        // Scoring is offline: every configuration must process the SAME frames, or a slower
+        // setting silently processes fewer and the comparison measures the drop rate instead of
+        // the tracker.
+        acquisition.realTime = false;
+
         const float downsample = arg.ValueFloat("--downsample", 0.0f);
         if (downsample != 0.0f) acquisition.downsampleVoxel = downsample;
 

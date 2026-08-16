@@ -203,6 +203,9 @@ int main(int argc, char **argv) {
         config.map.truncation = arg.ValueFloat("--truncation");
         config.map.submap = false; // one level until a plain scan is known good
         config.acquisition.type = ep::EAcquisitionType::DepthCamera;
+        // A camera keeps producing whether or not the map keeps up, so live must drop to bound
+        // latency. A recording waits, so replaying it losslessly costs only wall-clock.
+        config.acquisition.realTime = live;
 
         // Built fresh on every stage build, including each Reconfigure. Capturing an already-open
         // device instead would hand the rebuilt pipeline a source the previous one has closed.

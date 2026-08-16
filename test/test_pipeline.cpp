@@ -803,3 +803,55 @@ TEST(Pipeline, DownsampleVoxelDefaultsToTheMapsFinestLevel) {
         EXPECT_FLOAT_EQ(pipe.DownsampleVoxel(), 0.02f) << "the detail level is half the base voxel";
     }
 }
+
+// A recording must be processed losslessly. With dropping on, a slower configuration silently
+// processes fewer frames, so any measurement taken across configurations compares drop rates
+// rather than the thing under test.
+TEST(Pipeline, OfflineSourceProcessesEveryFrame) {
+    constexpr int kFrames = 40;
+    auto config = [kFrames](bool realTime) {
+        ep::Pipeline::Config cfg;
+        cfg.map.baseVoxel = 0.02f;
+        cfg.map.truncation = 0.06f;
+        cfg.map.submap = false;
+        cfg.acquisition.type = ep::EAcquisitionType::DepthCamera;
+        cfg.acquisition.realTime = realTime;
+        cfg.acquisition.makeSource = [=] {
+            return std::make_unique<ep::DepthCameraFrameSource>(
+                    std::make_unique<SyntheticDepthProvider>(kFrames));
+        };
+        return cfg;
+    };
+
+    auto run = [](ep::Pipeline::Config cfg) {
+        ep::Pipeline pipe(cfg, ep::TrackerRegistry::Default().Create("identity"));
+        pipe.Start();
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        std::uint64_t last = 0;
+        int stalled = 0;
+        while (std::chrono::steady_clock::now() < deadline) {
+            const ep::PipelineStats s = pipe.GetStats();
+            if (s.integratedFrames == last) {
+                if (last > 0 && ++stalled > 100) break; // 2 s with no progress
+            } else {
+                stalled = 0;
+                last = s.integratedFrames;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        const ep::PipelineStats s = pipe.GetStats();
+        pipe.Stop();
+        pipe.CheckErrors();
+        return s;
+    };
+
+    const ep::PipelineStats offline = run(config(false));
+    EXPECT_EQ(offline.integratedFrames, std::uint64_t(kFrames))
+            << "an offline source must lose nothing; dropped " << offline.trackDropped;
+    EXPECT_EQ(offline.trackDropped, 0u);
+
+    // Real-time keeps the drop policy: bounded latency is the point of it, and losing frames is
+    // the price. Asserted only as "still runs", since whether it drops depends on the machine.
+    const ep::PipelineStats live = run(config(true));
+    EXPECT_GT(live.integratedFrames, 0u);
+}

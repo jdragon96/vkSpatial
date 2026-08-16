@@ -20,7 +20,7 @@ namespace Pipeline {
         m_integration.reset();
         m_registration.reset();
         m_reconstruction.reset();
-        m_comm = std::make_unique<CommunicationModule>();
+        m_comm = std::make_unique<CommunicationModule>(cfg.acquisition.realTime);
         // The finest level the map can represent. Anything below it is detail the map cannot hold,
         // so carrying it through tracking and the queues is pure cost. Left alone if the caller
         // set a value, and disabled by setting it negative.

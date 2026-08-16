@@ -50,6 +50,10 @@ namespace Pipeline {
         // frame is 307k points; the surface it actually resolves at a 10 mm voxel is a small
         // fraction of that.
         float downsampleVoxel = 0.0f;
+
+        // False for a source that waits -- a recording, a dataset. It makes the run lossless: the
+        // stages block instead of dropping, so every frame is processed. See CommunicationModule.
+        bool realTime = true;
     };
 
 } // namespace Pipeline
