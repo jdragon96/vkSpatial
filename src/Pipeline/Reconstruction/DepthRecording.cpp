@@ -80,9 +80,12 @@ namespace Pipeline {
         // then throw. Nothing is created yet: the directory and its intrinsics.txt still wait for
         // a frame to actually arrive.
         if (fs::exists(m_directory) && !ListDepthFrameFiles(m_directory).empty())
+            // Names the alternative, not the deletion. A capture is minutes of someone's time in
+            // front of a sensor and cannot be regenerated from anything on disk; an error message
+            // that opens with "remove it" invites destroying exactly that.
             throw std::runtime_error("DepthRecorder: " + m_directory +
-                                     " already holds a recording; record into an empty directory "
-                                     "or remove it first");
+                                     " already holds a recording. Point --record at a different "
+                                     "directory to keep it, or move it aside first.");
     }
 
     const CameraIntrinsics &DepthRecorder::Intrinsics() const { return m_device->Intrinsics(); }

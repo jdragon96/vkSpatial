@@ -146,6 +146,14 @@ if (GLSLC_EXECUTABLE)
     target_link_libraries(depth_live_viewer PRIVATE Engine::Render imgui Engine::Core Pipeline)
     add_compiled_shaders(depth_live_viewer VOXDBG_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
 
+    # RealSense scan pipeline: a depth camera driving the full Track/Map/Render pipeline, with the
+    # TSDF surface accumulating live. The first source here for which tracking is a real problem --
+    # a camera sees one side at a time, so point-to-plane ICP has something to solve. --replay
+    # drives the same pipeline from a recording, no hardware needed.
+    add_spatial_example(realsense_scan realsense_scan.cpp PointCloudPass.cpp ImGuiPass.cpp)
+    target_link_libraries(realsense_scan PRIVATE Engine::Render imgui Engine::Core Pipeline)
+    add_compiled_shaders(realsense_scan VOXDBG_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
+
     # Isosurface (Marching-Cubes family) debug viewer: extracts a surface with a SELECTABLE
     # extractor (mc/mc33/mtet/emc/dc/dmc/cms, see Mesh) over a selectable
     # analytic shape (sphere/box/torus) or, with --dir, a folder of frame_*.ply scans integrated

@@ -9,6 +9,17 @@
 namespace Pipeline {
 
     std::unique_ptr<IFrameSource> MakeAcquisitionSource(const AcquisitionConfig &sourceType) {
+        // An injected factory wins for every type: it is the only way to describe a device, and on
+        // a File source it lets a caller substitute a decorated or synthetic source without
+        // inventing a config field for it.
+        if (sourceType.makeSource) {
+            std::unique_ptr<IFrameSource> source = sourceType.makeSource();
+            if (!source)
+                throw std::invalid_argument(
+                        "MakeAcquisitionSource: the injected factory returned no source");
+            return source;
+        }
+
         switch (sourceType.type) {
             case EAcquisitionType::File: {
                 FileSourceConfig fc;
@@ -19,8 +30,8 @@ namespace Pipeline {
             }
             case EAcquisitionType::DepthCamera:
             case EAcquisitionType::StructuredLight:
-                throw std::invalid_argument(
-                        "MakeAcquisitionSource: this source type needs an injected provider/decoder");
+                throw std::invalid_argument("MakeAcquisitionSource: this source type has no "
+                                            "by-value description; set AcquisitionConfig::makeSource");
         }
         throw std::invalid_argument("MakeAcquisitionSource: unknown source type");
     }

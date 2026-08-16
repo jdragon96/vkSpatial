@@ -2,6 +2,8 @@
 #include "Pipeline/Pipeline.h"  // Pipeline::Pipeline / Config / EAcquisitionType
 #include "Pipeline/CommunicationModule.h"       // Pipeline::CommunicationModule
 #include "Pipeline/Registration/RegistrationThread.h"
+#include "Pipeline/Reconstruction/ReconstructionThread.h" // MakeAcquisitionSource
+#include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
 
 #include "utilities/PointCloudIO.h"
 
@@ -10,9 +12,11 @@
 #include <Eigen/Core>
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -425,4 +429,159 @@ TEST(RegistrationThread, ConstantVelocityPriorBeatsPreviousPoseOnStraightLine) {
                "reusing the previous pose";
     EXPECT_NEAR(constantVelocityError, 0.0f, 1e-5f)
             << "on an exact straight line, the constant-velocity prediction should be near-exact";
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+// Injected source factory -- how a device (a camera) reaches the pipeline. A camera is a handle,
+// not a path list, so AcquisitionConfig cannot describe one by value.
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace {
+
+    // Hands out a fixed number of identical plane frames, and counts how many times it was built.
+    class CountingFrameSource : public ep::IFrameSource {
+    public:
+        CountingFrameSource(int frames, int *buildCount) : m_left(frames) { ++(*buildCount); }
+
+        ep::EAcquisitionType Type() const override { return ep::EAcquisitionType::DepthCamera; }
+        const char *Name() const override { return "counting"; }
+
+        bool Next(ep::Frame &out) override {
+            if (m_left-- <= 0) return false;
+            out.pts.clear();
+            out.nrm.clear();
+            for (int i = -6; i <= 6; ++i)
+                for (int j = -6; j <= 6; ++j) {
+                    out.pts.emplace_back(float(i) * 0.02f, float(j) * 0.02f, 1.0f);
+                    out.nrm.emplace_back(0.0f, 0.0f, -1.0f);
+                }
+            out.cam = Eigen::Vector3f::Zero();
+            return true;
+        }
+
+    private:
+        int m_left;
+    };
+
+} // namespace
+
+TEST(PipelineSource, InjectedFactoryBuildsTheSource) {
+    int buildCount = 0;
+    ep::AcquisitionConfig acquisition;
+    acquisition.type = ep::EAcquisitionType::DepthCamera;
+    acquisition.makeSource = [&] { return std::make_unique<CountingFrameSource>(3, &buildCount); };
+
+    std::unique_ptr<ep::IFrameSource> source = ep::MakeAcquisitionSource(acquisition);
+    ASSERT_NE(source, nullptr);
+    EXPECT_EQ(buildCount, 1);
+    EXPECT_EQ(source->Type(), ep::EAcquisitionType::DepthCamera);
+
+    int delivered = 0;
+    ep::Frame frame;
+    while (source->Next(frame)) ++delivered;
+    EXPECT_EQ(delivered, 3);
+}
+
+// Without a factory a device type has nothing to build from, and saying so beats a null source
+// that fails later inside the acquisition thread.
+TEST(PipelineSource, DeviceTypeWithoutAFactoryIsRejected) {
+    ep::AcquisitionConfig acquisition;
+    acquisition.type = ep::EAcquisitionType::DepthCamera;
+    EXPECT_THROW(ep::MakeAcquisitionSource(acquisition), std::invalid_argument);
+}
+
+// A factory that returns nothing must be caught where it is called. Handing a null IFrameSource
+// to ReconstructionThread makes Run() exit immediately and the pipeline look merely empty.
+TEST(PipelineSource, FactoryReturningNullIsRejected) {
+    ep::AcquisitionConfig acquisition;
+    acquisition.type = ep::EAcquisitionType::DepthCamera;
+    acquisition.makeSource = [] { return std::unique_ptr<ep::IFrameSource>(); };
+    EXPECT_THROW(ep::MakeAcquisitionSource(acquisition), std::invalid_argument);
+}
+
+// The factory takes precedence on File too, so a caller can substitute a decorated or synthetic
+// source without inventing a config field for it.
+TEST(PipelineSource, FactoryOverridesTheFileDescription) {
+    int buildCount = 0;
+    ep::AcquisitionConfig acquisition;
+    acquisition.type = ep::EAcquisitionType::File;
+    acquisition.framePaths = {"/no/such/frame.ply"};
+    acquisition.makeSource = [&] { return std::make_unique<CountingFrameSource>(1, &buildCount); };
+
+    std::unique_ptr<ep::IFrameSource> source = ep::MakeAcquisitionSource(acquisition);
+    EXPECT_EQ(buildCount, 1);
+    EXPECT_STREQ(source->Name(), "counting");
+}
+
+// End-to-end: a depth device reaches the map through the injected factory. This is the shape
+// realsense_scan uses -- IDepthProvider -> DepthCameraFrameSource -> Pipeline -- with a synthetic
+// provider standing in for the camera so it runs without hardware.
+namespace {
+
+    // A slanted wall with a nearer box in it: a plane alone leaves point-to-plane ICP with three
+    // unconstrained DoF, and the box is what pins them.
+    class SyntheticDepthProvider : public ep::IDepthProvider {
+    public:
+        explicit SyntheticDepthProvider(int frames) : m_left(frames) {
+            m_intrinsics.width = 64;
+            m_intrinsics.height = 48;
+            m_intrinsics.fx = m_intrinsics.fy = 40.0f;
+            m_intrinsics.cx = 32.0f;
+            m_intrinsics.cy = 24.0f;
+        }
+
+        const ep::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
+
+        bool Grab(ep::DepthFrame &out) override {
+            if (m_left-- <= 0) return false;
+            out.depth.assign(std::size_t(m_intrinsics.width) * m_intrinsics.height, 0.0f);
+            for (int v = 0; v < m_intrinsics.height; ++v)
+                for (int u = 0; u < m_intrinsics.width; ++u) {
+                    const float x = (float(u) - m_intrinsics.cx) / m_intrinsics.fx;
+                    const float y = (float(v) - m_intrinsics.cy) / m_intrinsics.fy;
+                    float z = 1.20f + 0.25f * x;
+                    if (std::abs(x) < 0.20f && std::abs(y) < 0.20f) z = 0.85f;
+                    out.depth[std::size_t(v) * m_intrinsics.width + u] = z;
+                }
+            return true;
+        }
+
+    private:
+        int m_left;
+        ep::CameraIntrinsics m_intrinsics;
+    };
+
+} // namespace
+
+TEST(Pipeline, DepthDeviceAccumulatesAMap) {
+    ep::Pipeline::Config cfg;
+    cfg.map.baseVoxel = 0.01f;
+    cfg.map.truncation = 0.03f;
+    cfg.map.submap = false;
+    cfg.acquisition.type = ep::EAcquisitionType::DepthCamera;
+    cfg.acquisition.makeSource = [] {
+        return std::make_unique<ep::DepthCameraFrameSource>(
+                std::make_unique<SyntheticDepthProvider>(6));
+    };
+
+    ep::Pipeline pipe(cfg, ep::TrackerRegistry::Default().Create("identity"));
+    pipe.Start();
+    ASSERT_TRUE(waitProcessed(pipe, 3)) << "the depth source never reached the map";
+    pipe.Stop();
+    pipe.CheckErrors();
+
+    const auto snapshot = pipe.LatestModel();
+    ASSERT_NE(snapshot, nullptr);
+    EXPECT_GT(snapshot->entries.size(), 0u) << "no voxels were integrated from the depth frames";
+    EXPECT_FLOAT_EQ(snapshot->voxel, cfg.map.baseVoxel);
+
+    // The surface must land where the geometry is. Back-projection puts the wall near z = 1.2 and
+    // the box at 0.85, so a map centred anywhere else means the frontend or the routing is wrong.
+    float nearestZ = 1e9f, farthestZ = -1e9f;
+    for (const TSDFVoxel &voxel: snapshot->entries) {
+        nearestZ = std::min(nearestZ, voxel.center.z());
+        farthestZ = std::max(farthestZ, voxel.center.z());
+    }
+    EXPECT_GT(nearestZ, 0.5f);
+    EXPECT_LT(farthestZ, 2.0f);
 }
