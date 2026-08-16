@@ -69,6 +69,7 @@ namespace {
     // Drive the pipeline to completion over all frames, then snapshot the final model + stats.
     RunResult runTracker(const ep::AcquisitionConfig &acquisition, int lastFrame, float voxel,
                          float truncation, const std::string &trackerName) {
+        // acquisition already carries downsampleVoxel; Pipeline only fills it when it is 0.
         ep::Pipeline::Config config;
         config.map.baseVoxel = voxel;
         if (truncation > 0.0f) config.map.truncation = truncation;
@@ -144,6 +145,7 @@ int main(int argc, char **argv) {
                         .Option("--replay")
                         .Option("--voxel")     // default runtime-computed (extent / 200)
                         .Option("--truncation")// default: MapConfig's, or 3 voxels for --replay
+                        .Option("--downsample") // acquisition-stage voxel; default = the map's finest
                         .Option("--trackers", "identity,icp");
 
         const std::string dir = arg.Value("--dir");
@@ -211,9 +213,17 @@ int main(int argc, char **argv) {
             }
         }
 
+        // The map and the TRACKER want different things from the input. A point finer than a map
+        // voxel is invisible to the map, but ICP still uses it to find correspondences, so tying
+        // the two together is an assumption worth being able to break.
+        const float downsample = arg.ValueFloat("--downsample", 0.0f);
+        if (downsample != 0.0f) acquisition.downsampleVoxel = downsample;
+
         std::printf("source   : %s\n", label.c_str());
-        std::printf("voxel    : %.4f   truncation : %.4f\n\n", voxel,
-                    truncation > 0.0f ? truncation : 1.5f);
+        std::printf("voxel    : %.4f   truncation : %.4f   downsample : %s\n\n", voxel,
+                    truncation > 0.0f ? truncation : 1.5f,
+                    downsample == 0.0f ? "(map's finest)"
+                                       : (downsample < 0.0f ? "off" : std::to_string(downsample).c_str()));
         std::printf("%-10s | %6s | %8s | %11s | %9s | %6s %6s %6s %6s\n", "tracker", "frames",
                     "align ms", "trackerRmse", "entries", "acq", "align", "integ", "drop");
         std::printf("-----------|--------|----------|-------------|-----------|"
