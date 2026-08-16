@@ -41,14 +41,20 @@ namespace Pipeline {
         // creating one would hand the second pipeline a source the first has closed.
         std::function<std::unique_ptr<IFrameSource>()> makeSource;
 
-        // Voxel-grid reduce each frame as it is acquired; 0 disables. Pipeline fills this from the
-        // map's finest level when the caller leaves it at 0.
+        // Voxel-grid reduce each frame as it is acquired; 0 (default) disables it.
         //
-        // Reducing HERE rather than at integration is the point: two points inside one map voxel
-        // are indistinguishable to the map, so the finer ones buy nothing -- but they are still
-        // paid for by ICP, by the frame queues, and by every copy in between. A 640x480 depth
-        // frame is 307k points; the surface it actually resolves at a 10 mm voxel is a small
-        // fraction of that.
+        // Reducing HERE rather than at integration is what makes it worth anything: a 640x480 depth
+        // frame is 307k points, and carrying all of them costs ICP, the frame queues, and every
+        // copy in between. On a 477-frame D435 capture it took ICP from 133 ms to 7 ms per frame.
+        //
+        // It is NOT free, and defaults off for that reason. Two measurements sharing a map voxel
+        // are not redundant -- averaging them is how a TSDF cancels sensor noise -- and a voxel is
+        // written by every point whose truncation band reaches it, not only by points inside it.
+        // Worse, the submap's detail level is assigned by measuring point DENSITY, so reducing to
+        // the map's own resolution guarantees nothing is ever dense enough to earn it. Measured on
+        // that capture at map voxel 0.05: off -> 312,933 map voxels, 0.0125 -> 249,334,
+        // 0.02 -> 51,944, 0.025 (the detail voxel) -> 48,784. The cliff is the classifier going
+        // silent, and it costs 84% of the reconstructed surface.
         float downsampleVoxel = 0.0f;
 
         // False for a source that waits -- a recording, a dataset. It makes the run lossless: the

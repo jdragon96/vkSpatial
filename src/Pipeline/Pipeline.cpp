@@ -21,12 +21,6 @@ namespace Pipeline {
         m_registration.reset();
         m_reconstruction.reset();
         m_comm = std::make_unique<CommunicationModule>(cfg.acquisition.realTime);
-        // The finest level the map can represent. Anything below it is detail the map cannot hold,
-        // so carrying it through tracking and the queues is pure cost. Left alone if the caller
-        // set a value, and disabled by setting it negative.
-        if (cfg.acquisition.downsampleVoxel == 0.0f)
-            cfg.acquisition.downsampleVoxel =
-                    cfg.map.submap ? cfg.map.baseVoxel * 0.5f : cfg.map.baseVoxel;
         m_reconstruction = std::make_unique<ReconstructionThread>(*m_comm, std::move(cfg.acquisition));
         m_registration = std::make_unique<RegistrationThread>(*m_comm, std::move(align));
         m_integration = std::make_unique<IntegrationThread>(*m_comm, cfg.map);

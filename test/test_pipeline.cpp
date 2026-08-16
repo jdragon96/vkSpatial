@@ -782,26 +782,30 @@ TEST(Pipeline, AcquisitionReducesFramesToTheMapsFinestVoxel) {
     }
 }
 
-// Left at 0, the pipeline fills the knob from the map's finest level -- baseVoxel, or half of it
-// when the submap's detail level exists.
-TEST(Pipeline, DownsampleVoxelDefaultsToTheMapsFinestLevel) {
+// Acquisition-stage reduction is a throughput tool, not a free optimisation, so it stays off
+// unless asked for. Deriving it from the map voxel looks principled and is not: the submap assigns
+// its detail level by measuring point DENSITY, so reducing a frame to the map's own resolution
+// guarantees no region is ever dense enough to earn detail. Measured on a 477-frame D435 capture
+// at map voxel 0.05, that default cost 84% of the reconstructed surface (312,933 -> 48,784).
+TEST(Pipeline, DownsamplingIsOffUnlessAskedFor) {
     ep::Pipeline::Config cfg;
     cfg.map.baseVoxel = 0.04f;
+    cfg.map.submap = true;
     cfg.acquisition.type = ep::EAcquisitionType::DepthCamera;
     cfg.acquisition.makeSource = [] {
         return std::make_unique<ep::DepthCameraFrameSource>(
                 std::make_unique<SyntheticDepthProvider>(1));
     };
 
-    cfg.map.submap = false;
     {
         ep::Pipeline pipe(cfg, ep::TrackerRegistry::Default().Create("identity"));
-        EXPECT_FLOAT_EQ(pipe.DownsampleVoxel(), 0.04f);
+        EXPECT_FLOAT_EQ(pipe.DownsampleVoxel(), 0.0f) << "nothing may enable this implicitly";
     }
-    cfg.map.submap = true;
+
+    cfg.acquisition.downsampleVoxel = 0.01f;
     {
         ep::Pipeline pipe(cfg, ep::TrackerRegistry::Default().Create("identity"));
-        EXPECT_FLOAT_EQ(pipe.DownsampleVoxel(), 0.02f) << "the detail level is half the base voxel";
+        EXPECT_FLOAT_EQ(pipe.DownsampleVoxel(), 0.01f) << "an explicit request must survive";
     }
 }
 
