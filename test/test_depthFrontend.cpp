@@ -219,9 +219,32 @@ TEST(DepthFrontend, RecorderRefusesADirectoryThatAlreadyHoldsACapture) {
         EXPECT_EQ(recorder.RecordedFrameCount(), 4);
     }
 
-    Pipeline::DepthRecorder again(std::make_unique<FakeDepthProvider>(2, k), dir.string());
-    Pipeline::DepthFrame frame;
-    EXPECT_THROW(again.Grab(frame), std::runtime_error);
+    // The refusal must land on construction, not on the first Grab(). A caller that opens a
+    // window before it starts streaming -- depth_live_viewer does -- would otherwise stand up its
+    // whole render stack and only then discover the directory is occupied.
+    EXPECT_THROW((Pipeline::DepthRecorder(std::make_unique<FakeDepthProvider>(2, k), dir.string())),
+                 std::runtime_error);
+
+    // Refusing must not disturb the take already on disk.
+    std::size_t remaining = 0;
+    for (const auto &entry: std::filesystem::directory_iterator(dir))
+        if (entry.path().filename().string().rfind("depth_", 0) == 0) ++remaining;
+    EXPECT_EQ(remaining, 4u);
 
     std::filesystem::remove_all(dir);
+}
+
+// A recorder that refuses creates nothing, and one that is never grabbed from creates nothing
+// either -- the directory and its intrinsics.txt wait for a frame to actually arrive.
+TEST(DepthFrontend, RecorderCreatesNothingUntilAFrameArrives) {
+    const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() / "vkbvh_depth_untouched";
+    std::filesystem::remove_all(dir);
+
+    {
+        Pipeline::DepthRecorder recorder(std::make_unique<FakeDepthProvider>(3, MakeIntrinsics(8, 6)),
+                                         dir.string());
+        EXPECT_FALSE(std::filesystem::exists(dir));
+    }
+    EXPECT_FALSE(std::filesystem::exists(dir));
 }
