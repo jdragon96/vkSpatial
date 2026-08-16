@@ -249,7 +249,7 @@ namespace Pipeline {
         res.T = TcInv * T * Tc;
         if (res.numInliers > 0)
             res.rmse = float(std::sqrt(lastSumOfSquaredResiduals / double(res.numInliers)));
-        res.valid = res.numInliers >= size_t(params.minInliers);
+        res.valid = res.numInliers >= size_t(params.minInliers) && res.fitness >= params.minFitness;
         return res;
     }
 

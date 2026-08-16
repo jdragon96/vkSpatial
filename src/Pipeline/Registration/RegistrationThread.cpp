@@ -34,12 +34,24 @@ namespace Pipeline {
             }
             const Eigen::Isometry3f pose = a.valid ? a.pose : previousPose;
             if (a.valid) {
+                // Measured against the pose actually adopted last frame, so a rejected track does
+                // not show up as a jump on the frame after it.
+                const Eigen::Isometry3f step = previousPose.inverse() * a.pose;
+                const double stepMeters = double(step.translation().norm());
+                const double stepDegrees =
+                        double(Eigen::AngleAxisf(step.rotation()).angle()) * 180.0 / M_PI;
+                m_poseDeltaMeters.Add(stepMeters);
+                if (stepMeters > m_poseDeltaMetersMax.load()) m_poseDeltaMetersMax.store(stepMeters);
+                if (stepDegrees > m_poseDeltaDegreesMax.load()) m_poseDeltaDegreesMax.store(stepDegrees);
+                m_trajectoryLengthMeters.store(m_trajectoryLengthMeters.load() + stepMeters);
+
                 previousPreviousPose = previousPose;
                 previousPose = a.pose;
                 haveTwoPoses = true;
                 m_trackerRmse.Add(a.rmse);
             } else {
                 haveTwoPoses = false;
+                m_rejected.fetch_add(1);
             }
 
             TrackedFrame tf;

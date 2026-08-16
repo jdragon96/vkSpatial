@@ -74,6 +74,11 @@ namespace Pipeline {
         s.alignMsAvg = m_registration->AlignMsAvg();
         s.alignedFrames = m_registration->AlignedFrames();
         s.trackerRmseAvg = m_registration->TrackerRmseAvg();
+        s.trackRejected = m_registration->Rejected();
+        s.poseDeltaMetersAvg = m_registration->PoseDeltaMetersAvg();
+        s.poseDeltaMetersMax = m_registration->PoseDeltaMetersMax();
+        s.poseDeltaDegreesMax = m_registration->PoseDeltaDegreesMax();
+        s.trajectoryLengthMeters = m_registration->TrajectoryLengthMeters();
         s.integrateMsAvg = m_integration->IntegrateMsAvg();
         s.integratedFrames = m_integration->IntegratedFrames();
         return s;

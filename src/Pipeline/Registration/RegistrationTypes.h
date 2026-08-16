@@ -44,6 +44,13 @@ namespace Engine::Registration {
         // Solve, never per iteration), so the widest value must be this field, never narrower.
         float maxCorrDist = 0.1f;
         int minInliers = 10;
+        // Minimum share of the SOURCE points that must find a correspondence for the solve to
+        // count. minInliers alone is an absolute floor, and an absolute floor cannot judge a
+        // solve: ten correspondences out of fifty thousand determine six degrees of freedom about
+        // as well as noise does, yet they pass. A frame that has drifted off the map finds exactly
+        // that handful, "solves" them, and reports a pose the caller then trusts.
+        // 0 disables the gate (the historical behaviour).
+        float minFitness = 0.0f;
         // stop when the incremental update norm drops below this
         float convEps = 1e-6f;
         float huberScale = 0.05f;               // robust-weight knee (world units; caller sets ~voxel)

@@ -97,6 +97,16 @@ namespace Pipeline {
         std::uint64_t alignedFrames = 0;
         // ICPThread: running mean of the tracker's residual rmse over valid tracks (0 if none yet).
         double trackerRmseAvg = 0.0;
+        // Per-frame pose change, and the total path walked. A hand-held camera at 30 fps moves
+        // well under 0.05 m per frame; anything far above that is not motion the sensor could have
+        // made, so these separate a tracker that spread the frames correctly from one that
+        // diverged -- which the residual rmse cannot do, since it only scores the correspondences
+        // the tracker itself chose.
+        std::uint64_t trackRejected = 0; // tracker returned invalid -> previous pose reused
+        double poseDeltaMetersAvg = 0.0, poseDeltaMetersMax = 0.0;
+        double poseDeltaDegreesMax = 0.0;
+        double trajectoryLengthMeters = 0.0;
+
         // IntegrationThread: integrate + download + first-seen tracking for one frame.
         double integrateMsAvg = 0.0;
         std::uint64_t integratedFrames = 0;

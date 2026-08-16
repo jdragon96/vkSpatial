@@ -12,6 +12,8 @@ namespace Pipeline {
 
     class GpuIcpTracker : public Tracker {
     public:
+        void SetMinFitness(float f) { m_params.minFitness = f; }
+
         const char *Name() const override { return "icp"; }
 
         TrackingResult Track(const Frame &frame,

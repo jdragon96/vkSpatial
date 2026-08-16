@@ -1,6 +1,7 @@
 #include "Pipeline/Registration/Tracker.h" // Pipeline::TrackerRegistry
 #include "Pipeline/Pipeline.h"  // Pipeline::Pipeline / Config / EAcquisitionType
 #include "Pipeline/CommunicationModule.h"       // Pipeline::CommunicationModule
+#include "Pipeline/Registration/GpuPointToPlaneIcp.h"
 #include "Pipeline/Registration/RegistrationThread.h"
 #include "Pipeline/Reconstruction/ReconstructionThread.h" // MakeAcquisitionSource
 #include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
@@ -854,4 +855,53 @@ TEST(Pipeline, OfflineSourceProcessesEveryFrame) {
     // the price. Asserted only as "still runs", since whether it drops depends on the machine.
     const ep::PipelineStats live = run(config(true));
     EXPECT_GT(live.integratedFrames, 0u);
+}
+
+// A solve that satisfies ten correspondences out of tens of thousands determines six degrees of
+// freedom about as well as noise does, yet minInliers alone accepts it. On a real capture that let
+// a frame which had drifted off the map latch onto a handful of strays, report the resulting pose
+// as good, and -- through the constant-velocity prior, which doubles whatever the last frame did --
+// run away: 10.78 m of claimed motion in a single frame at 30 fps.
+TEST(Registration, FitnessGateRejectsASolveBackedByAlmostNoOverlap) {
+    Engine::Registration::PointCloud target;
+    for (int i = -20; i <= 20; ++i)
+        for (int j = -20; j <= 20; ++j) {
+            target.points.emplace_back(float(i) * 0.01f, float(j) * 0.01f, 0.0f);
+            target.normals.emplace_back(0.0f, 0.0f, 1.0f);
+        }
+
+    // Source: a small patch overlapping the target, plus far more points nowhere near it. Only the
+    // patch can find correspondences, so the solve is backed by a small share of the source.
+    std::vector<Eigen::Vector3f> source, sourceNormals;
+    for (int i = -3; i <= 3; ++i)
+        for (int j = -3; j <= 3; ++j) {
+            source.emplace_back(float(i) * 0.01f, float(j) * 0.01f, 0.0f);
+            sourceNormals.emplace_back(0.0f, 0.0f, 1.0f);
+        }
+    const std::size_t overlapping = source.size();
+    for (int i = 0; i < 400; ++i) {
+        source.emplace_back(50.0f + float(i) * 0.01f, 50.0f, 50.0f);
+        sourceNormals.emplace_back(0.0f, 0.0f, 1.0f);
+    }
+    ASSERT_LT(double(overlapping) / double(source.size()), 0.2);
+
+    Engine::Core::Context context;
+    ep::GpuPointToPlaneIcp icp(context);
+    Engine::Registration::RegistrationParam params;
+    params.maxCorrDist = 0.1f;
+    params.huberScale = 0.05f;
+
+    // The historical gate: an absolute inlier floor the overlapping patch clears on its own.
+    params.minFitness = 0.0f;
+    const Engine::Registration::RegistrationResult ungated =
+            icp.Solve(source, sourceNormals, target, Eigen::Matrix4f::Identity(), params);
+    EXPECT_TRUE(ungated.valid) << "fixture is wrong: the patch must produce enough inliers to pass "
+                                  "the bare minInliers floor, or this proves nothing";
+    EXPECT_LT(ungated.fitness, 0.2f);
+
+    params.minFitness = 0.4f;
+    const Engine::Registration::RegistrationResult gated =
+            icp.Solve(source, sourceNormals, target, Eigen::Matrix4f::Identity(), params);
+    EXPECT_FALSE(gated.valid) << "a solve backed by " << gated.fitness * 100.0f
+                              << "% of the source must not be reported as a good track";
 }

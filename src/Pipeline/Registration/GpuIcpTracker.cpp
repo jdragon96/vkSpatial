@@ -21,6 +21,12 @@ namespace Pipeline {
         }
 
         Engine::Registration::RegistrationParam params = m_params;
+        // A depth frame sweeping a growing map legitimately contains new territory, so demanding
+        // most of it match would reject good tracks. This value separates "aligned against real
+        // overlap" from "latched onto a handful of stray correspondences", which is what the bare
+        // minInliers floor lets through. Swept on a 477-frame D435 capture (map voxel 0.05):
+        // 0.2 -> 166k voxels, 0.4 -> 50k, 0.6 -> 67k, against a 49k identity reference.
+        if (params.minFitness <= 0.0f) params.minFitness = 0.4f;
         if (model->voxel > 0.0f) {
             params.maxCorrDist = 2.0f * model->voxel;
             params.huberScale = model->voxel;

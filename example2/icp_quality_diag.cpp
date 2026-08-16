@@ -17,6 +17,7 @@
 // that ICP found motion, not that ICP is wrong.
 
 #include "Pipeline/Pipeline.h"
+#include "Pipeline/Registration/GpuIcpTracker.h"
 #include "Pipeline/Registration/Tracker.h"       // TrackerRegistry
 #include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
 #include "Pipeline/Reconstruction/DepthRecording.h"
@@ -39,6 +40,9 @@ namespace ep = Pipeline;
 namespace fs = std::filesystem;
 
 namespace {
+
+    float g_minFitness = 0.0f; // set from --min-fitness before any run
+
 
     std::vector<std::string> collectFramePaths(const std::string &dir) {
         std::vector<std::string> paths;
@@ -64,6 +68,8 @@ namespace {
         // the lossy trackedFrames channel threw the rest away.
         std::uint64_t acquired = 0, aligned = 0, integrated = 0;
         std::size_t dropped = 0;
+        double stepAvg = 0.0, stepMax = 0.0, turnMax = 0.0, pathLength = 0.0;
+        std::uint64_t rejected = 0;
     };
 
     // Drive the pipeline to completion over all frames, then snapshot the final model + stats.
@@ -76,7 +82,10 @@ namespace {
         config.acquisition = acquisition;
 
         ep::TrackerRegistry registry = ep::TrackerRegistry::Default();
-        ep::Pipeline pipe(config, registry.Create(trackerName));
+        std::unique_ptr<ep::Tracker> tracker = registry.Create(trackerName);
+        if (g_minFitness > 0.0f)
+            if (auto *gpu = dynamic_cast<ep::GpuIcpTracker *>(tracker.get())) gpu->SetMinFitness(g_minFitness);
+        ep::Pipeline pipe(config, std::move(tracker));
         pipe.Start();
         pipe.SetPaused(false);
 
@@ -125,6 +134,11 @@ namespace {
         r.aligned = stats.alignedFrames;
         r.integrated = stats.integratedFrames;
         r.dropped = stats.trackDropped;
+        r.rejected = stats.trackRejected;
+        r.stepAvg = stats.poseDeltaMetersAvg;
+        r.stepMax = stats.poseDeltaMetersMax;
+        r.turnMax = stats.poseDeltaDegreesMax;
+        r.pathLength = stats.trajectoryLengthMeters;
         if (const std::shared_ptr<const ep::ModelSnapshot> model = pipe.LatestModel()) {
             r.entries = model->entries.size();
             r.reconPoints.reserve(model->entries.size());
@@ -146,6 +160,7 @@ int main(int argc, char **argv) {
                         .Option("--voxel")     // default runtime-computed (extent / 200)
                         .Option("--truncation")// default: MapConfig's, or 3 voxels for --replay
                         .Option("--downsample") // acquisition-stage voxel; default = the map's finest
+                        .Option("--min-fitness", 0.0)
                         .Option("--trackers", "identity,icp");
 
         const std::string dir = arg.Value("--dir");
@@ -221,6 +236,7 @@ int main(int argc, char **argv) {
         // the tracker.
         acquisition.realTime = false;
 
+        g_minFitness = arg.ValueFloat("--min-fitness", 0.0f);
         const float downsample = arg.ValueFloat("--downsample", 0.0f);
         if (downsample != 0.0f) acquisition.downsampleVoxel = downsample;
 
@@ -243,6 +259,19 @@ int main(int argc, char **argv) {
                         (unsigned long long) r.integrated, r.dropped);
             results.push_back(std::move(r));
         }
+
+        // A hand-held sensor at 30 fps moves well under 0.05 m and a few degrees per frame. These
+        // are what separate a tracker that spread the frames because the camera really moved from
+        // one that diverged -- the residual rmse cannot, because it only scores the correspondences
+        // the tracker itself picked.
+        std::printf("\nPer-frame motion the tracker claims (30 fps hand-held: step < ~0.05 m):\n");
+        std::printf("%-10s | %10s | %10s | %10s | %12s | %8s\n", "tracker", "step avg", "step max",
+                    "turn max", "path length", "rejected");
+        std::printf("-----------|------------|------------|------------|--------------|---------\n");
+        for (std::size_t i = 0; i < trackers.size(); ++i)
+            std::printf("%-10s | %10.4f | %10.4f | %9.2f d | %12.3f | %8llu\n", trackers[i].c_str(),
+                        results[i].stepAvg, results[i].stepMax, results[i].turnMax,
+                        results[i].pathLength, (unsigned long long) results[i].rejected);
 
         // If an `identity` run exists, score every other tracker's reconstruction against it (identity
         // == the pre-registered ground-truth reference). Higher RMSE => that tracker drifted the surface.
