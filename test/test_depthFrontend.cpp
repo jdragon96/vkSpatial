@@ -71,3 +71,20 @@ TEST(DepthFrontend, SlantedPlaneSurvivesTheGuard) {
     EXPECT_EQ(out.pts.size(), std::size_t(k.width - 1) * (k.height - 1))
             << "a slanted surface must not be mistaken for a discontinuity";
 }
+
+// SlantedPlaneSurvivesTheGuard proves the threshold is generous enough for a gentle slope, but not
+// that it SCALES with depth: dropping the `* z` and using 0.02 as a flat constant passes it too.
+// This fixture separates them. At 5 m the per-column step is 0.05 m -- above the unscaled 0.02
+// constant, below the scaled 0.02 * 5.0 = 0.10 -- so only a genuinely relative guard keeps it.
+TEST(DepthFrontend, FarSlantedPlaneNeedsTheDepthScaledThreshold) {
+    const CameraIntrinsics k = MakeIntrinsics(64, 64);
+    DepthFrame frame;
+    frame.depth.assign(std::size_t(k.width) * k.height, 0.0f);
+    for (int v = 0; v < k.height; ++v)
+        for (int u = 0; u < k.width; ++u) // 5.0 m rising to 8.2 m -> 0.05 m per column
+            frame.depth[std::size_t(v) * k.width + u] = 5.0f + 3.2f * float(u) / float(k.width);
+
+    const Pipeline::Frame out = BackprojectDepth(frame, k, DepthFilterOptions{});
+    EXPECT_EQ(out.pts.size(), std::size_t(k.width - 1) * (k.height - 1))
+            << "a real surface 5 m out was cut: the jump threshold is not scaling with depth";
+}
