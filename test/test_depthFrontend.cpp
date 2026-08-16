@@ -248,3 +248,41 @@ TEST(DepthFrontend, RecorderCreatesNothingUntilAFrameArrives) {
     }
     EXPECT_FALSE(std::filesystem::exists(dir));
 }
+
+// A depth buffer whose rows are padded. Walking it linearly drifts one padding-width further into
+// the next row on every row, so the image shears progressively -- it does not fail outright, which
+// is why this needs a fixture rather than a crash to catch it.
+TEST(DepthFrontend, PaddedRowsUnpackWithoutShearing) {
+    constexpr int kWidth = 5, kHeight = 4;
+    constexpr std::size_t kStride = kWidth * sizeof(std::uint16_t) + 6; // 6 bytes of padding
+
+    std::vector<unsigned char> buffer(kStride * kHeight, 0xEE); // padding is NOT zero
+    for (int row = 0; row < kHeight; ++row)
+        for (int column = 0; column < kWidth; ++column) {
+            const std::uint16_t raw = std::uint16_t(1000 + row * 100 + column);
+            std::memcpy(buffer.data() + row * kStride + column * sizeof raw, &raw, sizeof raw);
+        }
+
+    std::vector<float> out;
+    Pipeline::UnpackDepthRows(buffer.data(), kStride, kWidth, kHeight, 0.001f, out);
+
+    ASSERT_EQ(out.size(), std::size_t(kWidth) * kHeight);
+    for (int row = 0; row < kHeight; ++row)
+        for (int column = 0; column < kWidth; ++column)
+            EXPECT_NEAR(out[std::size_t(row) * kWidth + column],
+                        float(1000 + row * 100 + column) * 0.001f, 1e-6f)
+                    << "row " << row << " column " << column;
+}
+
+// The unpadded case must stay exact too -- the common path.
+TEST(DepthFrontend, TightlyPackedRowsUnpackExactly) {
+    constexpr int kWidth = 3, kHeight = 2;
+    const std::uint16_t raw[kWidth * kHeight] = {1, 2, 3, 4, 5, 6};
+
+    std::vector<float> out;
+    Pipeline::UnpackDepthRows(reinterpret_cast<const unsigned char *>(raw),
+                              kWidth * sizeof(std::uint16_t), kWidth, kHeight, 0.001f, out);
+
+    ASSERT_EQ(out.size(), std::size_t(kWidth) * kHeight);
+    for (std::size_t i = 0; i < out.size(); ++i) EXPECT_FLOAT_EQ(out[i], float(i + 1) * 0.001f);
+}

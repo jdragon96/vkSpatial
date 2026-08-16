@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <vector>
 
@@ -41,6 +43,25 @@ namespace Pipeline {
         // path, and a destructor closes again after that.
         virtual void Close() {}
     };
+
+    // Unpack a row-padded 16-bit depth image into metres. Kept here, out of the sensor-specific
+    // code, because the arithmetic is the part that can be wrong without hardware to prove it.
+    //
+    // rowStrideBytes is NOT width*2 in general: a device may pad each row for alignment, and
+    // walking the buffer linearly then drifts one padding-width further into the next row on every
+    // row -- the image shears progressively rather than failing outright.
+    inline void UnpackDepthRows(const unsigned char *base, std::size_t rowStrideBytes, int width,
+                                int height, float metresPerUnit, std::vector<float> &out) {
+        out.assign(std::size_t(width) * std::size_t(height), 0.0f);
+        for (int row = 0; row < height; ++row) {
+            const unsigned char *rowBase = base + std::size_t(row) * rowStrideBytes;
+            for (int column = 0; column < width; ++column) {
+                std::uint16_t raw = 0;
+                std::memcpy(&raw, rowBase + std::size_t(column) * sizeof(std::uint16_t), sizeof raw);
+                out[std::size_t(row) * width + column] = float(raw) * metresPerUnit;
+            }
+        }
+    }
 
     struct DepthFilterOptions {
         // Reject a neighbour whose depth differs by more than max(minimumDepthJump,

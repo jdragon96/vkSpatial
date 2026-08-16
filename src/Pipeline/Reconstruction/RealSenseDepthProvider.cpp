@@ -151,11 +151,33 @@ namespace Pipeline {
                 throw std::runtime_error("RealSenseDepthProvider::Grab: timed out waiting for a "
                                          "depth frame");
 
+            // A frameset can arrive without a depth frame. get_data() on one returns null, and
+            // dereferencing it segfaults -- inside a worker thread, where the process simply dies.
             const rs2::depth_frame depth = frames.get_depth_frame();
-            const uint16_t *raw = static_cast<const uint16_t *>(depth.get_data());
-            const std::size_t count = std::size_t(m_intrinsics.width) * std::size_t(m_intrinsics.height);
-            out.depth.resize(count);
-            for (std::size_t i = 0; i < count; ++i) out.depth[i] = float(raw[i]) * m_depthScale;
+            if (!depth)
+                throw std::runtime_error("RealSenseDepthProvider::Grab: the frameset carried no "
+                                         "depth frame");
+
+            // Size the read from the FRAME, never from the stored intrinsics. A device may
+            // renegotiate its mode -- USB 2.1 bandwidth pressure is exactly when it does -- and
+            // then width*height from the start-up profile over-reads the smaller buffer. The
+            // frames that survived that would also be back-projected with the wrong focal length
+            // and principal point, so the reconstruction comes out at the wrong scale.
+            if (depth.get_width() != m_intrinsics.width || depth.get_height() != m_intrinsics.height)
+                throw std::runtime_error(
+                        "RealSenseDepthProvider::Grab: the device delivered " +
+                        std::to_string(depth.get_width()) + "x" + std::to_string(depth.get_height()) +
+                        " but the stream profile describes " + std::to_string(m_intrinsics.width) +
+                        "x" + std::to_string(m_intrinsics.height) +
+                        ". Back-projection would use the wrong focal length and principal point.");
+
+            const auto *base = static_cast<const unsigned char *>(depth.get_data());
+            if (!base)
+                throw std::runtime_error("RealSenseDepthProvider::Grab: the depth frame has no "
+                                         "pixel data");
+
+            UnpackDepthRows(base, std::size_t(depth.get_stride_in_bytes()), m_intrinsics.width,
+                            m_intrinsics.height, m_depthScale, out.depth);
             return true;
         } catch (const rs2::error &e) {
             throw std::runtime_error(std::string("RealSenseDepthProvider: ") + e.what());
