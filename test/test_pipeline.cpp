@@ -719,3 +719,87 @@ TEST(Pipeline, ReleasesTheDeviceWhenAcquisitionEnds) {
         EXPECT_GT(closeCount, 0) << "the pipeline stopped without releasing the device";
     }
 }
+
+// Acquisition-stage downsampling. Two points inside one map voxel are indistinguishable to the
+// map, but the finer one is still paid for by ICP, by the frame queues, and by every copy between
+// -- so it is dropped where it is produced, not at integration.
+TEST(Pipeline, AcquisitionReducesFramesToTheMapsFinestVoxel) {
+    // 200x200 points across 1 m: 5 mm apart, far denser than the 0.05 m map voxel below.
+    auto makeDenseSource = [] {
+        class DenseSource : public ep::IFrameSource {
+        public:
+            ep::EAcquisitionType Type() const override { return ep::EAcquisitionType::DepthCamera; }
+            const char *Name() const override { return "dense"; }
+            bool Next(ep::Frame &out) override {
+                if (m_left-- <= 0) return false;
+                out.pts.clear();
+                out.nrm.clear();
+                for (int i = 0; i < 200; ++i)
+                    for (int j = 0; j < 200; ++j) {
+                        out.pts.emplace_back(float(i) * 0.005f, float(j) * 0.005f, 1.0f);
+                        out.nrm.emplace_back(0.0f, 0.0f, -1.0f);
+                    }
+                return true;
+            }
+
+        private:
+            int m_left = 1;
+        };
+        return std::make_unique<DenseSource>();
+    };
+
+    ep::AcquisitionConfig acquisition;
+    acquisition.type = ep::EAcquisitionType::DepthCamera;
+    acquisition.makeSource = makeDenseSource;
+
+    // Off: the frame arrives whole.
+    acquisition.downsampleVoxel = -1.0f; // negative disables
+    {
+        ep::CommunicationModule comm;
+        ep::ReconstructionThread stage(comm, acquisition);
+        stage.Start();
+        ep::Frame frame;
+        ASSERT_TRUE(comm.capturedFrames.Pop(frame));
+        EXPECT_EQ(frame.pts.size(), 200u * 200u);
+        stage.Stop();
+    }
+
+    // On at 0.05 m: 1 m of surface can hold at most 21x21 occupied cells, so the frame must come
+    // out two orders of magnitude smaller -- and still cover the same surface.
+    acquisition.downsampleVoxel = 0.05f;
+    {
+        ep::CommunicationModule comm;
+        ep::ReconstructionThread stage(comm, acquisition);
+        stage.Start();
+        ep::Frame frame;
+        ASSERT_TRUE(comm.capturedFrames.Pop(frame));
+        EXPECT_LE(frame.pts.size(), 21u * 21u);
+        EXPECT_GE(frame.pts.size(), 20u * 20u) << "the surface itself must survive, not just shrink";
+        EXPECT_EQ(frame.pts.size(), frame.nrm.size()) << "Frame's contract is pts.size() == nrm.size()";
+        for (const Eigen::Vector3f &n: frame.nrm) EXPECT_NEAR(n.z(), -1.0f, 1e-3f);
+        stage.Stop();
+    }
+}
+
+// Left at 0, the pipeline fills the knob from the map's finest level -- baseVoxel, or half of it
+// when the submap's detail level exists.
+TEST(Pipeline, DownsampleVoxelDefaultsToTheMapsFinestLevel) {
+    ep::Pipeline::Config cfg;
+    cfg.map.baseVoxel = 0.04f;
+    cfg.acquisition.type = ep::EAcquisitionType::DepthCamera;
+    cfg.acquisition.makeSource = [] {
+        return std::make_unique<ep::DepthCameraFrameSource>(
+                std::make_unique<SyntheticDepthProvider>(1));
+    };
+
+    cfg.map.submap = false;
+    {
+        ep::Pipeline pipe(cfg, ep::TrackerRegistry::Default().Create("identity"));
+        EXPECT_FLOAT_EQ(pipe.DownsampleVoxel(), 0.04f);
+    }
+    cfg.map.submap = true;
+    {
+        ep::Pipeline pipe(cfg, ep::TrackerRegistry::Default().Create("identity"));
+        EXPECT_FLOAT_EQ(pipe.DownsampleVoxel(), 0.02f) << "the detail level is half the base voxel";
+    }
+}

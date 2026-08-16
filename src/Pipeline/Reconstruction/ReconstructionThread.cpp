@@ -1,6 +1,7 @@
 #include "Pipeline/Reconstruction/ReconstructionThread.h"
 
 #include "Pipeline/CommunicationModule.h"
+#include "Engine/Features/Downsample.h"
 #include "Pipeline/Reconstruction/FileFrameSource.h"
 
 #include <stdexcept>
@@ -38,7 +39,8 @@ namespace Pipeline {
 
     ReconstructionThread::ReconstructionThread(CommunicationModule &comm,
                                                AcquisitionConfig sourceType)
-        : PipelineStage(comm), m_source(MakeAcquisitionSource(sourceType)) {}
+        : PipelineStage(comm), m_source(MakeAcquisitionSource(sourceType)),
+          m_downsampleVoxel(sourceType.downsampleVoxel) {}
 
     ReconstructionThread::~ReconstructionThread() { Stop(); }
 
@@ -57,6 +59,19 @@ namespace Pipeline {
     }
 
 
+    // Engine::Features::DownsampleVoxel takes the cell centroid and the renormalized mean normal,
+    // so this is not merely a decimation: averaging inside a cell also cancels part of the stereo
+    // sensor's per-pixel depth noise. Vectors move both ways, so no point is copied.
+    void ReconstructionThread::reduceFrame(Frame &frame) const {
+        Engine::Registration::PointCloud cloud;
+        cloud.points = std::move(frame.pts);
+        cloud.normals = std::move(frame.nrm);
+        Engine::Registration::PointCloud reduced =
+                Engine::Features::DownsampleVoxel(cloud, m_downsampleVoxel);
+        frame.pts = std::move(reduced.points);
+        frame.nrm = std::move(reduced.normals);
+    }
+
     bool ReconstructionThread::waitWhilePaused() {
         std::unique_lock<std::mutex> lock(m_pauseMutex);
         m_pauseCv.wait(lock, [this] { return !m_paused.load() || StopRequested(); });
@@ -72,6 +87,9 @@ namespace Pipeline {
             {
                 util::ScopedMean t(m_acquireMs);
                 ok = m_source->Next(f);
+                // Timed with the acquire, because from every later stage's point of view this IS
+                // what acquisition produced.
+                if (ok && m_downsampleVoxel > 0.0f) reduceFrame(f);
             }
             if (!ok) break;
             if (!m_comm.capturedFrames.Push(std::move(f))) break;

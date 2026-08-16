@@ -40,6 +40,7 @@ namespace Pipeline {
         std::shared_ptr<const ModelSnapshot> LatestModel() const;
         int ProcessedFrame() const;
         EAcquisitionType Type() const;
+        float DownsampleVoxel() const; // acquisition-stage voxel reduction actually in effect
         PipelineStats GetStats() const;
         void CheckErrors() const; // rethrow the first worker-stage exception, if any
 

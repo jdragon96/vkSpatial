@@ -40,6 +40,16 @@ namespace Pipeline {
         // asked to open it again; a factory that captures an already-open handle instead of
         // creating one would hand the second pipeline a source the first has closed.
         std::function<std::unique_ptr<IFrameSource>()> makeSource;
+
+        // Voxel-grid reduce each frame as it is acquired; 0 disables. Pipeline fills this from the
+        // map's finest level when the caller leaves it at 0.
+        //
+        // Reducing HERE rather than at integration is the point: two points inside one map voxel
+        // are indistinguishable to the map, so the finer ones buy nothing -- but they are still
+        // paid for by ICP, by the frame queues, and by every copy in between. A 640x480 depth
+        // frame is 307k points; the surface it actually resolves at a 10 mm voxel is a small
+        // fraction of that.
+        float downsampleVoxel = 0.0f;
     };
 
 } // namespace Pipeline

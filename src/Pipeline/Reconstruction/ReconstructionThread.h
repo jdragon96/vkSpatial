@@ -26,6 +26,7 @@ namespace Pipeline {
         bool IsPaused() const { return m_paused.load(); }
 
         double AcquireMsAvg() const { return m_acquireMs.Mean(); }
+        float DownsampleVoxel() const { return m_downsampleVoxel; }
         std::uint64_t AcquiredFrames() const { return m_acquireMs.Count(); }
 
     protected:
@@ -34,8 +35,10 @@ namespace Pipeline {
 
     private:
         bool waitWhilePaused();
+        void reduceFrame(Frame &frame) const;
 
         std::unique_ptr<IFrameSource> m_source;
+        float m_downsampleVoxel = 0.0f;
         std::atomic<bool> m_paused{false};
         std::mutex m_pauseMutex;
         std::condition_variable m_pauseCv;
