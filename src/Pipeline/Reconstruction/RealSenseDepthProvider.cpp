@@ -31,9 +31,16 @@ namespace Pipeline {
     }
 
     bool RealSenseDepthProvider::Grab(DepthFrame &out) {
+        static constexpr unsigned kFrameTimeoutMs = 1000;
+
         try {
             rs2::frameset frames;
-            if (!m_pipeline.try_wait_for_frames(&frames, 1000)) return false;
+            // A timeout is NOT end of stream -- Grab's contract reserves false for that. At 30 fps
+            // a 1 s gap is a USB stall or a bandwidth renegotiation, and reporting it as the end
+            // truncates a capture while the caller exits successfully.
+            if (!m_pipeline.try_wait_for_frames(&frames, kFrameTimeoutMs))
+                throw std::runtime_error("RealSenseDepthProvider::Grab: timed out waiting for a "
+                                         "depth frame");
 
             const rs2::depth_frame depth = frames.get_depth_frame();
             const uint16_t *raw = static_cast<const uint16_t *>(depth.get_data());

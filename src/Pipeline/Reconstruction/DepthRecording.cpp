@@ -78,6 +78,15 @@ namespace Pipeline {
         // On the first frame only: create the directory and write the one intrinsics.txt that
         // describes every frame in it.
         if (m_recordedFrameCount == 0) {
+            // Refuse a directory that already holds a capture. Overwriting from index 0 would
+            // leave the previous take's higher-numbered frames in place, and RecordedDepthProvider
+            // globs every depth_*.bin -- so a 5-frame re-record over a 30-frame take replays as one
+            // 30-frame capture with a teleport at frame 5. Same intrinsics, same file sizes, so the
+            // size check cannot see it.
+            if (fs::exists(m_directory) && !ListDepthFrameFiles(m_directory).empty())
+                throw std::runtime_error("DepthRecorder: " + m_directory +
+                                         " already holds a recording; record into an empty "
+                                         "directory or remove it first");
             fs::create_directories(m_directory);
             WriteIntrinsics(fs::path(m_directory) / "intrinsics.txt", m_device->Intrinsics());
         }

@@ -79,7 +79,13 @@ namespace Pipeline {
                 Eigen::Vector3f n = (grid[i + 1] - grid[i]).cross(grid[i + W] - grid[i]);
                 if (n.norm() < 1e-9f) continue;
                 n.normalize();
-                if (n.z() > 0.0f) n = -n; // face the camera (camera looks +Z)
+                // The camera is at the frame origin, so P is also the view direction: a
+                // camera-facing normal satisfies n.P < 0. Testing n.z() alone is the same thing
+                // only ON the optical axis, and the two diverge with the ray angle -- across a
+                // D435's 87 degree field of view an ordinary wall receding toward the image edge
+                // inverts from roughly 40 degrees of incidence outward. An inverted normal flips
+                // the sign of the TSDF update and of every point-to-plane ICP residual.
+                if (n.dot(grid[i]) > 0.0f) n = -n;
                 fr.pts.push_back(grid[i]);
                 fr.nrm.push_back(n);
             }

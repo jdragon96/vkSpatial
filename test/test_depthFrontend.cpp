@@ -169,3 +169,59 @@ TEST(DepthFrontend, RecordedProviderRejectsATruncatedFrame) {
     EXPECT_THROW(Pipeline::RecordedDepthProvider(dir.string()), std::runtime_error);
     std::filesystem::remove_all(dir);
 }
+
+// The camera sits at the frame origin, so a point P is seen along direction P and a camera-facing
+// normal must satisfy n·P < 0. Testing n.z() alone is only equivalent ON the optical axis; the
+// error grows with the ray angle. Every fixture above uses fx=400 on a 64 px grid -- a ~9 degree
+// field of view, where the two rules are indistinguishable. A D435 is 87 degrees.
+TEST(DepthFrontend, NormalsFaceTheCameraAcrossAWideFieldOfView) {
+    CameraIntrinsics k;                 // D435 848x480 depth intrinsics
+    k.width = 848; k.height = 480;
+    k.fx = k.fy = 421.6f;
+    k.cx = 424.0f; k.cy = 238.0f;
+
+    // A plane receding toward the right edge: ordinary geometry, grazing only off-axis.
+    DepthFrame frame;
+    frame.depth.assign(std::size_t(k.width) * k.height, 0.0f);
+    for (int v = 0; v < k.height; ++v)
+        for (int u = 0; u < k.width; ++u) {
+            const float x = (float(u) - k.cx) / k.fx;
+            // Plane -0.8x + 0.6z = -0.4 solved for z along the ray (x = x_normalized * z).
+            const float z = -0.4f / (0.6f - 0.8f * x);
+            frame.depth[std::size_t(v) * k.width + u] = z > 0.0f ? z : 0.0f;
+        }
+
+    const Pipeline::Frame out = BackprojectDepth(frame, k, DepthFilterOptions{});
+    ASSERT_GT(out.pts.size(), 1000u);
+
+    std::size_t facingAway = 0;
+    for (std::size_t i = 0; i < out.pts.size(); ++i)
+        if (out.nrm[i].dot(out.pts[i]) > 0.0f) ++facingAway;
+    EXPECT_EQ(facingAway, 0u)
+            << facingAway << " of " << out.pts.size()
+            << " normals point away from the camera: the flip tests n.z() instead of n.P";
+}
+
+// Recording into a directory that already holds a capture used to splice two takes: overwriting
+// from index 0 leaves the previous take's higher-numbered frames, and RecordedDepthProvider globs
+// every depth_*.bin -- so the replay is one continuous capture with a teleport in the middle.
+// Same intrinsics, same file sizes, so the size check cannot catch it.
+TEST(DepthFrontend, RecorderRefusesADirectoryThatAlreadyHoldsACapture) {
+    const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() / "vkbvh_depth_rerecord";
+    std::filesystem::remove_all(dir);
+
+    const Pipeline::CameraIntrinsics k = MakeIntrinsics(8, 6);
+    {
+        Pipeline::DepthRecorder recorder(std::make_unique<FakeDepthProvider>(4, k), dir.string());
+        Pipeline::DepthFrame frame;
+        while (recorder.Grab(frame)) {}
+        EXPECT_EQ(recorder.RecordedFrameCount(), 4);
+    }
+
+    Pipeline::DepthRecorder again(std::make_unique<FakeDepthProvider>(2, k), dir.string());
+    Pipeline::DepthFrame frame;
+    EXPECT_THROW(again.Grab(frame), std::runtime_error);
+
+    std::filesystem::remove_all(dir);
+}
