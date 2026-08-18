@@ -184,6 +184,96 @@ per-iteration grid 재생성을 다시 만들지 않도록 hoist와 조화:
 
 ---
 
+## 9.5. 재현성 — 파이프라인을 통과하는 측정의 전제 (2026-08)
+
+**§7의 수치는 전부 결정론적 하네스(테스트 픽스처)에서 나온 것이고, 파이프라인을 통과하는 측정에는
+그대로 적용되지 않았다.** `capture/`(477프레임 D435 녹화)에서 동일 명령
+`icp_quality_diag --replay capture --voxel 0.05 --trackers icp`를 네 번 돌린 결과:
+
+| 실행 | path length | step max | turn max | rejected | noModel/noLocal/fewInliers/lowOverlap |
+|---|---|---|---|---|---|
+| A | 1.47 m | 0.1235 | 4.42° | 233 | 6 / 0 / 227 / 0 |
+| B | 6.45 m | 0.2308 | 22.19° | 233 | 6 / 28 / 93 / 106 |
+| C | 7.84 m | 0.7683 | 46.59° | 232 | 6 / 2 / 156 / 68 |
+| D | **136.76 m** | **40.16** | **179.88°** | 267 | 6 / 47 / 44 / 170 |
+
+**원인:** 블로킹 채널(`3e8a6e7`)은 프레임 *개수*만 맞춘다. 맵은 latest-wins `Mailbox`로 트래커에
+전달되고 정합은 `trackedFrames` 용량(4)만큼 융합보다 앞서 달릴 수 있어서, 프레임 N이 *어느 버전의
+맵*에 정합하는지가 쓰레드 스케줄링에 달렸다. 그 맵이 정합 타깃이므로 포즈가 달라지고 → 다음 맵이
+달라진다 → 발산한다.
+
+**따라서 `96402c4`의 `minFitness` 스윕(0.2→166k, 0.4→50k, 0.6→67k)은 신호가 아니라 노이즈다** —
+비단조성 자체가 그 증거였다.
+
+**수정 2건:**
+1. `FrameHandshake`(`Pipeline/CommunicationModule.h`) — 녹화 모드에서 정합이 매 프레임 융합 완료를
+   기다린다(lock-step). 프레임 N은 항상 0..N-1을 담은 맵에 정합한다.
+   테스트 `Pipeline.ALosslessReplayAlignsEachFrameAgainstEveryEarlierFrame`가 관측된 맵 인덱스
+   수열이 정확히 `-1, 0, 1, 2, …`임을 단언한다("두 실행이 일치"보다 강한 조건 — 타이밍 버그는
+   운으로 두 실행을 일치시킬 수 있지만 이 수열은 매 프레임 실제로 기다렸을 때만 성립한다).
+2. **타깃 정규 순서**(`SortTargetIntoCanonicalOrder`, `RegistrationTypes.h`) — TSDF compaction 커널이
+   `atomicAdd(g_count, 1u)`로 append하므로 `ModelSnapshot::entries` 순서가 매 실행 다르다. 그 순서가
+   두 경로로 결과에 샌다: `Solve`가 타깃 centroid를 float으로 합산하므로(비결합적) 10만 점 centroid가
+   마지막 비트에서 흔들리고, 모든 잔차가 `int(round(x*SCALE))`로 양자화되므로 마지막 비트 차이가
+   고정소수점 기여의 일부를 뒤집는다. 그리고 `LocalGrid::Nearest`의 정확한 거리 동점은 먼저 방문한
+   후보가 이긴다. centroid 합산은 double로도 바꿨다.
+
+**수정 후 확인** (같은 바이너리로 3회):
+
+| 실행 | frames | entries | step avg | step max | turn max | path | rejected | skipped |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 476 | 1,088,202 | 0.0475 | 0.2592 | 19.23° | 11.731 | 230 | 229 |
+| 3 | 476 | 1,088,202 | 0.0475 | 0.2592 | 19.23° | 11.731 | 230 | 229 |
+| 2 | *348* | 933,170 | — | — | — | — | 166 | 165 |
+
+완주한 두 실행은 **모든 보고 수치가 동일**하다. 실행 2가 다른 이유는 발산이 아니라
+**도구의 180초 타임아웃**에 프레임 348에서 걸린 것 — lock-step이 두 단계의 중첩을 없애므로
+replay가 두 단계 비용의 *합*으로 느려진다(align 85→333 ms). 타임아웃을 1800초로 올렸다.
+**이것이 lock-step의 실제 비용이다: 재현성을 얻는 대신 replay wall-clock이 대략 2배가 된다.**
+라이브 센서는 handshake를 켜지 않으므로 영향 없다.
+
+또한 거부 원인 분포가 정리됐다: 수정 전 `6/28/93/106`처럼 네 원인에 흩어져 있던 것이
+수정 후 `1 / 0 / 0 / 229`(noModel 1, lowOverlap 229)로 모인다. 스케줄링이 만들던
+`NoLocalTarget`·`TooFewInliers`가 사라지고 **남은 실패는 전부 하나의 실제 원인** — 프레임 대비
+대응점 비율이 `minFitness` 0.4를 못 넘기는 것 — 이라는 뜻이다. 이제 이 하나를 공략할 수 있다.
+
+## 9.6. 진동의 근본 원인 — 상수속도 prior (2026-08-18)
+
+§9.5의 재현성 수정 후에도 남던 "477 중 229 거부"의 원인을 계측으로 특정하고 고쳤다.
+
+**진단 경로** (모두 결정론 replay라서 유효):
+1. 거부 프레임 분포를 찍자 **정확히 홀수 프레임마다 교대** — 주기-2 진동 (229개 전부 길이-1 run).
+2. fitness 분포가 완전 이봉: 채택 median 0.87 / 거부 median 0.16, 겹침 없음 — "게이트 경계선" 기각.
+3. `--min-fitness` 0.4→0.2→0.1 스윕: 게이트를 낮추면 궤적이 **악화**(path 6→17→43 m) — "새 영역 프레임을 게이트가 억울하게 자른다" 기각.
+4. 트래커 계측: 거부 프레임은 **좋은 prior에서 solve가 0.1~0.26 m 튐**(제2 어트랙터), 같은 prior의 이웃 프레임은 정상 수렴 — 교대하는 것은 prior 모드(직전포즈 vs 상수속도)뿐.
+5. 상수속도 prior를 끄자 **476/476 추적** — 확정.
+
+**메커니즘 2겹:**
+- **재무장 버그**: 거부 후 첫 채택에서 상수속도가 재무장되는데, 그때의 delta는 2프레임 간격이라 1프레임처럼 재적용하면 과외삽 → 다음 solve 발산 → 거부 → 반복 (주기-2).
+- 재무장을 "연속 2회 채택 후"로 고쳐도(1-간격 delta 보장) **주기-3으로 재발**(153 거부): 이 데이터(~5 mm/frame)에서는 delta가 포즈 추정 노이즈에 지배되어, 외삽이 노이즈를 재적용하는 것과 같다. §5.2가 적어둔 전제 그대로 — 모션 모델은 "per-frame motion이 대응 게이트 대비 클 때" 가치가 있다.
+
+**수정 3건** (테스트 각각: `RegistrationThread.VelocityPriorNeedsTwoConsecutiveAdoptionsAfterARejection`, `RegistrationThread.SlowMotionUsesThePreviousPosePrior`, `Pipeline.GpuIcpTrackerRejectsAPhysicallyImplausibleStep`):
+1. 상수속도 prior는 **연속 2회 채택** 후에만 재무장 (1-간격 delta 보장).
+2. 상수속도 prior는 **직전 step > 2 cm**일 때만 사용 (`kVelocityPriorMinimumStepMeters`; 그 아래에선 직전 포즈가 이미 basin 안이고 외삽은 노이즈만 보탬). straight-line 픽스처(0.1 m/frame)는 임계 위라 모델 유지.
+3. **물리 스텝 게이트** `RegistrationParam::maxStepMeters` (기본 0=off, 트래커 기본 `kDefaultTrackerMaxStepMeters`=0.08): prior에서 그보다 멀리 간 solve는 fitness와 무관하게 `ETrackFailure::ImplausibleMotion`으로 거부. 실측된 오수렴이 fitness 0.571로 게이트를 통과해 맵을 오염시킨 사건의 2차 방어선.
+
+**capture/ 결과** (voxel 0.05, before → after):
+
+| | 거부 | step avg | step max | turn max | path | entries |
+|---|---|---|---|---|---|---|
+| before (p2p+prefilter5) | **229** | 0.0246 | 0.2253 | 5.06° | 6.081 | 387,950 |
+| **after (p2p+prefilter5)** | **1** (NoModel 부트스트랩) | 0.0046 | **0.0404** | 5.77° | **2.204** | 211,431 |
+| after (p2p, 원본 depth) | 1 | 0.0049 | 0.0336 | 4.32° | 2.337 | 245,924 |
+
+step max가 30 fps 핸드헬드 물리 한계(0.05 m) 안으로 들어왔고, 원본 depth의 p2p도 이제 전 프레임 추적된다
+(좁은 basin 문제의 대부분이 prior 유발이었다는 뜻; 프리필터는 맵 크기 211k vs 246k로 여전히 유리).
+`scan_out` identity 무회귀(거부 0), 전체 스위트 241 passed.
+
+**Local→Global fallback에 대한 판정**: 위 수정 후 이 데이터에는 구할 실패가 남지 않는다(거부 1 = 맵 없음).
+global 재정위가 의미 있는 것은 *건강한 맵에서 연속 N프레임 실패*(진짜 tracking lost)가 관측될 때이고,
+그때의 올바른 자리는 `TrackerRegistry`에 새 이름으로 등록하는 composite 트래커(local 시도 → 연속 실패 시
+global)다 — 파이프라인 구조 변경이 아니라 트래커 하나 추가. 그런 데이터가 생기기 전까지는 만들지 않는다.
+
 ## 10. 남은 후속 과제 (parked, 비차단)
 
 최종 리뷰에서 병합 비차단으로 분류된 항목:
@@ -194,4 +284,4 @@ per-iteration grid 재생성을 다시 만들지 않도록 hoist와 조화:
   보정된 surface point로 crop하거나 마진을 `maxCorrDist + truncation`으로 확대.
 - `GlobalRegistrationTracker.rmse`가 inert(상위 `Estimate`가 `rmse`를 안 채움) — 표시 전용, 무해.
 - GPU residual RMSE 고정소수점 바닥(~7 mm) — 2차 지표 한계, 문서화됨.
-- 상수속도 모델이 프레임 드롭 직후 1 구간 과외삽 — 복구 후 단일 프레임에만 영향, ICP가 prior를 정제.
+- ~~상수속도 모델이 프레임 드롭 직후 1 구간 과외삽~~ — §9.6에서 수정: 실데이터에서는 단일 프레임이 아니라 자기유지 진동이었다.

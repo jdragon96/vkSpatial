@@ -89,7 +89,7 @@ $$
 - 회귀 테스트: `test_advancedTsdf` 전부 통과(토글 off 시 기존과 동일).
 - 결과는 §"측정 결과"에 추가(측정 후 기입).
 
-## 측정 결과 (2026-07, tsdf_benchmark --p2p, Advanced 행)
+## 측정 결과 (2026-07, tsdf_benchmark --p2p — 도구는 이후 삭제됨; 현재 A/B는 `tsdf_folder_eval --no-p2p`와 `icp_quality_diag --no-p2p`로 한다)
 
 | 구성 | cube rmse | cube edge | cube mean | cube nPts | cyl rmse | cyl curved |
 |---|---:|---:|---:|---:|---:|---:|
@@ -106,6 +106,45 @@ $$
 
 ### 정직한 해석
 A1의 이득은 부분적으로 **밴드 가장자리(부정확) 관측을 걷어내 표면을 sharpen**하는 것(점 수↓, RMSE·mean↓)이며, edge까지 개선된 것은 단순 점 감소가 아닌 실제 정밀화. 무노이즈 합성에서도 −29%가 나왔으니 **실노이즈 스캔에선 더 클 것으로 기대**. A2는 이론적 근거는 타당하나 현 조건에선 데이터가 이득을 지지하지 않음 → measure-first 원칙대로 기본 off.
+
+## capture/ 실데이터 측정 (2026-08)
+
+위 표까지의 모든 수치는 합성·무노이즈·정확법선 fixture다. 실제 D435 녹화
+`capture/`(477프레임, 640×480, depth 0.25–6.8 m)에서 point-to-plane을 처음 측정한 결과와,
+그 과정에서 고친 것들:
+
+1. **밴드 행진 방향 버그 수정** — p2p 밴드를 레이로 행진하며 법선으로 측정 →
+   입사각 60°에서 밴드 83 %, 75°에서 50 %만 채워짐(실측). capture/는 입사각 median 44°/p90 67°.
+   수정 후 전 각도 100 %. GT 있는 scan_out에서 accuracy 0.325→0.179(−45 %), precision@1vox
+   0.849→0.998, **판정 역전**(수정 전 p2p는 projective보다 나빴다). 상세: `ADVANCED_TSDF.md` §3.
+2. **depth 프리필터** (`DepthFilterOptions::prefilterWindow`, 기본 0=off) — 원본 depth의 1픽셀
+   차분 법선은 이웃 간 median 24° 흔들림(캡처 실측). 5×5 discontinuity-aware mean으로 2.9°.
+   p2p는 SDF 값과(수정 후) 밴드 방향이 모두 법선에 걸리므로 이것이 지배 오차였다.
+3. **재현성** — lock-step 없이 동일 명령 4회가 path 1.5~137 m로 발산(측정, `ICP_REGISTRATION_QUALITY.md` §9.5).
+   `FrameHandshake` + 타깃 정규 정렬로 bit-identical 재현 확인. 아래 수치는 전부 결정론적이다.
+
+`icp_quality_diag --replay capture --voxel 0.05 --trackers icp`, 2×2 (수정 A 적용 후):
+
+| 구성 | entries | step avg | step max | turn max | path | align ms |
+|---|---:|---:|---:|---:|---:|---:|
+| p2p ON, 원본 depth | 1,088,202 | 0.0475 | 0.259 | 19.2° | 11.73 | 320 |
+| p2p OFF, 원본 | 191,630 | **0.0083** | **0.063** | 5.5° | **2.05** | 307 |
+| **p2p ON, `--prefilter 5`** | 387,950 | 0.0246 | 0.225 | **5.06°** | 6.08 | 170 |
+| p2p OFF, `--prefilter 5` | 717,218 | 0.0490 | 0.614 | 21.3° | 12.12 | 118 |
+
+### 정직한 판정
+
+- **p2p는 프리필터와 함께 써야 한다.** 원본 depth의 p2p는 여전히 궤적이 비물리적이고
+  (turn max 19°/frame), 프리필터가 그것을 5.06°로 끌어내리며 entries도 2.8× 줄인다.
+  법선이 SDF의 입력이므로 당연한 결합이다.
+- **프리필터는 projective를 오히려 해친다**(path 2.05→12.1) — projective는 값에 법선을 안 쓰고,
+  스무딩은 projective가 의존하는 고주파 depth 정보를 깎는다. 그래서 **전역 기본값은 계속 0**이고,
+  p2p 경로에서만 명시적으로 켠다(`--prefilter 5`).
+- 이 표의 궤적 지표는 트래커("icp")를 통과한 값이라 순수 TSDF 품질이 아니다. TSDF만의 GT 증명은
+  scan_out(위 1번)이 담당한다.
+- **미해결**: 모든 구성에서 477프레임 중 229개가 `LowOverlap`(minFitness 0.4)으로 거부된다.
+  재현성 수정 후 거부 원인이 이 하나로 수렴했으므로(전에는 4개 원인에 산개), 다음 작업은
+  이 게이트/대응점 비율의 원인 규명이다 — ICP 트래커 쪽 작업으로, 이 문서 범위 밖.
 
 ## 참조
 - [PSDF Fusion (ECCV 2018)](https://openaccess.thecvf.com/content_ECCV_2018/papers/Wei_Dong_Probabilistic_Signed_Distance_ECCV_2018_paper.pdf) · [∇-SDF/OREN (arXiv 2510.18999, 2025)](https://arxiv.org/abs/2510.18999) · [NKSR (CVPR 2023)](https://arxiv.org/abs/2305.19590) · [PIN-SLAM (T-RO 2024)](https://arxiv.org/abs/2401.09101)
