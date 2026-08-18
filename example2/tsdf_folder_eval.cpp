@@ -68,6 +68,7 @@ namespace {
     // Uniform-grid nearest-neighbour over a reference cloud (for RMSE against ground truth).
     struct GridNN {
         float cell = 1.0f;
+        int maxRing = 32; // set from the populated extent in build(); see nearestSq
         std::unordered_map<int64_t, std::vector<int>> grid;
         const std::vector<Vector3f> *pts = nullptr;
 
@@ -78,12 +79,18 @@ namespace {
         void build(const std::vector<Vector3f> &p, float cellSize) {
             pts = &p;
             cell = std::max(1e-6f, cellSize);
+            Vector3f minimum = Vector3f::Constant(std::numeric_limits<float>::max());
+            Vector3f maximum = Vector3f::Constant(std::numeric_limits<float>::lowest());
             for (int i = 0; i < int(p.size()); ++i) {
                 const Vector3f &q = p[i];
+                minimum = minimum.cwiseMin(q);
+                maximum = maximum.cwiseMax(q);
                 grid[key(int(std::floor(q.x() / cell)), int(std::floor(q.y() / cell)),
                          int(std::floor(q.z() / cell)))]
                         .push_back(i);
             }
+            if (!p.empty())
+                maxRing = 2 + int(std::ceil((maximum - minimum).maxCoeff() / cell));
         }
         float nearestSq(const Vector3f &q) const {
             const int cx = int(std::floor(q.x() / cell)), cy = int(std::floor(q.y() / cell)),
@@ -96,8 +103,12 @@ namespace {
                         if (it == grid.end()) continue;
                         for (int idx: it->second) best = std::min(best, (q - (*pts)[idx]).squaredNorm());
                     }
-            // Expand the search ring until a hit is found (sparse regions).
-            for (int ring = 2; !std::isfinite(best) && ring <= 32; ++ring) {
+            // Expand the search ring until a hit is found (sparse regions). maxRing must span the
+            // whole populated grid, not a fixed 32: a ground-truth point in a region the
+            // reconstruction never covered lies further away than any fixed ring, and returning
+            // infinity there poisons the mean for every point at once -- which is how the
+            // completeness figure came to read `inf` and the metric came to be ignored.
+            for (int ring = 2; !std::isfinite(best) && ring <= maxRing; ++ring) {
                 for (int dz = -ring; dz <= ring; ++dz)
                     for (int dy = -ring; dy <= ring; ++dy)
                         for (int dx = -ring; dx <= ring; ++dx) {
@@ -108,6 +119,10 @@ namespace {
                                 best = std::min(best, (q - (*pts)[idx]).squaredNorm());
                         }
             }
+            // A query outside the populated grid entirely still needs a real distance: one
+            // non-finite value makes the mean non-finite and silently discards the whole metric.
+            if (!std::isfinite(best) && pts != nullptr)
+                for (const Vector3f &p: *pts) best = std::min(best, (q - p).squaredNorm());
             return best;
         }
     };
@@ -322,23 +337,51 @@ int main(int argc, char **argv) {
                         (unsigned long long) stats.insertFailureCount);
 
         // RMSE vs ground truth (accuracy: recon→GT, completeness: GT→recon).
-        // std::vector<Vector3f> gtP, gtN;
-        // if (!gtPath.empty() && util::LoadPly(gtPath, gtP, gtN) && !gtP.empty()) {
-        //     const float cell = std::max(voxel, extent / 100.0f);
-        //     GridNN gGT, gRec;
-        //     gGT.build(gtP, cell);
-        //     gRec.build(recon.points, cell);
-        //     Err acc, comp;
-        //     for (const auto &p : recon.points) acc.add(std::sqrt(gGT.nearestSq(p)));
-        //     for (const auto &g : gtP) comp.add(std::sqrt(gRec.nearestSq(g)));
-        //     std::printf("\n=== RMSE vs %s (%zu GT pts) ===\n", gtPath.c_str(), gtP.size());
-        //     std::printf("accuracy    (recon→GT): mean %.5f  rmse %.5f\n", acc.mean(), acc.rmse());
-        //     std::printf("completeness(GT→recon): mean %.5f  rmse %.5f\n", comp.mean(), comp.rmse());
-        //     std::printf("chamfer-L1  (mean of means): %.5f\n", 0.5 * (acc.mean() + comp.mean()));
-        // } else {
-        //     std::printf("\n(no ground_truth.ply found in %s and no --gt given → skipping RMSE)\n",
-        //                 dir.c_str());
-        // }
+        //
+        // Both directions, always, because either alone is gameable in the opposite direction: a
+        // reconstruction that keeps only its most confident voxels scores a great accuracy on the
+        // handful it kept, and one that smears voxels everywhere scores a great completeness. Only
+        // the pair says whether a change tightened the surface or simply threw it away.
+        std::vector<Vector3f> gtP, gtN;
+        if (!gtPath.empty() && util::LoadPly(gtPath, gtP, gtN) && !gtP.empty()) {
+            const float cell = std::max(voxel, extent / 100.0f);
+            GridNN gGT, gRec;
+            gGT.build(gtP, cell);
+            gRec.build(recon.points, cell);
+            Err acc, comp;
+            // Fractions within one voxel, alongside the distances. The means alone cannot settle a
+            // change that trades point count for tightness: dropping every uncertain voxel improves
+            // accuracy on the few that remain, and smearing voxels everywhere improves completeness.
+            // precision falls when a change smears, recall falls when it drops surface, and F1 only
+            // rises when the surface actually got better.
+            const double withinThreshold = double(voxel);
+            std::size_t reconWithin = 0, gtWithin = 0;
+            for (const auto &p: recon.points) {
+                const double d = std::sqrt(double(gGT.nearestSq(p)));
+                acc.add(d);
+                if (d <= withinThreshold) ++reconWithin;
+            }
+            for (const auto &g: gtP) {
+                const double d = std::sqrt(double(gRec.nearestSq(g)));
+                comp.add(d);
+                if (d <= withinThreshold) ++gtWithin;
+            }
+            const double precision =
+                    recon.points.empty() ? 0.0 : double(reconWithin) / double(recon.points.size());
+            const double recall = gtP.empty() ? 0.0 : double(gtWithin) / double(gtP.size());
+            const double f1 = (precision + recall) > 0.0
+                                      ? 2.0 * precision * recall / (precision + recall)
+                                      : 0.0;
+            std::printf("\n=== RMSE vs %s (%zu GT pts) ===\n", gtPath.c_str(), gtP.size());
+            std::printf("accuracy    (recon->GT): mean %.5f  rmse %.5f\n", acc.mean(), acc.rmse());
+            std::printf("completeness(GT->recon): mean %.5f  rmse %.5f\n", comp.mean(), comp.rmse());
+            std::printf("chamfer-L1  (mean of means): %.5f\n", 0.5 * (acc.mean() + comp.mean()));
+            std::printf("within 1 voxel (%.4f): precision %.4f  recall %.4f  F1 %.4f\n",
+                        withinThreshold, precision, recall, f1);
+        } else {
+            std::printf("\n(no ground_truth.ply found in %s and no --gt given -> skipping RMSE)\n",
+                        dir.c_str());
+        }
 
         const std::string outPly = arg.Value("--out");
         if (!outPly.empty()) {
