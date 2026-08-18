@@ -48,6 +48,7 @@
 #include "Mesh/ExtractorRegistry.h"
 #include "Mesh/MeshConnectivity.h"
 #include "Mesh/VoxelField.h"
+#include "Mesh/VoxelFieldFromTsdf.h"
 
 #include "utilities/Math.h"
 

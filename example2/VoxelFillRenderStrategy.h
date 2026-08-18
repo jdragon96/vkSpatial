@@ -1,6 +1,8 @@
 #pragma once
 
+#include "EdgeOverlayPass.h"    // EdgeOverlayPass
 #include "IsosurfaceMeshPass.h" // IsosurfaceMeshPass
+#include "Mesh/MeshConnectivity.h" // Mesh::ConnectivityReport
 #include "VoxelFillDebug.h" // voxdbg::ColorMode
 
 #include "Pipeline/Render/RenderStrategy.h" // Pipeline::IRenderStrategy
@@ -54,6 +56,7 @@ public:
 
 private:
     void refresh(); // rebuild the point sets from m_snap + m_state
+    void pushEdgeOverlay();
     void applyVisibility(); // push m_renderMode + per-layer flags onto the passes
     void extractMesh();
     void drawStatsPanel(Pipeline::Pipeline &pipe);
@@ -63,6 +66,14 @@ private:
     Engine::Core::Context *m_ctx = nullptr;
     PointCloudPass *m_pc = nullptr;        // owned by the render graph
     IsosurfaceMeshPass *m_mesh = nullptr;  // owned by the render graph
+    EdgeOverlayPass *m_edges = nullptr;    // owned by the render graph
+
+    // Mesh diagnostics from the last extraction. Boundary edges are the holes; non-manifold edges
+    // and bowtie vertices are topology defects the extractor produced.
+    Mesh::ConnectivityReport m_connectivity;
+    Mesh::SurfaceMesh m_lastMesh;
+    bool m_showBoundaryEdges = true;
+    bool m_showNonManifoldEdges = true;
 
     // Extraction runs on the CPU over the whole map, so it is on demand (a button), never per
     // frame. m_meshDirty just tells the UI the shown mesh is older than the map.

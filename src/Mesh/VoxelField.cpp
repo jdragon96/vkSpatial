@@ -1,5 +1,7 @@
 #include "Mesh/VoxelField.h"
-#include "TSDF/Backends/AdvancedTSDF.h" // AdvancedEntry (full definition, forward-declared in VoxelField.h)
+
+#include "Mesh/VoxelFieldFromTsdf.h"     // FromAdvancedEntries declaration (see its header for why it is split out)
+#include "TSDF/Backends/AdvancedTSDF.h"  // AdvancedEntry, full definition
 
 #include <cmath>
 

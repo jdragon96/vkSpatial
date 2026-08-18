@@ -4,7 +4,9 @@
 // strategy in Mesh consumes. Backed by a sparse hash map keyed on
 // integer grid coordinates (matching the shared MarchingCubesCore's IVec3Hash), so a field
 // can be built from an implicit analytic function (FromImplicit, used by tests/fixtures) or
-// from a real TSDF's downloaded entries (FromAdvancedEntries).
+// from a real TSDF's downloaded entries (FromVoxels here; FromAdvancedEntries lives in
+// VoxelFieldFromTsdf.h -- naming TSDF::AdvancedEntry opens `namespace TSDF`, which cannot
+// coexist with the global `class TSDF`).
 
 #include "Mesh/MarchingCubesCore.h"
 
@@ -16,9 +18,6 @@
 
 #include "TSDF/Backends/TSDFBackend.h" // TSDFVoxel
 
-namespace TSDF {
-    struct AdvancedEntry; // forward declaration; full definition in TSDF/Backends/AdvancedTSDF.h
-}
 
 namespace Mesh {
 
@@ -57,11 +56,6 @@ namespace Mesh {
     VoxelField FromImplicit(const std::array<int, 3> &minCoord, const std::array<int, 3> &maxCoord, float cellSize,
                              const std::function<float(const Eigen::Vector3f &)> &valueFunction,
                              const std::function<Eigen::Vector3f(const Eigen::Vector3f &)> *gradientFunction = nullptr);
-
-    // Adapts a TSDF's downloaded (voxel,direction) entries into a VoxelField: coord recovered
-    // from the entry's world-space centre (lround(center/cellSize - 0.5) per axis, matching
-    // AdaptiveVoxelGrid's latticeCoordOf convention), value = tsdf, gradient = normal.
-    VoxelField FromAdvancedEntries(const std::vector<TSDF::AdvancedEntry> &entries, float cellSize);
 
     // Same adaptation from the namespace-free readback the pipeline carries.
     VoxelField FromVoxels(const std::vector<TSDFVoxel> &voxels, float cellSize);

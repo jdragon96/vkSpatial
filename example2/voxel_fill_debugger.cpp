@@ -6,6 +6,9 @@
 #include "Pipeline/Reconstruction/FrameLoader.h" // LoadFrames / ComputeBounds
 #include "Pipeline/Registration/Tracker.h"       // TrackerRegistry / Tracker
 #include "Pipeline/Render/RenderThread.h"        // RenderThread
+#include "Mesh/ExtractorRegistry.h"
+#include "Mesh/MeshConnectivity.h"
+#include "Mesh/VoxelField.h"
 #include "TSDF/TSDF.h"                           // headless --dump map
 
 #include "utilities/ArgParser.h"
@@ -172,6 +175,25 @@ namespace {
         std::printf("[budget] frames past #0 over 30ms:  integrate=%d  download=%d  (of %d)\n", overInt,
                     overDl, nFrames - 1);
         reportMetrics(tsdf, cfg.baseVoxel, entries.size());
+        // Same extraction the viewer runs, so "the mesh does not render" can be told apart from
+        // "the extractor produced nothing".
+        const Mesh::VoxelField field = Mesh::FromVoxels(entries, cfg.baseVoxel);
+        Mesh::ExtractorRegistry registry = Mesh::ExtractorRegistry::Default();
+        if (std::unique_ptr<Mesh::IsoSurfaceExtractor> extractor = registry.Create("mc")) {
+            Mesh::ExtractParams params;
+            params.isoLevel = 0.0f;
+            const Mesh::SurfaceMesh mesh = extractor->Extract(field, params);
+            const Mesh::ConnectivityReport report = Mesh::AnalyzeConnectivity(mesh);
+            std::printf("\n== mesh (mc) ==\n");
+            std::printf("  vertices %zu   triangles %zu\n", mesh.vertices.size(),
+                        mesh.triangles.size());
+            std::printf("  boundary edges (holes) %zu   non-manifold %zu   bowtie %zu\n",
+                        report.boundaryEdges.size(), report.nonManifoldEdges.size(),
+                        report.nonManifoldVertices.size());
+        } else {
+            std::printf("\n== mesh == registry.Create(\"mc\") returned null\n");
+        }
+
         std::printf("\n[--dump] done.\n");
         return 0;
     }

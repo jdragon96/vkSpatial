@@ -1,7 +1,9 @@
 #include "VoxelFillRenderStrategy.h"
 
+#include "EdgeOverlayPass.h"
 #include "ImGuiPass.h"
 #include "Mesh/ExtractorRegistry.h"
+#include "Mesh/MeshConnectivity.h"
 #include "Mesh/VoxelField.h"
 #include "PointCloudPass.h"
 
@@ -113,6 +115,12 @@ void VoxelFillRenderStrategy::Build(ep::Pipeline &pipe, Engine::Render::Applicat
 
     graph.AddPass(std::move(meshOwned));
 
+    // Connectivity overlay on top of the mesh: boundary edges (holes) and non-manifold edges.
+    auto edgesOwned = std::make_unique<EdgeOverlayPass>(*m_ctx, app.GetSwapChain().Format(),
+                                                        VOXDBG_SHADER_DIR);
+    m_edges = edgesOwned.get();
+    graph.AddPass(std::move(edgesOwned));
+
     auto &glfwWindow = static_cast<Engine::Render::GlfwWindow &>(app.GetWindow());
     auto imguiOwned = std::make_unique<ImGuiPass>(*m_ctx, glfwWindow.Handle(),
                                                   app.GetSwapChain().Format(),
@@ -215,6 +223,31 @@ void VoxelFillRenderStrategy::refresh() {
 // hence the explicit button rather than a per-frame refresh.
 // Single place that decides what is drawn: the mode gates whole families, the per-layer flags
 // pick within the point cloud. Anything that changes either calls this rather than poking a pass.
+// Turns the flagged edge lists into world-space line segments. Boundary edges are yellow (a hole
+// rim), non-manifold red (more than two triangles on one edge).
+void VoxelFillRenderStrategy::pushEdgeOverlay() {
+    if (!m_edges) return;
+
+    auto build = [this](const std::vector<std::pair<int, int>> &edges, const Eigen::Vector3f &color) {
+        EdgeOverlayGroup group;
+        group.color = color;
+        group.segments.reserve(edges.size());
+        for (const std::pair<int, int> &edge: edges)
+            if (edge.first < int(m_lastMesh.vertices.size()) &&
+                edge.second < int(m_lastMesh.vertices.size()))
+                group.segments.emplace_back(m_lastMesh.vertices[edge.first],
+                                            m_lastMesh.vertices[edge.second]);
+        return group;
+    };
+
+    std::vector<EdgeOverlayGroup> groups;
+    if (m_showBoundaryEdges)
+        groups.push_back(build(m_connectivity.boundaryEdges, {1.0f, 0.85f, 0.20f}));
+    if (m_showNonManifoldEdges)
+        groups.push_back(build(m_connectivity.nonManifoldEdges, {1.0f, 0.25f, 0.25f}));
+    m_edges->SetEdges(groups);
+}
+
 void VoxelFillRenderStrategy::applyVisibility() {
     const bool points = m_renderMode != RenderMode::Mesh;
     if (m_pc) {
@@ -227,7 +260,9 @@ void VoxelFillRenderStrategy::applyVisibility() {
         m_pc->SetVisible(6, points && m_state.showSubmapBox);
     }
     // Nothing extracted yet -> nothing to show, whatever the mode says.
-    if (m_mesh) m_mesh->SetVisible(m_renderMode != RenderMode::Points && m_meshTriangles > 0);
+    const bool showMesh = m_renderMode != RenderMode::Points && m_meshTriangles > 0;
+    if (m_mesh) m_mesh->SetVisible(showMesh);
+    if (m_edges) m_edges->SetVisible(showMesh && (m_showBoundaryEdges || m_showNonManifoldEdges));
 }
 
 void VoxelFillRenderStrategy::extractMesh() {
@@ -247,6 +282,9 @@ void VoxelFillRenderStrategy::extractMesh() {
     vkDeviceWaitIdle(m_ctx->device); // SetMesh reallocates buffers a frame may still reference
     m_mesh->SetMesh(mesh, Eigen::Vector3f(0.85f, 0.85f, 0.90f));
     m_meshTriangles = mesh.triangles.size();
+    m_connectivity = Mesh::AnalyzeConnectivity(mesh);
+    m_lastMesh = mesh;
+    pushEdgeOverlay();
     m_meshExtractMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     m_meshDirty = false;
@@ -511,8 +549,28 @@ void VoxelFillRenderStrategy::drawUi(ep::Pipeline &pipe) {
         ImGui::SameLine();
         if (ImGui::Checkbox("wireframe", &m_meshWireframe)) m_mesh->SetWireframe(m_meshWireframe);
 
-        if (m_meshTriangles > 0)
+        if (m_meshTriangles > 0) {
             ImGui::Text("%zu triangles   %.0f ms", m_meshTriangles, m_meshExtractMs);
+
+            // Boundary edges ARE the holes: an edge with one incident triangle is a hole rim.
+            const Mesh::ConnectivityReport &report = m_connectivity;
+            const bool closed = report.IsClosed();
+            ImGui::TextColored(closed ? ImVec4(0.40f, 0.90f, 0.45f, 1.0f)
+                                      : ImVec4(1.0f, 0.80f, 0.35f, 1.0f),
+                               "%s", closed ? "closed, edge-manifold" : "open / non-manifold");
+            ImGui::Text("boundary edges (holes): %zu", report.boundaryEdges.size());
+            ImGui::Text("non-manifold edges: %zu   bowtie verts: %zu",
+                        report.nonManifoldEdges.size(), report.nonManifoldVertices.size());
+            ImGui::Text("degenerate triangles: %d", report.degenerateTriangles);
+
+            bool overlay = false;
+            overlay |= ImGui::Checkbox("show holes (yellow)", &m_showBoundaryEdges);
+            overlay |= ImGui::Checkbox("show non-manifold (red)", &m_showNonManifoldEdges);
+            if (overlay) {
+                pushEdgeOverlay();
+                applyVisibility();
+            }
+        }
         if (m_meshDirty && m_meshTriangles > 0)
             ImGui::TextColored(ImVec4(1.0f, 0.80f, 0.35f, 1.0f), "map changed -- re-extract");
     }
