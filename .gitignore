@@ -58,6 +58,10 @@ CmakeSettings.json
 /scans/
 **/scans/
 
+# RealSense depth recordings (DepthRecorder output: depth_*.bin + intrinsics.txt, ~1.2 MB/frame)
+/capture/
+**/capture/
+
 # Shaders
 *.spv
 
