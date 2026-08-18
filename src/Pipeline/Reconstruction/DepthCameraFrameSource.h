@@ -69,7 +69,59 @@ namespace Pipeline {
         // fixed threshold over-rejects near the camera and under-rejects far from it.
         float relativeDepthJump = 0.02f;  // 2 % of range
         float minimumDepthJump = 0.005f;  // 5 mm floor, for the near field
+
+        // Side of a square, discontinuity-aware mean applied to the depth image BEFORE
+        // back-projection. 0 or 1 = off (the historical behaviour, and the default: exposing a knob
+        // must not change what existing callers get).
+        //
+        // Why it exists: the normal below is a ONE-PIXEL forward difference, so its conditioning is
+        // set entirely by per-pixel depth noise. Measured on capture/ (D435 640x480, 0.25-6.8 m),
+        // adjacent normals disagree by a median of 24 degrees where a smooth surface should read
+        // 1-3; a 5x5 window takes that to 2.9 (3x3 to 4.7). Point-to-plane integration depends on
+        // the normal twice -- the SDF value is dot(voxelCentre - point, n) AND the truncation band is
+        // marched along n -- so a noisy normal both mis-values and mis-places the band. The
+        // projective form uses no normal in its value, which is why it tolerates raw depth.
+        //
+        // It reuses relativeDepthJump/minimumDepthJump as the inclusion gate rather than adding a
+        // second threshold: "average only neighbours on the same surface" and "do not difference
+        // across a step" are the same rule, and a plain box mean would undo the flying-pixel guard.
+        int prefilterWindow = 0;
     };
+
+    // Discontinuity-aware square mean over `depth`: each pixel averages only the neighbours that are
+    // valid AND within the same depth-jump tolerance the normal estimator uses, so a step edge is
+    // never averaged across. Invalid pixels stay invalid; border pixels average over whatever exists
+    // (never dropped -- shrinking the usable region would silently crop the frame).
+    inline std::vector<float> PrefilterDepth(const std::vector<float> &depth, int width, int height,
+                                             int window, const DepthFilterOptions &filter) {
+        if (window <= 1) return depth;
+        const int radius = window / 2;
+        std::vector<float> out(depth.size(), 0.0f);
+        for (int v = 0; v < height; ++v)
+            for (int u = 0; u < width; ++u) {
+                const std::size_t centre = std::size_t(v) * width + u;
+                const float z = depth[centre];
+                if (z <= 0.0f) continue; // invalid stays invalid
+                const float tolerance =
+                        std::max(filter.minimumDepthJump, filter.relativeDepthJump * z);
+                float sum = 0.0f;
+                int count = 0;
+                for (int dv = -radius; dv <= radius; ++dv) {
+                    const int vv = v + dv;
+                    if (vv < 0 || vv >= height) continue;
+                    for (int du = -radius; du <= radius; ++du) {
+                        const int uu = u + du;
+                        if (uu < 0 || uu >= width) continue;
+                        const float neighbour = depth[std::size_t(vv) * width + uu];
+                        if (neighbour <= 0.0f || std::abs(neighbour - z) > tolerance) continue;
+                        sum += neighbour;
+                        ++count;
+                    }
+                }
+                out[centre] = count > 0 ? sum / float(count) : z;
+            }
+        return out;
+    }
 
     // Back-project a depth image to camera-frame points + normals (normals from the organized-grid
     // neighbours, oriented toward the camera). Reusable across any depth device.
@@ -78,11 +130,16 @@ namespace Pipeline {
         Frame fr;
         const int W = k.width, H = k.height;
         if (W <= 0 || H <= 0 || int(d.depth.size()) < W * H) return fr;
+        // Points AND normals come from the filtered depth. Filtering only for the normals would leave
+        // the two describing different surfaces, which is precisely the inconsistency a
+        // point-to-plane SDF punishes.
+        const std::vector<float> depth =
+                PrefilterDepth(d.depth, W, H, filter.prefilterWindow, filter);
         std::vector<Eigen::Vector3f> grid(std::size_t(W) * H, Eigen::Vector3f::Zero());
         std::vector<char> valid(std::size_t(W) * H, 0);
         for (int v = 0; v < H; ++v)
             for (int u = 0; u < W; ++u) {
-                const float z = d.depth[std::size_t(v) * W + u];
+                const float z = depth[std::size_t(v) * W + u];
                 if (z <= 0.0f) continue;
                 grid[std::size_t(v) * W + u] =
                         Eigen::Vector3f((u - k.cx) / k.fx * z, (v - k.cy) / k.fy * z, z);
@@ -122,8 +179,11 @@ namespace Pipeline {
 
     class DepthCameraFrameSource : public IFrameSource {
     public:
-        explicit DepthCameraFrameSource(std::unique_ptr<IDepthProvider> device)
-            : m_device(std::move(device)) {}
+        // The filter options travel with the source, not with AcquisitionConfig: makeSource is a
+        // caller-supplied lambda, so a tool opts in here without every config gaining a depth field.
+        explicit DepthCameraFrameSource(std::unique_ptr<IDepthProvider> device,
+                                        DepthFilterOptions filter = {})
+            : m_device(std::move(device)), m_filter(filter) {}
 
         EAcquisitionType Type() const override { return EAcquisitionType::DepthCamera; }
         const char *Name() const override { return "depth-camera"; }
@@ -131,7 +191,7 @@ namespace Pipeline {
         bool Next(Frame &out) override {
             DepthFrame d;
             if (!m_device || !m_device->Grab(d)) return false;
-            out = BackprojectDepth(d, m_device->Intrinsics());
+            out = BackprojectDepth(d, m_device->Intrinsics(), m_filter);
             return true;
         }
 
@@ -141,6 +201,7 @@ namespace Pipeline {
 
     private:
         std::unique_ptr<IDepthProvider> m_device;
+        DepthFilterOptions m_filter;
     };
 
 } // namespace Pipeline

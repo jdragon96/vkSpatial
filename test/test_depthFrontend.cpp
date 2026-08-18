@@ -3,7 +3,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
@@ -285,4 +288,155 @@ TEST(DepthFrontend, TightlyPackedRowsUnpackExactly) {
 
     ASSERT_EQ(out.size(), std::size_t(kWidth) * kHeight);
     for (std::size_t i = 0; i < out.size(); ++i) EXPECT_FLOAT_EQ(out[i], float(i + 1) * 0.001f);
+}
+
+namespace {
+
+    // Deterministic noise (no <random>, so the fixture is byte-stable across libstdc++ versions).
+    struct Lcg {
+        std::uint32_t state;
+        float NextSigned() { // roughly uniform in [-1, 1)
+            state = state * 1664525u + 1013904223u;
+            return float(state >> 8) / float(1u << 23) - 1.0f;
+        }
+    };
+
+    // A plane tilted `degrees` about the vertical axis, rendered as a depth image through `k`, with
+    // per-pixel Gaussian-ish depth noise of the given sigma. Tilted because a head-on plane is the
+    // one case where depth noise barely perturbs the normal -- the incidence angle is what makes the
+    // forward difference ill-conditioned, and capture/ has a median incidence of 44 degrees.
+    DepthFrame TiltedNoisyPlane(const CameraIntrinsics &k, float degrees, float centreDepth,
+                                float sigma, std::uint32_t seed) {
+        DepthFrame frame;
+        frame.depth.assign(std::size_t(k.width) * k.height, 0.0f);
+        Lcg rng{seed};
+        const float slope = std::tan(degrees * float(M_PI) / 180.0f);
+        for (int v = 0; v < k.height; ++v)
+            for (int u = 0; u < k.width; ++u) {
+                // Plane through (0,0,centreDepth) with normal tilted in x: z = centreDepth + slope*x,
+                // and x = (u-cx)/fx*z, so solve z * (1 - slope*(u-cx)/fx) = centreDepth.
+                const float ux = (float(u) - k.cx) / k.fx;
+                const float denominator = 1.0f - slope * ux;
+                if (denominator < 0.2f) continue;
+                const float z = centreDepth / denominator;
+                // Average three draws so the noise is bell-ish rather than flat.
+                const float noise = (rng.NextSigned() + rng.NextSigned() + rng.NextSigned()) / 3.0f;
+                frame.depth[std::size_t(v) * k.width + u] = z + sigma * noise * 3.0f;
+            }
+        return frame;
+    }
+
+    // Median angle between horizontally adjacent normals. On a plane the true value is 0, so this is
+    // pure normal dispersion -- the quantity that decides whether a point-to-plane term carries
+    // direction information or noise.
+    double MedianNeighbourNormalAngleDegrees(const Pipeline::Frame &frame, int width) {
+        std::vector<double> angles;
+        for (std::size_t i = 0; i + 1 < frame.nrm.size(); ++i) {
+            // Consecutive output points are horizontally adjacent except at row ends; the occasional
+            // wrap is a tiny fraction of a wide image and does not move a median.
+            const float dot = frame.nrm[i].dot(frame.nrm[i + 1]);
+            angles.push_back(std::acos(double(std::max(-1.0f, std::min(1.0f, dot)))) * 180.0 / M_PI);
+        }
+        if (angles.empty()) return 0.0;
+        std::nth_element(angles.begin(), angles.begin() + angles.size() / 2, angles.end());
+        return angles[angles.size() / 2];
+    }
+
+} // namespace
+
+// Normals come from a ONE-PIXEL forward difference on raw depth, which on a real sensor is
+// noise-dominated: measured on capture/ (D435, 640x480, 0.25-6.8 m) adjacent normals disagree by a
+// median of 24 degrees, where a smooth surface should read 1-3. Point-to-plane depends on that
+// direction twice over -- the SDF value is dot(voxelCentre - point, n), and since the truncation band
+// is marched along n, the band's direction too -- so a noisy normal scatters the band it writes.
+// A discontinuity-aware prefilter over the depth fixes the conditioning at negligible cost.
+TEST(DepthFrontend, ThePrefilterCutsNormalDispersionOnANoisyTiltedPlane) {
+    const CameraIntrinsics k = MakeIntrinsics(320, 240);
+    const DepthFrame frame = TiltedNoisyPlane(k, 45.0f, 1.0f, /*sigma=*/0.003f, /*seed=*/12345u);
+
+    DepthFilterOptions off;
+    off.prefilterWindow = 0;
+    const double dispersionOff = MedianNeighbourNormalAngleDegrees(BackprojectDepth(frame, k, off), k.width);
+
+    DepthFilterOptions on;
+    on.prefilterWindow = 5;
+    const double dispersionOn = MedianNeighbourNormalAngleDegrees(BackprojectDepth(frame, k, on), k.width);
+
+    std::printf("[prefilter] neighbour-normal dispersion: off %.1f deg -> 5x5 %.1f deg\n",
+                dispersionOff, dispersionOn);
+    EXPECT_GT(dispersionOff, 15.0) << "fixture is not noisy enough to be measuring anything";
+    EXPECT_LT(dispersionOn, dispersionOff / 3.0)
+            << "the prefilter must cut dispersion by at least 3x to be worth its cost";
+}
+
+// The prefilter must not undo the flying-pixel guard: averaging across a depth step would invent a
+// surface between the two real ones. This is the mutation guard -- a plain box mean passes the
+// dispersion test above and fails this one.
+TEST(DepthFrontend, ThePrefilterDoesNotAverageAcrossADepthStep) {
+    const CameraIntrinsics k = MakeIntrinsics(64, 64);
+    DepthFrame frame;
+    frame.depth.assign(std::size_t(k.width) * k.height, 0.0f);
+    for (int v = 0; v < k.height; ++v)
+        for (int u = 0; u < k.width; ++u)
+            frame.depth[std::size_t(v) * k.width + u] = u < 32 ? 1.0f : 2.0f;
+
+    DepthFilterOptions on;
+    on.prefilterWindow = 5;
+    const Pipeline::Frame out = BackprojectDepth(frame, k, on);
+
+    ASSERT_GT(out.pts.size(), 0u);
+    for (std::size_t i = 0; i < out.pts.size(); ++i) {
+        const float z = out.pts[i].z();
+        const float toNear = std::abs(z - 1.0f), toFar = std::abs(z - 2.0f);
+        EXPECT_LT(std::min(toNear, toFar), 0.01f)
+                << "point " << i << " sits at z=" << z << ", between the two real surfaces";
+        EXPECT_GT(-out.nrm[i].z(), 0.9f) << "point " << i << " has a normal spanning the step";
+    }
+
+    // The position/normal asserts above are NOT sufficient on their own: a plain box mean blends a
+    // ramp across the step, but the downstream depth-jump guard then deletes exactly those blended
+    // pixels, so every SURVIVING point still passes them (observed -- that mutation survived). What
+    // a plain mean cannot hide is the deletion itself: the discontinuity-aware filter averages each
+    // side only within itself, so the prefiltered frame keeps every point the unfiltered one had.
+    const Pipeline::Frame reference = BackprojectDepth(frame, k, DepthFilterOptions{});
+    EXPECT_EQ(out.pts.size(), reference.pts.size())
+            << "the prefilter destroyed points near the step that raw depth kept -- it averaged "
+               "across the discontinuity and the flying-pixel guard deleted the evidence";
+}
+
+// Border policy: averaging over whatever neighbours exist, never shrinking the usable region. The
+// exact interior count is the guard -- a prefilter that skipped un-fillable borders would silently
+// crop the frame.
+TEST(DepthFrontend, ThePrefilterKeepsEveryInteriorPixel) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFrame frame;
+    frame.depth.assign(std::size_t(k.width) * k.height, 1.5f);
+
+    DepthFilterOptions on;
+    on.prefilterWindow = 5;
+    const Pipeline::Frame out = BackprojectDepth(frame, k, on);
+    EXPECT_EQ(out.pts.size(), std::size_t(k.width - 1) * (k.height - 1));
+}
+
+// Exposing the knob must not change what anyone gets today (CLAUDE.md: a config default must match
+// the wrapped implementation's default). prefilterWindow 0 and 1 are both "no filtering".
+TEST(DepthFrontend, ThePrefilterIsOffByDefaultAndByDefinitionAtWindowOne) {
+    const CameraIntrinsics k = MakeIntrinsics(96, 96);
+    const DepthFrame frame = TiltedNoisyPlane(k, 30.0f, 1.2f, 0.004f, 777u);
+
+    const Pipeline::Frame byDefault = BackprojectDepth(frame, k, DepthFilterOptions{});
+    DepthFilterOptions explicitlyOff;
+    explicitlyOff.prefilterWindow = 0;
+    const Pipeline::Frame off = BackprojectDepth(frame, k, explicitlyOff);
+    DepthFilterOptions windowOne;
+    windowOne.prefilterWindow = 1;
+    const Pipeline::Frame one = BackprojectDepth(frame, k, windowOne);
+
+    ASSERT_EQ(byDefault.pts.size(), off.pts.size());
+    ASSERT_EQ(byDefault.pts.size(), one.pts.size());
+    for (std::size_t i = 0; i < byDefault.pts.size(); ++i) {
+        EXPECT_EQ(byDefault.pts[i], off.pts[i]) << i;
+        EXPECT_EQ(byDefault.pts[i], one.pts[i]) << i;
+        EXPECT_EQ(byDefault.nrm[i], one.nrm[i]) << i;
+    }
 }
