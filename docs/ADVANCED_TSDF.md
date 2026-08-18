@@ -56,7 +56,7 @@ struct AdvDirEntry { uint32_t key; int32_t sumDW; uint32_t sumW; int32_t sumNx, 
 
 ## 3. Integrate — point-to-plane 부호거리
 
-**무엇:** voxel 중심 $x_v$의 부호거리를, 레이 투영이 아니라 **표면 접평면까지의 거리**로 계산([`Integrate`](../src/shader/advanced_tsdf_integrate.vert.glsl), `g_pointToPlane` 토글, 기본 on):
+**무엇:** voxel 중심 $x_v$의 부호거리를, 레이 투영이 아니라 **표면 접평면까지의 거리**로 계산([`Integrate`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl), `g_pointToPlane` 토글, 기본 on):
 
 $$
 \psi_{\text{p2p}} = \operatorname{clamp}\!\Big(\frac{(x_v - p)\cdot \hat n}{\tau},\,-1,1\Big)
@@ -68,9 +68,52 @@ $p$=관측점, $\hat n$=점 법선(단위), $\hat r$=레이, $d$=depth, $\tau$=t
 
 **왜:** 투영식 $\psi_{\text{proj}}$은 표면을 **비스듬히(grazing) 볼수록 등가면이 실제 표면에서 밀린다**(KinectFusion식 편향). point-to-plane은 평면에 대해 **정확**하고 grazing 편향이 없다.
 
-**측정(이 세션, A/B):** 투영 → point-to-plane 전환 시
+**측정(2026-07, A/B):** 투영 → point-to-plane 전환 시
 - **flat(평면) 오차 거의 0**: cube 0.011 → **0.00001** mm, cyl 0.012 → 0.0016
 - **edge −15~35%**, **전 영역 mean −45~62%**, 적분 시간 비용 **0**.
+
+> ⚠️ **위 수치의 조건**: 전부 **합성·무노이즈·정확한 법선** fixture이고, 카메라가 각 면을 **거의 수직으로**
+> 보는 배치다(cube/cyl을 축 방향에서 관측). 즉 "grazing 편향 제거"는 **수식의 성질**로는 참이지만,
+> 2026-08까지의 **구현**에서는 grazing에서 성립하지 않았다 — 아래 참조.
+
+### grazing에서 밴드가 잘리던 버그 (2026-08 수정)
+
+밴드를 **레이 방향으로 행진**하면서 소속 판정은 **법선 방향으로** 재고 있었다. 두 축은 수직 입사에서만
+일치하고, 입사각 $\theta$에서 법선 방향 도달 거리는 $\text{steps}\cdot v\cdot\cos\theta$ 뿐이므로
+$\pm\tau$ 밴드가 $\cos\theta$ 배로 잘렸다. voxel 0.05 / $\tau$ 0.15에서 손익분기는 $\theta=41.4°$.
+
+`AdvancedTSDF.PointToPlaneBandFillsTheFullTruncationDepthAtEveryIncidence` 실측(밴드 층 6개 기준):
+
+| 입사각 | 0° | 30° | 45° | 60° | 75° |
+|---|---|---|---|---|---|
+| 수정 전 coverage | 100% | 100% | 100% | **83.3%** | **50%** |
+| 수정 전 밴드깊이 | 0.99 | 0.99 | 0.99 | **0.68** | **0.35** |
+| 수정 후 (양쪽) | 100% | 100% | 100% | 100% | 100% |
+
+표면 **위치**는 잘려도 정확했다(밴드가 $t$에 대해 대칭이라 zero-crossing이 제자리) — 손실은
+**완전성**과 **시점 불변성**이다. p2p 맵은 정의상 카메라와 무관해야 하는데(값 $ (x_v-p)\cdot\hat n$에
+카메라가 없다), 실제로는 같은 평면을 0°와 75°에서 본 맵이 1045 vs 573 엔트리로 달랐다.
+`AdvancedTSDF.PointToPlaneMapDoesNotDependOnTheViewpoint`가 이것을 byte-identical로 고정한다.
+
+**수정:** p2p일 때 `samplePos = point + unitNormal * (t*voxelSize)` (projective는 레이 행진 유지).
+샘플 수 불변 → **비용 0**. `steps`만 늘리는 대안은 손익분기 각도만 밀어내고 시점 의존성은 남으므로
+기각(뮤테이션으로 확인).
+
+**실데이터 GT 측정** (`tsdf_folder_eval --dir scan_out --voxel 0.5`, GT `scan_out/ground_truth.ply`):
+
+| | 추출점 | occupied | accuracy mean | precision@1vox | recall@1vox |
+|---|---|---|---|---|---|
+| 수정 전 p2p | 23368 | 329371 | 0.32503 | 0.849 | 0.126 |
+| projective | 21311 | 252808 | 0.30467 | 0.886 | 0.125 |
+| **수정 후 p2p** | 7664 | 109602 | **0.17886** | **0.998** | 0.104 |
+
+**판정이 뒤집혔다**: 수정 전 p2p는 projective보다 나빴고(0.325 vs 0.305 — 문서가 주장하는 것과 반대),
+수정 후 41% 낫다. precision 0.998은 추출점이 거의 전부 GT 1복셀 이내라는 뜻이다.
+**정직하게: recall은 0.126→0.104로 떨어진다.** 없어진 것은 밴드 깊이가 아니라(위 표대로 100%)
+레이 행진이 만들던 **접선 방향 smear**다 — 남의 접평면 값으로 옆 복셀을 채우던 것이라 기하적 근거는
+없지만 커버리지에는 기여했다. 정확도 우선으로 채택.
+
+projective 경로는 수정 전후 **byte-identical**(수정이 분기 밖으로 새지 않았다는 회귀 검사).
 
 > 부수 기법: **degenerate 법선 가드** — 입력 법선이 0이면 그 점을 skip(`normalize(0)`의 NaN·해시 오염 방지). 방향 선택·뷰가중·point-to-plane이 모두 단위 법선을 전제하므로 main 진입부에서 한 번 걸러낸다.
 

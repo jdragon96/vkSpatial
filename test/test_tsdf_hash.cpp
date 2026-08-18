@@ -51,12 +51,19 @@ TEST(TsdfHashStrategy, UnknownNameFallsBackToLinear) {
 #include "TSDF/Backends/TSDFBackend.h"
 
 namespace {
-    // The 17x17 plane at voxel 0.05 / truncation 0.15 -- roughly 1045 entries once integrated.
+    // The 19x19 plane at voxel 0.05 / truncation 0.15 -- roughly 1176 entries once integrated.
     // One generator so the geometry stays byte-identical across tests.
-    void SeventeenBySeventeenPlane(std::vector<Eigen::Vector3f> &points,
+    //
+    // The size is chosen for MARGIN against the two growth thresholds the tests below straddle at
+    // 2048 slots (linear 0.5 -> 1024, bucketed 0.8 -> 1638), because the entry count is a property
+    // of the integrator, not a constant: the earlier 17x17 patch sat at 1045, two percent above the
+    // linear threshold, so a legitimate 3% change in band voxels (marching the point-to-plane band
+    // along the normal instead of the ray) dropped it to 1014 and silently broke both growth tests.
+    // 1176 clears linear by 15% and stays 28% under bucketed, and holds for both march directions.
+    void NineteenByNineteenPlane(std::vector<Eigen::Vector3f> &points,
                                    std::vector<Eigen::Vector3f> &normals) {
-        for (int i = -8; i <= 8; ++i)
-            for (int j = -8; j <= 8; ++j) {
+        for (int i = -9; i <= 9; ++i)
+            for (int j = -9; j <= 9; ++j) {
                 points.emplace_back(float(i) * 0.0375f, float(j) * 0.0375f, 0.0f);
                 normals.emplace_back(0.0f, 0.0f, 1.0f);
             }
@@ -83,7 +90,7 @@ TEST(TsdfHashCounters, NormalIntegrationDropsNothing) {
     std::unique_ptr<TSDFBackend> backend = MakeWindow(context, 1u << 16, "linear");
 
     std::vector<Eigen::Vector3f> points, normals;
-    SeventeenBySeventeenPlane(points, normals);
+    NineteenByNineteenPlane(points, normals);
     backend->Integrate(points, normals, kCamera);
 
     const TSDFBackendStats stats = backend->Stats();
@@ -92,14 +99,14 @@ TEST(TsdfHashCounters, NormalIntegrationDropsNothing) {
 }
 
 // maybeGrow runs once per Integrate, so one call can grow at most once. At 2048 slots the linear
-// threshold is 1024: the first call sees occupancy 0 and inserts ~1045, the second sees 1045 >=
+// threshold is 1024: the first call sees occupancy 0 and inserts ~1176, the second sees 1176 >=
 // 1024 and grows.
 TEST(TsdfHashCounters, GrowCountRisesWhenTheTableIsTooSmall) {
     Engine::Core::Context context;
     std::unique_ptr<TSDFBackend> backend = MakeWindow(context, 1u << 11, "linear");
 
     std::vector<Eigen::Vector3f> points, normals;
-    SeventeenBySeventeenPlane(points, normals);
+    NineteenByNineteenPlane(points, normals);
     backend->Integrate(points, normals, kCamera);
     backend->Integrate(points, normals, kCamera);
 
@@ -111,7 +118,7 @@ TEST(TsdfHashCounters, GrowCountRisesWhenTheTableIsTooSmall) {
 
 TEST(TsdfHashStrategy, BucketedStoresTheSameEntriesAsLinear) {
     std::vector<Eigen::Vector3f> points, normals;
-    SeventeenBySeventeenPlane(points, normals);
+    NineteenByNineteenPlane(points, normals);
 
     struct Run {
         TSDFBackendStats stats;
@@ -144,7 +151,7 @@ TEST(TsdfHashStrategy, BucketedStoresTheSameEntriesAsLinear) {
 
 TEST(TsdfHashStrategy, BucketedGrowsLaterThanLinear) {
     std::vector<Eigen::Vector3f> points, normals;
-    SeventeenBySeventeenPlane(points, normals);
+    NineteenByNineteenPlane(points, normals);
 
     auto capacityAfter = [&](const char *hashName) {
         Engine::Core::Context context;
@@ -160,7 +167,7 @@ TEST(TsdfHashStrategy, BucketedGrowsLaterThanLinear) {
     EXPECT_GT(linear.growCount, 0u) << "이 픽스처는 성장을 강제해야 한다";
     EXPECT_LT(bucketed.hashCapacity, linear.hashCapacity)
             << "버킷은 임계값 0.8이라 선형탐사(0.5)보다 늦게 자라야 한다";
-    EXPECT_EQ(bucketed.growCount, 0u) << "이 픽스처(~1045)는 버킷의 0.8*2048=1638 임계값을 넘지 않는다";
+    EXPECT_EQ(bucketed.growCount, 0u) << "이 픽스처(~1176)는 버킷의 0.8*2048=1638 임계값을 넘지 않는다";
     EXPECT_EQ(bucketed.insertFailureCount, 0u);
 }
 

@@ -85,6 +85,13 @@ void main() {
     float viewFactor = (g_viewAngleWeight != 0u) ? max(0.0, dot(nrm, -rayDir)) : 1.0;
 
     int steps = int(ceil(g_truncation / g_voxelSize)) + 1;
+    // KNOWN DEFECT, deliberately not fixed here: in point-to-plane mode this marches along the ray
+    // while measuring along the normal, so the +-truncation band is clipped by cos(incidence) (half
+    // its depth by 60 deg, a third by 75 deg). Fixed in kernel_AdvancedTSDF.integrate.comp.glsl by
+    // marching along the normal when point-to-plane is on. Left as a FROZEN COMPARATOR: nothing
+    // instantiates DirectionalTSDF any more (and its m_pointToPlane defaults to false, so its default
+    // path is the self-consistent projective one), and docs/DB_TSDF_VS_COMPACT_DIRECTIONAL.md /
+    // MRHASH_VS_DIRECTIONAL_TSDF.md publish numbers measured against this exact behaviour.
     for (int t = -steps; t <= steps; t++) {
         vec3 samplePos = p + rayDir * (float(t) * g_voxelSize);
         ivec3 v = ivec3(floor(samplePos / g_voxelSize));

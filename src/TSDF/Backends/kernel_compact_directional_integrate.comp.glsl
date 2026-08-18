@@ -126,6 +126,13 @@ void main() {
     bool usePlane = (g_pointToPlane != 0u) && (dot(nrm, nrm) > 1e-12);
     vec3 nrmN     = usePlane ? normalize(nrm) : vec3(0.0);
 
+    // KNOWN DEFECT, deliberately not fixed here: in point-to-plane mode this marches along the ray
+    // while measuring along the normal, so the +-truncation band is clipped by cos(incidence) (half
+    // its depth by 60 deg, a third by 75 deg). Fixed in kernel_AdvancedTSDF.integrate.comp.glsl by
+    // marching along unitNormal when point-to-plane is on. This kernel is left as a FROZEN
+    // COMPARATOR: nothing instantiates CompactDirectionalTSDF any more, and
+    // docs/COMPACT_VS_DIRECTIONAL_TSDF.md / DB_TSDF_VS_COMPACT_DIRECTIONAL.md publish numbers
+    // measured against this exact behaviour. Fix it only together with re-measuring those.
     for (int t = -steps; t <= steps; t++) {
         vec3  samplePos = p + rayDir * (float(t) * g_voxelSize);
         ivec3 v         = ivec3(floor(samplePos / g_voxelSize));

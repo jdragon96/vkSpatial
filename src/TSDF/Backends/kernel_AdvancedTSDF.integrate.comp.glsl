@@ -179,16 +179,32 @@ void Integrate(
 		descDirection,
 		reliability);
 
-	// 2. March the truncation band along the ray and integrate each voxel.
+	// 2. March the truncation band and integrate each voxel.
 	// truncateDistance == acceptable band width
+	//
+	// The march must follow the SAME axis the band membership test below measures along, or the
+	// band is scaled by the angle between the two. Point-to-plane measures along the normal:
+	// dot(rayDirection, unitNormal) == -cos(incidence), so marching along the ray reaches only
+	// steps*voxelSize*cos(incidence) of normal offset and the +-truncation band is clipped by the
+	// incidence cosine -- to half its depth by 60 deg and a third by 75 deg (measured; see
+	// AdvancedTSDF.PointToPlaneBandFillsTheFullTruncationDepthAtEveryIncidence). The surface
+	// POSITION survives (the reachable band stays symmetric in t) but the far band is lost, so the
+	// same surface fuses differently depending on the angle it was approached from -- which is
+	// exactly what a hand-held sweep does. Projective measures along the ray, so it marches along
+	// the ray. One axis per mode.
+	//
+	// This also makes integrate agree with extraction: sumN accumulates unitNormal, and n IS the
+	// exact gradient of the point-to-plane value dot(x - p, n), which is the slope the extract
+	// kernel's Hermite branch assumes.
 	bool usePointToPlane = (g_pointToPlane != 0u);
+	vec3 marchDirection  = usePointToPlane ? unitNormal : rayDirection;
 	int  steps = int(ceil(truncateDistance / voxelSize)) + 1;
 	for (int t = -steps; t <= steps; t++) {
 
 		// 2.1. Signed distance from this voxel centre to the surface.
 		//      point-to-plane (normal-based) removes the grazing-angle bias of the
 		//      projective ray distance; both are positive on the camera-facing side.
-		vec3  samplePos   = point + rayDirection * (float(t) * voxelSize);
+		vec3  samplePos   = point + marchDirection * (float(t) * voxelSize);
 		ivec3 voxel       = ivec3(floor(samplePos / voxelSize));
 		vec3  voxelCenter = (vec3(voxel) + vec3(0.5)) * voxelSize;
 		float voxel2point = usePointToPlane
