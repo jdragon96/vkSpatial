@@ -1,6 +1,7 @@
 #include "Pipeline/Registration/Tracker.h" // Pipeline::TrackerRegistry
 #include "Pipeline/Pipeline.h"  // Pipeline::Pipeline / Config / EAcquisitionType
 #include "Pipeline/CommunicationModule.h"       // Pipeline::CommunicationModule
+#include "Pipeline/Registration/GpuIcpTracker.h"
 #include "Pipeline/Registration/GpuPointToPlaneIcp.h"
 #include "Pipeline/Registration/RegistrationThread.h"
 #include "Pipeline/Reconstruction/ReconstructionThread.h" // MakeAcquisitionSource
@@ -18,6 +19,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -908,4 +910,333 @@ TEST(Registration, FitnessGateRejectsASolveBackedByAlmostNoOverlap) {
             icp.Solve(source, sourceNormals, target, Eigen::Matrix4f::Identity(), params);
     EXPECT_FALSE(gated.valid) << "a solve backed by " << gated.fitness * 100.0f
                               << "% of the source must not be reported as a good track";
+}
+
+namespace {
+
+    // A Tracker with a scripted verdict, so the integration stage's fusion policy can be exercised
+    // without depending on whether real ICP happens to converge. Also records, per call, the frame
+    // index of the map it was handed -- which is what the lock-step test below inspects.
+    class ScriptedVerdictTracker : public ep::Tracker {
+    public:
+        ScriptedVerdictTracker(bool firstFrameSucceeds, ep::ETrackFailure failure, float strayMetres,
+                               std::shared_ptr<std::vector<int>> observedModelFrames = nullptr)
+            : m_firstFrameSucceeds(firstFrameSucceeds), m_failure(failure), m_stray(strayMetres),
+              m_observedModelFrames(std::move(observedModelFrames)) {}
+
+        const char *Name() const override { return "scripted-verdict"; }
+
+        ep::TrackingResult Track(const ep::Frame &, const ep::ModelSnapshot *model,
+                                 const Eigen::Isometry3f &) override {
+            if (m_observedModelFrames)
+                m_observedModelFrames->push_back(model ? model->processedFrame : -1);
+            const bool firstCall = m_callIndex++ == 0;
+            // failure == None scripts a tracker that never fails, so every frame is fused.
+            const bool succeeds = m_failure == ep::ETrackFailure::None || (firstCall && m_firstFrameSucceeds);
+            ep::TrackingResult r;
+            if (succeeds) {
+                r.valid = true;
+                r.failure = ep::ETrackFailure::None;
+                r.pose = Eigen::Isometry3f::Identity();
+                return r;
+            }
+            r.valid = false;
+            r.failure = m_failure;
+            r.pose = Eigen::Isometry3f(Eigen::Translation3f(m_stray, 0.0f, 0.0f));
+            return r;
+        }
+
+    private:
+        bool m_firstFrameSucceeds;
+        ep::ETrackFailure m_failure;
+        float m_stray;
+        std::shared_ptr<std::vector<int>> m_observedModelFrames;
+        std::size_t m_callIndex = 0;
+    };
+
+} // namespace
+
+// A track that failed its overlap gate carries a knowingly-wrong pose, and the map it corrupts is
+// the next frame's alignment target. Measured on the 477-frame capture/ recording: roughly half the
+// frames take that path, so half the map was being built from poses the tracker itself rejected.
+//
+// The assertion is on the map's EXTENT, not its entry count: fusing at the previous pose (the old
+// behaviour) piles the frame on top of the existing surface, which barely moves a count but smears
+// the extent by the stray displacement. A count-based assertion passes the bug.
+TEST(Pipeline, AFrameWhoseOverlapGateFailedIsNotFusedIntoTheMap) {
+    constexpr int kFrames = 6;
+    constexpr float kStrayMetres = 5.0f;
+    FrameDir frames(kFrames);
+    ep::Pipeline::Config cfg = makeConfig(frames.files, 0.0);
+    cfg.acquisition.realTime = false;
+
+    auto tracker = std::make_unique<ScriptedVerdictTracker>(
+            /*firstFrameSucceeds=*/true, ep::ETrackFailure::LowOverlap, kStrayMetres);
+    ep::Pipeline pipe(cfg, std::move(tracker));
+    pipe.Start();
+    pipe.SetPaused(false);
+    ASSERT_TRUE(waitProcessed(pipe, kFrames - 1));
+    pipe.CheckErrors();
+
+    const std::shared_ptr<const ep::ModelSnapshot> model = pipe.LatestModel();
+    ASSERT_NE(model, nullptr);
+    ASSERT_FALSE(model->entries.empty()) << "frame 0 was adopted, so the map must exist";
+    ASSERT_TRUE(model->hasAlloc);
+
+    // One 0.8 m plane patch plus a truncation band on each side -- nowhere near the 5 m stray.
+    const float extentX = model->allocMax.x() - model->allocMin.x();
+    EXPECT_LT(extentX, 2.0f) << "map spans " << extentX
+                             << " m in x: a frame rejected for low overlap was fused anyway";
+
+    const ep::PipelineStats stats = pipe.GetStats();
+    EXPECT_EQ(stats.skippedFusions, std::uint64_t(kFrames - 1));
+    EXPECT_EQ(stats.processedFrame, kFrames - 1) << "a skipped fusion must still advance the frame "
+                                                   "index -- callers wait on it";
+    pipe.Stop();
+}
+
+// The first frames legitimately have no map to align against: GpuIcpTracker reports NoModel while
+// model->entries is empty. Refusing to fuse those is not a safety measure but a deadlock -- the map
+// never bootstraps, so every later frame is NoModel too and the reconstruction stays empty. This is
+// the guard on ShouldFuse()'s NoModel exemption; it fails if the policy becomes "skip everything
+// the tracker rejected".
+TEST(Pipeline, AFrameWithNoMapYetIsStillFused) {
+    constexpr int kFrames = 4;
+    FrameDir frames(kFrames);
+    ep::Pipeline::Config cfg = makeConfig(frames.files, 0.0);
+    cfg.acquisition.realTime = false;
+
+    auto tracker = std::make_unique<ScriptedVerdictTracker>(
+            /*firstFrameSucceeds=*/false, ep::ETrackFailure::NoModel, /*strayMetres=*/0.0f);
+    ep::Pipeline pipe(cfg, std::move(tracker));
+    pipe.Start();
+    pipe.SetPaused(false);
+    ASSERT_TRUE(waitProcessed(pipe, kFrames - 1));
+    pipe.CheckErrors();
+
+    const std::shared_ptr<const ep::ModelSnapshot> model = pipe.LatestModel();
+    ASSERT_NE(model, nullptr);
+    EXPECT_FALSE(model->entries.empty()) << "nothing was fused, so the map can never bootstrap";
+    EXPECT_EQ(pipe.GetStats().skippedFusions, std::uint64_t(0));
+    pipe.Stop();
+}
+
+// Blocking channels make a replay lossless; they do NOT make it reproducible. The map reaches the
+// tracker through a latest-wins Mailbox, and registration may run ahead of integration by the whole
+// trackedFrames capacity, so WHICH map version frame N aligns against depends on thread scheduling.
+// That map is the alignment target, so the pose changes, so the next map changes: the run diverges.
+// Measured on capture/ before the handshake -- four runs of ONE command reported trajectory lengths
+// of 1.47, 6.45, 7.84 and 136.76 metres.
+//
+// Asserted as the exact lock-step sequence rather than "two runs agree", because a flaky-timing bug
+// can make two runs agree by luck; -1, 0, 1, 2, ... can only hold if every frame really did wait.
+TEST(Pipeline, ALosslessReplayAlignsEachFrameAgainstEveryEarlierFrame) {
+    constexpr int kFrames = 8;
+    FrameDir frames(kFrames);
+    ep::Pipeline::Config cfg = makeConfig(frames.files, 0.0);
+    cfg.acquisition.realTime = false; // a recording: lossless AND lock-stepped
+
+    auto observed = std::make_shared<std::vector<int>>();
+    auto tracker = std::make_unique<ScriptedVerdictTracker>(
+            /*firstFrameSucceeds=*/true, ep::ETrackFailure::None, /*strayMetres=*/0.0f, observed);
+    ep::Pipeline pipe(cfg, std::move(tracker));
+    pipe.Start();
+    pipe.SetPaused(false);
+    ASSERT_TRUE(waitProcessed(pipe, kFrames - 1));
+    pipe.CheckErrors();
+    pipe.Stop(); // joins the registration thread, so `observed` is safe to read
+
+    ASSERT_GE(observed->size(), std::size_t(kFrames));
+    for (int k = 0; k < kFrames; ++k)
+        EXPECT_EQ((*observed)[std::size_t(k)], k - 1)
+                << "frame " << k << " aligned against a map holding frames 0.." << (*observed)[k]
+                << " instead of 0.." << (k - 1) << ": integration was not waited for";
+}
+
+namespace {
+
+    // Perfect tracker on a scripted pose sequence, with scripted rejections -- for testing what
+    // prior RegistrationThread hands to Track around a rejection, not whether ICP converges.
+    class RecordingTrackerWithScriptedRejections : public ep::Tracker {
+    public:
+        RecordingTrackerWithScriptedRejections(std::vector<Eigen::Isometry3f> truePoses,
+                                               std::set<std::size_t> rejectedCalls,
+                                               std::shared_ptr<std::vector<Eigen::Isometry3f>> priors)
+            : m_truePoses(std::move(truePoses)), m_rejectedCalls(std::move(rejectedCalls)),
+              m_recordedPriors(std::move(priors)) {}
+
+        const char *Name() const override { return "recording-with-rejections"; }
+
+        ep::TrackingResult Track(const ep::Frame &, const ep::ModelSnapshot *,
+                                 const Eigen::Isometry3f &priorPose) override {
+            m_recordedPriors->push_back(priorPose);
+            const std::size_t call = m_callIndex++;
+            ep::TrackingResult r;
+            if (m_rejectedCalls.count(call) || call >= m_truePoses.size()) {
+                r.valid = false;
+                r.failure = ep::ETrackFailure::LowOverlap;
+                r.pose = priorPose;
+                return r;
+            }
+            r.valid = true;
+            r.failure = ep::ETrackFailure::None;
+            r.pose = m_truePoses[call];
+            return r;
+        }
+
+    private:
+        std::vector<Eigen::Isometry3f> m_truePoses;
+        std::set<std::size_t> m_rejectedCalls;
+        std::shared_ptr<std::vector<Eigen::Isometry3f>> m_recordedPriors;
+        std::size_t m_callIndex = 0;
+    };
+
+} // namespace
+
+// After a rejection, the first re-adopted pose and the pose from BEFORE the rejection are two frame
+// intervals apart. Re-arming the constant-velocity prior from that pair extrapolates a two-interval
+// delta as if it were one -- the prior overshoots by a full frame of motion, which on the 477-frame
+// capture/ recording pushed every second solve out of its convergence basin: a self-sustaining
+// period-2 oscillation that rejected 229 of 477 frames (adopt fit ~0.9 / reject fit ~0.12,
+// perfectly alternating). The prior may extrapolate only from two CONSECUTIVELY adopted poses;
+// until it has them, the safe prior is the previous pose unchanged.
+TEST(RegistrationThread, VelocityPriorNeedsTwoConsecutiveAdoptionsAfterARejection) {
+    ep::CommunicationModule comm;
+
+    const float v = 0.1f; // metres per frame along +X
+    auto poseAt = [&](int k) {
+        Eigen::Isometry3f p = Eigen::Isometry3f::Identity();
+        p.translate(Vector3f(v * float(k), 0.0f, 0.0f));
+        return p;
+    };
+    // Call k adopts pose p_{k+1}; call 3 is rejected.
+    std::vector<Eigen::Isometry3f> truePoses;
+    for (int k = 1; k <= 7; ++k) truePoses.push_back(poseAt(k));
+
+    auto priors = std::make_shared<std::vector<Eigen::Isometry3f>>();
+    auto tracker = std::make_unique<RecordingTrackerWithScriptedRejections>(
+            truePoses, std::set<std::size_t>{3}, priors);
+
+    ep::RegistrationThread rt(comm, std::move(tracker));
+    rt.Start();
+    // Interleaved push/pop: trackedFrames is a capacity-4 DROPPING channel here (default comm), so
+    // pushing all 7 up front can drop tracked frames and leave the later Pops blocked forever.
+    ep::TrackedFrame tf;
+    for (int i = 0; i < 7; ++i) {
+        comm.capturedFrames.Push(ep::Frame{});
+        ASSERT_TRUE(comm.trackedFrames.Pop(tf)) << "tracked frame " << i;
+    }
+    rt.Stop();
+    ASSERT_EQ(rt.Error(), nullptr);
+    ASSERT_EQ(priors->size(), 7u);
+
+    // Call 4 (first after the rejection): previous pose unchanged -- already the behaviour.
+    EXPECT_NEAR(((*priors)[4].translation() - poseAt(3).translation()).norm(), 0.0f, 1e-6f)
+            << "the frame right after a rejection must start from the previous pose";
+
+    // Call 5 (second after the rejection): the last two adoptions (p3 at call 2, p5 at call 4) are
+    // NOT consecutive frames, so no velocity may be extrapolated from them. The buggy re-arm
+    // produces p5 + (p5 - p3) = p7 here -- a double-length extrapolation.
+    EXPECT_NEAR(((*priors)[5].translation() - poseAt(5).translation()).norm(), 0.0f, 1e-6f)
+            << "prior two frames after a rejection extrapolated a two-interval delta: got x="
+            << (*priors)[5].translation().x() << ", want the previous pose x=" << poseAt(5).translation().x();
+
+    // Call 6: calls 4 and 5 were consecutive adoptions (p5, p6) -- a true one-interval delta, so
+    // the velocity prior is legitimately re-armed and predicts p7 exactly.
+    EXPECT_NEAR(((*priors)[6].translation() - poseAt(7).translation()).norm(), 0.0f, 1e-6f)
+            << "after two consecutive adoptions the velocity prior must be re-armed";
+}
+
+// The fitness gate cannot catch every mis-convergence: on the 477-frame capture/ recording the
+// solve that first corrupted the map claimed a 0.225 m single-frame step at fitness 0.571 -- past
+// the 0.4 gate, physically impossible for a 30 fps hand-held camera (bound ~0.05 m/frame; docs and
+// PipelineStats both state it). The step gate is the second line: a solve whose translation from
+// the prior exceeds maxStepMeters is a mis-convergence BY PHYSICS, whatever its fitness says.
+TEST(Pipeline, GpuIcpTrackerRejectsAPhysicallyImplausibleStep) {
+    const Corner corner = makeCorner();
+
+    ep::ModelSnapshot model;
+    model.entries.reserve(corner.pts.size());
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        TSDFVoxel e{};
+        e.center = corner.pts[i];
+        e.normal = corner.nrm[i];
+        model.entries.push_back(e);
+    }
+
+    // Same well-behaved ~0.027 m recovery as GpuIcpTrackerRecoversPerturbation...
+    Eigen::Isometry3f perturb = Eigen::Isometry3f::Identity();
+    perturb.translate(Vector3f(0.02f, -0.015f, 0.01f));
+    ep::Frame frame;
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        frame.pts.push_back(perturb * corner.pts[i]);
+        frame.nrm.push_back(perturb.rotation() * corner.nrm[i]);
+    }
+
+    // ...which a tightened gate must reject as implausible, returning the prior untouched.
+    {
+        auto tracker = std::make_unique<ep::GpuIcpTracker>();
+        tracker->SetMaxStepMeters(0.005f);
+        const ep::TrackingResult r = tracker->Track(frame, &model, Eigen::Isometry3f::Identity());
+        EXPECT_FALSE(r.valid) << "a 0.027 m step passed a 0.005 m physical bound";
+        EXPECT_EQ(r.failure, ep::ETrackFailure::ImplausibleMotion);
+        EXPECT_TRUE(r.pose.matrix().isApprox(Eigen::Matrix4f::Identity()))
+                << "a gated solve must hand back the prior, not the implausible pose";
+    }
+
+    // The DEFAULT bound (0.08 m -- above any real hand-held per-frame motion) must not touch the
+    // same well-behaved solve; this is the guard that the gate does not strangle normal tracking.
+    {
+        auto tracker = std::make_unique<ep::GpuIcpTracker>();
+        const ep::TrackingResult r = tracker->Track(frame, &model, Eigen::Isometry3f::Identity());
+        EXPECT_TRUE(r.valid) << "the default step bound rejected an ordinary 0.027 m recovery";
+        EXPECT_EQ(r.failure, ep::ETrackFailure::None);
+    }
+
+    // Fusion policy: an implausible-motion frame has a real local map its wrong pose would corrupt.
+    EXPECT_FALSE(ep::ShouldFuse(false, ep::ETrackFailure::ImplausibleMotion));
+}
+
+// The velocity prior earns its keep only when per-frame motion is large: its prediction error is
+// the pose-estimate noise in the last delta, re-applied. At 0.1 m/frame (the straight-line test)
+// that noise is a rounding error on the prediction; at the ~5 mm/frame of a slow hand-held sweep
+// the noise IS the prediction, and measured on capture/ it pushed every third solve out of its
+// convergence basin (153 of 477 frames gated as implausible, period-3) while the plain
+// previous-pose prior tracked all 476. Below the motion threshold the previous pose is already
+// inside the solve's basin, so extrapolation adds noise and nothing else.
+TEST(RegistrationThread, SlowMotionUsesThePreviousPosePrior) {
+    ep::CommunicationModule comm;
+
+    const float v = 0.005f; // 5 mm per frame -- capture/'s measured scale, far below the threshold
+    auto poseAt = [&](int k) {
+        Eigen::Isometry3f p = Eigen::Isometry3f::Identity();
+        p.translate(Vector3f(v * float(k), 0.0f, 0.0f));
+        return p;
+    };
+    std::vector<Eigen::Isometry3f> truePoses;
+    for (int k = 1; k <= 5; ++k) truePoses.push_back(poseAt(k));
+
+    auto priors = std::make_shared<std::vector<Eigen::Isometry3f>>();
+    auto tracker = std::make_unique<RecordingTrackerWithScriptedRejections>(
+            truePoses, std::set<std::size_t>{}, priors);
+
+    ep::RegistrationThread rt(comm, std::move(tracker));
+    rt.Start();
+    ep::TrackedFrame tf;
+    for (int i = 0; i < 5; ++i) {
+        comm.capturedFrames.Push(ep::Frame{});
+        ASSERT_TRUE(comm.trackedFrames.Pop(tf)) << "tracked frame " << i;
+    }
+    rt.Stop();
+    ASSERT_EQ(rt.Error(), nullptr);
+    ASSERT_EQ(priors->size(), 5u);
+
+    // Every prior from call 2 on must be the PREVIOUS pose, not a velocity extrapolation: at this
+    // motion scale extrapolating gains nothing and doubles the noise.
+    for (int k = 2; k < 5; ++k)
+        EXPECT_NEAR(((*priors)[std::size_t(k)].translation() - poseAt(k).translation()).norm(), 0.0f,
+                    1e-6f)
+                << "call " << k << " got a velocity-extrapolated prior at 5 mm/frame motion (x="
+                << (*priors)[std::size_t(k)].translation().x() << ", previous pose x="
+                << poseAt(k).translation().x() << ")";
 }

@@ -19,11 +19,15 @@ namespace Pipeline {
             tgt.normals.push_back(entry.normal);
         }
 
+        Engine::Registration::SortTargetIntoCanonicalOrder(tgt);
+
         Engine::Registration::RegistrationParam params = m_params;
         if (model->voxel > 0.0f) {
             params.maxCorrDist = 2.0f * model->voxel;
             params.huberScale = model->voxel;
         }
+        if (params.maxStepMeters <= 0.0f)
+            params.maxStepMeters = Engine::Registration::kDefaultTrackerMaxStepMeters;
         const Engine::Registration::RegistrationResult icp =
                 Engine::Registration::AlignPointToPlaneIcp(
                         frame.pts,
@@ -31,11 +35,26 @@ namespace Pipeline {
                         tgt,
                         priorPose.matrix(),
                         params);
+
+        // Same physical step gate as GpuIcpTracker -- the two trackers must judge a solve alike.
+        const float stepFromPriorMeters =
+                (Eigen::Isometry3f(icp.T).translation() - priorPose.translation()).norm();
+        if (params.maxStepMeters > 0.0f && stepFromPriorMeters > params.maxStepMeters) {
+            r.pose = priorPose;
+            r.fitness = icp.fitness;
+            r.inliers = icp.numInliers;
+            r.rmse = icp.rmse;
+            r.valid = false;
+            r.failure = ETrackFailure::ImplausibleMotion;
+            return r;
+        }
+
         r.pose = Eigen::Isometry3f(icp.T);
         r.fitness = icp.fitness;
         r.inliers = icp.numInliers;
         r.rmse = icp.rmse;
         r.valid = icp.valid;
+        if (r.valid) r.failure = ETrackFailure::None;
         return r;
     }
 

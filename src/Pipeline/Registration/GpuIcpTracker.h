@@ -13,6 +13,8 @@ namespace Pipeline {
     class GpuIcpTracker : public Tracker {
     public:
         void SetMinFitness(float f) { m_params.minFitness = f; }
+        // Physical single-step bound; 0 restores the tracker default (kDefaultTrackerMaxStepMeters).
+        void SetMaxStepMeters(float metres) { m_params.maxStepMeters = metres; }
 
         const char *Name() const override { return "icp"; }
 

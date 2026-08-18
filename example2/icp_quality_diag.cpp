@@ -8,7 +8,7 @@
 // GUI viewer's live quality, so icp-vs-identity (and clean-map-vs-WIP-map) can be A/B'd with numbers.
 //
 // Usage: icp_quality_diag --dir <folder of frame_*.ply> [--voxel v] [--trackers identity,icp]
-//        icp_quality_diag --replay <depth recording>   [--voxel v] [--trackers identity,icp]
+//        icp_quality_diag --replay <depth recording>   [--voxel v] [--trackers identity,icp] [--no-p2p]
 //
 // --replay drives the same comparison from a raw depth recording, so a real camera capture can be
 // scored the same way. Note what "identity" means there: a hand-held camera's frames are NOT
@@ -42,6 +42,13 @@ namespace fs = std::filesystem;
 namespace {
 
     float g_minFitness = 0.0f; // set from --min-fitness before any run
+    // TSDF integration knobs, so a map setting can be A/B'd on a real recording. Valid to compare
+    // only because a recording now runs lock-stepped (FrameHandshake): before that, changing the map
+    // changed which map version the tracker saw, so the trajectory diverged and the comparison
+    // measured thread scheduling instead of the setting.
+    bool g_pointToPlane = true;
+    // Depth prefilter window for the --replay front end (0 = off, the shipped default).
+    int g_prefilterWindow = 0;
 
 
     std::vector<std::string> collectFramePaths(const std::string &dir) {
@@ -70,6 +77,8 @@ namespace {
         std::size_t dropped = 0;
         double stepAvg = 0.0, stepMax = 0.0, turnMax = 0.0, pathLength = 0.0;
         std::uint64_t rejected = 0, noModel = 0, noLocal = 0, fewInliers = 0, lowOverlap = 0;
+        std::uint64_t implausibleMotion = 0;
+        std::uint64_t skippedFusions = 0;
     };
 
     // Drive the pipeline to completion over all frames, then snapshot the final model + stats.
@@ -78,6 +87,7 @@ namespace {
         // acquisition already carries downsampleVoxel; Pipeline only fills it when it is 0.
         ep::Pipeline::Config config;
         config.map.baseVoxel = voxel;
+        config.map.pointToPlane = g_pointToPlane;
         if (truncation > 0.0f) config.map.truncation = truncation;
         config.acquisition = acquisition;
 
@@ -117,7 +127,12 @@ namespace {
                             trackerName.c_str(), processed, lastFrame,
                             (unsigned long long) live.integratedFrames, live.trackDropped);
             seen = processed;
-            if (std::chrono::steady_clock::now() - start > std::chrono::seconds(180)) {
+            // Generous, and it has to be: a recording runs LOCK-STEPPED (FrameHandshake), so the
+            // registration and integration stages no longer overlap and a replay takes roughly the
+            // sum of their per-frame costs. At 477 frames x ~0.35 s the old 180 s wall cut runs off
+            // near frame 350, which reads exactly like a diverged tracker -- two runs that differed
+            // only in where the timeout landed looked like nondeterminism.
+            if (std::chrono::steady_clock::now() - start > std::chrono::seconds(1800)) {
                 std::printf("  [warn] tracker '%s' timed out at frame %d/%d\n", trackerName.c_str(), seen,
                             lastFrame);
                 break;
@@ -139,6 +154,8 @@ namespace {
         r.noLocal = stats.rejectedNoLocalTarget;
         r.fewInliers = stats.rejectedTooFewInliers;
         r.lowOverlap = stats.rejectedLowOverlap;
+        r.implausibleMotion = stats.rejectedImplausibleMotion;
+        r.skippedFusions = stats.skippedFusions;
         r.stepAvg = stats.poseDeltaMetersAvg;
         r.stepMax = stats.poseDeltaMetersMax;
         r.turnMax = stats.poseDeltaDegreesMax;
@@ -165,6 +182,7 @@ int main(int argc, char **argv) {
                         .Option("--truncation")// default: MapConfig's, or 3 voxels for --replay
                         .Option("--downsample") // acquisition-stage voxel; default = the map's finest
                         .Option("--min-fitness", 0.0)
+                        .Option("--prefilter", 0)
                         .Option("--trackers", "identity,icp");
 
         const std::string dir = arg.Value("--dir");
@@ -210,8 +228,10 @@ int main(int argc, char **argv) {
 
             acquisition.type = ep::EAcquisitionType::DepthCamera;
             acquisition.makeSource = [replayDirectory]() -> std::unique_ptr<ep::IFrameSource> {
+                ep::DepthFilterOptions filter;
+                filter.prefilterWindow = g_prefilterWindow;
                 return std::make_unique<ep::DepthCameraFrameSource>(
-                        std::make_unique<ep::RecordedDepthProvider>(replayDirectory));
+                        std::make_unique<ep::RecordedDepthProvider>(replayDirectory), filter);
             };
             char buf[512];
             std::snprintf(buf, sizeof buf, "%s  (%d depth frames, %dx%d, fx %.2f)",
@@ -241,10 +261,14 @@ int main(int argc, char **argv) {
         acquisition.realTime = false;
 
         g_minFitness = arg.ValueFloat("--min-fitness", 0.0f);
+        g_pointToPlane = !arg.Has("--no-p2p");
+        g_prefilterWindow = arg.ValueInt("--prefilter", 0);
         const float downsample = arg.ValueFloat("--downsample", 0.0f);
         if (downsample != 0.0f) acquisition.downsampleVoxel = downsample;
 
         std::printf("source   : %s\n", label.c_str());
+        std::printf("map      : point-to-plane %s   depth prefilter %d\n",
+                    g_pointToPlane ? "on" : "off", g_prefilterWindow);
         std::printf("voxel    : %.4f   truncation : %.4f   downsample : %s\n\n", voxel,
                     truncation > 0.0f ? truncation : 1.5f,
                     downsample == 0.0f ? "(map's finest)"
@@ -277,17 +301,24 @@ int main(int argc, char **argv) {
                         results[i].stepAvg, results[i].stepMax, results[i].turnMax,
                         results[i].pathLength, (unsigned long long) results[i].rejected);
 
-        std::printf("\nWhy tracks were rejected (a rejected frame is integrated at the PREVIOUS "
-                    "pose):\n");
-        std::printf("%-10s | %9s | %13s | %14s | %11s\n", "tracker", "no model", "no local map",
-                    "too few inliers", "low overlap");
-        std::printf("-----------|-----------|---------------|----------------|------------\n");
+        // `skipped` is the subset NOT fused. no-model / no-local-map frames ARE still fused: there is
+        // no local map for their wrong pose to corrupt, and refusing them would stop the map ever
+        // bootstrapping or ever growing into new territory (see ShouldFuse in Pipeline/Types.h).
+        std::printf("\nWhy tracks were rejected (too-few-inliers / low-overlap frames are NOT fused; "
+                    "no-model / no-local-map ones are):\n");
+        std::printf("%-10s | %9s | %13s | %14s | %11s | %12s | %8s\n", "tracker", "no model",
+                    "no local map", "too few inliers", "low overlap", "implausible", "skipped");
+        std::printf("-----------|-----------|---------------|----------------|-------------|"
+                    "--------------|---------\n");
         for (std::size_t i = 0; i < trackers.size(); ++i)
-            std::printf("%-10s | %9llu | %13llu | %14llu | %11llu\n", trackers[i].c_str(),
+            std::printf("%-10s | %9llu | %13llu | %14llu | %11llu | %12llu | %8llu\n",
+                        trackers[i].c_str(),
                         (unsigned long long) results[i].noModel,
                         (unsigned long long) results[i].noLocal,
                         (unsigned long long) results[i].fewInliers,
-                        (unsigned long long) results[i].lowOverlap);
+                        (unsigned long long) results[i].lowOverlap,
+                        (unsigned long long) results[i].implausibleMotion,
+                        (unsigned long long) results[i].skippedFusions);
 
         // If an `identity` run exists, score every other tracker's reconstruction against it (identity
         // == the pre-registered ground-truth reference). Higher RMSE => that tracker drifted the surface.

@@ -105,7 +105,12 @@ namespace Pipeline {
 
     IntegrationThread::~IntegrationThread() { Stop(); }
 
-    void IntegrationThread::Interrupt() { m_comm.trackedFrames.Close(); } // wake a blocked Pop
+    void IntegrationThread::Interrupt() {
+        m_comm.trackedFrames.Close(); // wake a blocked Pop
+        // If this stage stops first, a registration thread waiting on the handshake would never be
+        // released -- it is waiting for exactly this stage.
+        m_comm.handshake.Close();
+    }
 
     void IntegrationThread::Run() {
         Engine::Core::Context ctx;
@@ -127,12 +132,23 @@ namespace Pipeline {
             {
                 util::ScopedMean t(m_integrateMs); // integrate + download + snapshot for this frame
                 ++processed;
-                IntegrateWorld(tsdf, tf, prof);
-                std::shared_ptr<ModelSnapshot> snap = acquireSnapshot();
-                BuildSnapshot(*snap, tsdf, prof, processed, m_cfg.baseVoxel, m_cfg.truncation);
-                m_comm.model.Publish(snap);
+                // A frame the tracker refused (see ShouldFuse in Types.h) carries a knowingly-wrong
+                // pose; fusing it would corrupt the map that is the NEXT frame's alignment target.
+                // It still advances `processed` and is still counted as handled: the frame index is
+                // the caller's completion signal (icp_quality_diag waits on ProcessedFrame), so
+                // dropping it silently would stall every consumer. The download+publish is skipped
+                // as well -- the map did not change, and the Mailbox keeps the last snapshot.
+                if (tf.fuse) {
+                    IntegrateWorld(tsdf, tf, prof);
+                    std::shared_ptr<ModelSnapshot> snap = acquireSnapshot();
+                    BuildSnapshot(*snap, tsdf, prof, processed, m_cfg.baseVoxel, m_cfg.truncation);
+                    m_comm.model.Publish(snap);
+                }
             }
             m_processed = processed; // reflected in a published snapshot
+            // Release the registration stage's lock-step wait. MUST happen for a skipped frame too,
+            // or the pipeline deadlocks on the first frame integration declines.
+            m_comm.handshake.NoteCompleted();
         }
     }
 

@@ -26,6 +26,11 @@ namespace Pipeline {
         std::uint64_t RejectedNoLocalTarget() const { return m_rejectedNoLocalTarget.load(); }
         std::uint64_t RejectedTooFewInliers() const { return m_rejectedTooFewInliers.load(); }
         std::uint64_t RejectedLowOverlap() const { return m_rejectedLowOverlap.load(); }
+        std::uint64_t RejectedImplausibleMotion() const { return m_rejectedImplausibleMotion.load(); }
+        // Frames handed downstream marked "do not fuse" -- a rejected track whose pose would have
+        // corrupted the map. Observable because a silently discarded frame looks like a frame that
+        // was never captured. See ShouldFuse() in Types.h for which causes are skipped and why.
+        std::uint64_t SkippedFusions() const { return m_skippedFusions.load(); }
         double PoseDeltaMetersAvg() const { return m_poseDeltaMeters.Mean(); }
         double PoseDeltaMetersMax() const { return m_poseDeltaMetersMax.load(); }
         double PoseDeltaDegreesMax() const { return m_poseDeltaDegreesMax.load(); }
@@ -42,6 +47,8 @@ namespace Pipeline {
         std::atomic<std::uint64_t> m_rejected{0};
         std::atomic<std::uint64_t> m_rejectedNoModel{0}, m_rejectedNoLocalTarget{0};
         std::atomic<std::uint64_t> m_rejectedTooFewInliers{0}, m_rejectedLowOverlap{0};
+        std::atomic<std::uint64_t> m_rejectedImplausibleMotion{0};
+        std::atomic<std::uint64_t> m_skippedFusions{0};
         util::RunningMean m_poseDeltaMeters;
         std::atomic<double> m_poseDeltaMetersMax{0.0};
         std::atomic<double> m_poseDeltaDegreesMax{0.0};

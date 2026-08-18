@@ -23,11 +23,43 @@ namespace Pipeline {
         Eigen::Vector3f cam = Eigen::Vector3f::Zero();
     };
 
+    // Why a track was not adopted. Lives here, not with the Tracker, because TrackedFrame carries it
+    // across the registration -> integration boundary: the fusion decision is per-cause, and one
+    // "rejected" bit cannot express it. "The map has not been built yet" and "the solve latched onto
+    // strays" call for opposite responses.
+    enum class ETrackFailure {
+        None,              // the track was adopted
+        NoModel,           // no map yet, or an empty frame -- expected on the first frames
+        NoLocalTarget,     // the frame's neighbourhood holds almost no map: it is somewhere new
+        TooFewInliers,     // the solve found fewer correspondences than minInliers
+        LowOverlap,        // enough inliers, but too small a share of the frame -- the fitness gate
+        ImplausibleMotion, // the solve moved further from the prior than a hand-held camera can in
+                           // one frame -- a mis-convergence by physics, whatever its fitness says
+    };
+
+    // Should a frame with this tracking outcome be fused into the map?
+    //
+    // Not "was the track valid". A frame whose solve failed its gates carries a knowingly-wrong pose,
+    // and the map it corrupts is the NEXT frame's alignment target -- on a 477-frame D435 capture
+    // roughly half the frames took that path. But refusing every rejected frame does not work either:
+    // GpuIcpTracker reports NoModel while the map is still empty, so declining to fuse frame 0 means
+    // the map never bootstraps and every later frame is NoModel too -- an empty reconstruction. And
+    // NoLocalTarget means the frame is somewhere the map does not reach yet, so declining those
+    // freezes the map at whatever the first frames happened to see.
+    //
+    // So: fuse when there is nothing to corrupt, skip when a real local map was there and the solve
+    // still failed against it.
+    inline bool ShouldFuse(bool trackValid, ETrackFailure failure) {
+        if (trackValid) return true;
+        return failure == ETrackFailure::NoModel || failure == ETrackFailure::NoLocalTarget;
+    }
+
     struct TrackedFrame {
         Frame frame;
         Eigen::Isometry3f pose = Eigen::Isometry3f::Identity(); // sensor -> world
         Eigen::Vector3f cameraWorld = Eigen::Vector3f::Zero();  // world camera position (view weight)
-        int gen = 0;                                            // reset generation (stale-frame guard)
+        ETrackFailure failure = ETrackFailure::None;
+        bool fuse = true; // ShouldFuse(...) for this frame; false -> integration skips it
     };
 
     using Box = std::pair<Eigen::Vector3f, Eigen::Vector3f>; // world AABB (min, max)
@@ -108,6 +140,10 @@ namespace Pipeline {
         // a tracking problem.
         std::uint64_t rejectedNoModel = 0, rejectedNoLocalTarget = 0;
         std::uint64_t rejectedTooFewInliers = 0, rejectedLowOverlap = 0;
+        std::uint64_t rejectedImplausibleMotion = 0;
+        // Rejected frames that were NOT fused, so their wrong pose never entered the map. Fewer than
+        // trackRejected: NoModel/NoLocalTarget frames are still fused (ShouldFuse, above).
+        std::uint64_t skippedFusions = 0;
         double poseDeltaMetersAvg = 0.0, poseDeltaMetersMax = 0.0;
         double poseDeltaDegreesMax = 0.0;
         double trajectoryLengthMeters = 0.0;

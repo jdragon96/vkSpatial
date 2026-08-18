@@ -211,9 +211,12 @@ namespace Pipeline {
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return res;
         if (!sourceNormals.empty() && sourceNormals.size() != src.size()) return res;
 
-        Eigen::Vector3f c = Eigen::Vector3f::Zero();
-        for (const auto &q: tgt.points) c += q;
-        c /= float(tgt.points.size());
+        // Accumulated in double: this centroid shifts every point before the residuals are
+        // quantised to fixed point, so a last-bit change in it flips a share of the contributions.
+        // In float, summing 100k+ points makes the result depend on their order.
+        Eigen::Vector3d centroidSum = Eigen::Vector3d::Zero();
+        for (const auto &q: tgt.points) centroidSum += q.cast<double>();
+        const Eigen::Vector3f c = (centroidSum / double(tgt.points.size())).cast<float>();
         Eigen::Matrix4f Tc = Eigen::Matrix4f::Identity();
         Tc.block<3, 1>(0, 3) = -c; // shift world->centred
         Eigen::Matrix4f TcInv = Eigen::Matrix4f::Identity();

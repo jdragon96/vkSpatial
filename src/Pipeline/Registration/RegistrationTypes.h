@@ -3,6 +3,7 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <vector>
@@ -55,6 +56,15 @@ namespace Engine::Registration {
         float convEps = 1e-6f;
         float huberScale = 0.05f;               // robust-weight knee (world units; caller sets ~voxel)
         float normalCompatibilityCosine = 0.5f; // reject correspondence if sourceN·targetN < this (~60deg)
+        // Physical single-step bound (world units): reject a solve whose translation from the prior
+        // exceeds this. 0 (default) = off, the historical behaviour. The fitness gate cannot catch
+        // every mis-convergence -- on the 477-frame capture/ recording a diverged solve claimed a
+        // 0.225 m single-frame step at fitness 0.571, sailed past the 0.4 fitness gate, and its
+        // fused data corrupted the map for every frame after. A 30 fps hand-held camera moves well
+        // under 0.05 m per frame, so a larger claimed step is wrong by physics no matter how many
+        // correspondences endorse it. Trackers default this to kDefaultTrackerMaxStepMeters below;
+        // a relocalizing caller that legitimately expects large jumps sets it high or 0.
+        float maxStepMeters = 0.0f;
         // Coarse-to-fine correspondence-distance annealing. 0 (default) => OFF: every iteration uses
         // the fixed maxCorrDist above, unchanged pre-Task-5 behaviour. When > 0 (and < maxCorrDist),
         // the per-iteration DISTANCE FILTER shrinks geometrically from maxCorrDist (widest, iter 0 --
@@ -64,6 +74,12 @@ namespace Engine::Registration {
         // grid, so the existing per-solve hoist stays intact on both GPU and CPU.
         float minCorrespondenceDistance = 0.0f;
     };
+
+    // The trackers' default for RegistrationParam::maxStepMeters. Not 0.05 (the physical bound the
+    // stats comments cite) but above it, so the gate only fires on solves that are clearly wrong --
+    // a brisk hand-held jerk at 30 fps stays under this; the measured mis-convergences it exists to
+    // stop claimed 0.09-0.23 m.
+    inline constexpr float kDefaultTrackerMaxStepMeters = 0.08f;
 
     // Per-iteration coarse-to-fine schedule, shared verbatim by GpuPointToPlaneIcp::Solve (GPU) and
     // AlignPointToPlaneIcp (CPU) so both trackers anneal identically. `iter` in [0, params.maxIters).
@@ -99,5 +115,37 @@ namespace Engine::Registration {
     struct PointCloud {
         std::vector<Eigen::Vector3f> points, normals;
     };
+
+    // Put a target cloud into a canonical (lexicographic) order, so an ICP solve depends on the SET
+    // of target points and not on the order they arrived in.
+    //
+    // The order really does vary: a target built from ModelSnapshot::entries inherits the TSDF
+    // compaction kernel's output order, and that kernel appends via `atomicAdd(g_count, 1u)` -- i.e.
+    // thread-completion order, different on every run. Two things then leak that order into the
+    // result. Solve() sums the target centroid to shift into the centred frame, and float addition is
+    // not associative, so a 100k-point centroid moves in its last bits; every residual is then
+    // quantised through `int(round(x * SCALE))`, so a last-bit shift flips a share of the fixed-point
+    // contributions. And LocalGrid::Nearest breaks exact distance ties by whichever candidate it
+    // visited first. Neither is large per frame, but each frame's pose seeds the next frame's map,
+    // which is the next frame's alignment target -- so it compounds. Sorting removes both.
+    inline void SortTargetIntoCanonicalOrder(PointCloud &target) {
+        const std::size_t n = target.points.size();
+        if (target.normals.size() != n) return; // malformed; Solve rejects it anyway
+        std::vector<std::size_t> order(n);
+        for (std::size_t i = 0; i < n; ++i) order[i] = i;
+        std::sort(order.begin(), order.end(), [&target](std::size_t a, std::size_t b) {
+            const Eigen::Vector3f &p = target.points[a], &q = target.points[b];
+            if (p.x() != q.x()) return p.x() < q.x();
+            if (p.y() != q.y()) return p.y() < q.y();
+            return p.z() < q.z();
+        });
+        std::vector<Eigen::Vector3f> sortedPoints(n), sortedNormals(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            sortedPoints[i] = target.points[order[i]];
+            sortedNormals[i] = target.normals[order[i]];
+        }
+        target.points.swap(sortedPoints);
+        target.normals.swap(sortedNormals);
+    }
 
 } // namespace Engine::Registration

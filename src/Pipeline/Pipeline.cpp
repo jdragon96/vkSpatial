@@ -41,6 +41,7 @@ namespace Pipeline {
     void Pipeline::Stop() {
         m_comm->capturedFrames.Close();
         m_comm->trackedFrames.Close();
+        m_comm->handshake.Close(); // release a registration thread parked in WaitForDrain
         m_reconstruction->Stop();
         m_registration->Stop();
         m_integration->Stop();
@@ -73,6 +74,8 @@ namespace Pipeline {
         s.rejectedNoLocalTarget = m_registration->RejectedNoLocalTarget();
         s.rejectedTooFewInliers = m_registration->RejectedTooFewInliers();
         s.rejectedLowOverlap = m_registration->RejectedLowOverlap();
+        s.rejectedImplausibleMotion = m_registration->RejectedImplausibleMotion();
+        s.skippedFusions = m_registration->SkippedFusions();
         s.poseDeltaMetersAvg = m_registration->PoseDeltaMetersAvg();
         s.poseDeltaMetersMax = m_registration->PoseDeltaMetersMax();
         s.poseDeltaDegreesMax = m_registration->PoseDeltaDegreesMax();

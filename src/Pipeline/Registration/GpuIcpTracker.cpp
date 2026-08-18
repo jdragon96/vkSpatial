@@ -30,6 +30,8 @@ namespace Pipeline {
         // minInliers floor lets through. Swept on a 477-frame D435 capture (map voxel 0.05):
         // 0.2 -> 166k voxels, 0.4 -> 50k, 0.6 -> 67k, against a 49k identity reference.
         if (params.minFitness <= 0.0f) params.minFitness = 0.4f;
+        if (params.maxStepMeters <= 0.0f)
+            params.maxStepMeters = Engine::Registration::kDefaultTrackerMaxStepMeters;
         if (model->voxel > 0.0f) {
             params.maxCorrDist = 2.0f * model->voxel;
             params.huberScale = model->voxel;
@@ -52,9 +54,27 @@ namespace Pipeline {
             r.failure = ETrackFailure::NoLocalTarget;
             return r; // nothing local to align to -> keep prior
         }
+        SortTargetIntoCanonicalOrder(tgt);
 
         const Engine::Registration::RegistrationResult icp =
                 m_gpu->Solve(frame.pts, frame.nrm, tgt, priorPose.matrix(), params);
+
+        // Physical step gate, checked BEFORE the fitness verdict: a solve that moved further from
+        // the prior than a hand-held camera can in one frame is a mis-convergence regardless of how
+        // many correspondences endorse it (see RegistrationParam::maxStepMeters -- the measured
+        // failure passed the fitness gate at 0.571). The prior is handed back untouched.
+        const float stepFromPriorMeters =
+                (Eigen::Isometry3f(icp.T).translation() - priorPose.translation()).norm();
+        if (params.maxStepMeters > 0.0f && stepFromPriorMeters > params.maxStepMeters) {
+            r.pose = priorPose;
+            r.fitness = icp.fitness;
+            r.inliers = icp.numInliers;
+            r.rmse = icp.rmse;
+            r.valid = false;
+            r.failure = ETrackFailure::ImplausibleMotion;
+            return r;
+        }
+
         r.pose = Eigen::Isometry3f(icp.T);
         r.fitness = icp.fitness;
         r.inliers = icp.numInliers;
