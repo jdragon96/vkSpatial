@@ -72,12 +72,12 @@ $$tolerance = \tau(z)=\max\bigl(\text{minimumDepthJump},\ \text{relativeDepthJum
 - 위 값에 따라
   - minimumDepthJump: 0.05(m)
   - relativeDepthJump: 0.2(m)
-- 상대항 근거: 스테레오 오차 $\varepsilon_z = \frac{z^2}{f B}\varepsilon_d$ (Keselman et al. eq. 2). $z=fB/d$의 $d$ 미분. $f$ 초점거리(px), $B$ baseline(m), $\varepsilon_d$ 매칭 불확실도(px).
-- 고정 임계는 근거리 과잉 거부, 원거리 과소 거부. $\tau$의 선형항은 2차 법칙의 값싼 근사이며, `[F2]`가 2차항을 직접 쓴다.
-- $\varepsilon_d$ 상수 가정은 active 시스템의 원거리에서 깨진다. 프로젝터 밝기 $1/z^2$ 감쇠 → SNR 저하 → 실제 오차는 $z^2$보다 빠르게 증가 (Keselman et al. §2.1 각주).
-- `capture/` 검증: 13,684개 평탄 윈도, $\varepsilon_d$ = 0.0198–0.0216 px (0.5–1.6 m, 편차 8%). 0.26–1.35 m만 커버하며 원거리 미검증.
-  - $f$: 초점 거리 (pixel, 383)
-  - $b$: baseline - 좌우 적외선 카메라 간 거리 (m, 0.05)
+- 스테레오 오차 $\varepsilon_z = \frac{z^2}{f B}\varepsilon_d$ (Keselman et al. eq. 2).
+  - $\varepsilon_d$ 상수 가정은 active 시스템의 원거리에서 깨진다. 프로젝터 밝기 $1/z^2$ 감쇠 → SNR 저하 → 실제 오차는 $z^2$보다 빠르게 증가 (Keselman et al. §2.1 각주).
+  - $z=\frac{fB}{d}$의 $d$ 미분.
+    - $f$ 초점거리(px)
+    - $B$ baseline(m)
+    - $\varepsilon_d$ 매칭 불확실도(px)
 
 ### [H1] PrefilterDepth
 
@@ -205,6 +205,22 @@ return clamp(g_bandSigmaMultiplier * sigma, g_bandMinimumVoxels * voxelSize, tru
 - 하한 $m v_s$ ($m{=}2$) 필수: 근거리 $3\sigma_z\approx4\,\text{mm}<v_s$ → 밴드 < 격자 → 표면 소실.
 - 상한 $\delta$ 필수: 정규화 계약(아래).
 
+**클램프 구간 (voxel 0.01, $\delta$ 0.03, $N=3$)**
+
+| $z$ | $3\sigma_z$ | 밴드 | 상태 |
+|---|---|---|---|
+| 1.0 m | 5.7 mm | 20.0 mm | 하한 클램프 |
+| 2.0 m | 18.2 mm | 20.0 mm | 하한 클램프 |
+| 2.5 m | 28.7 mm | 28.7 mm | 모델 사용 |
+| 3.0 m | 42.1 mm | 30.0 mm | 상한 클램프 |
+| 4.0 m | 77.5 mm | 30.0 mm | 상한 클램프 |
+
+- 모델이 실제로 참조되는 구간은 **2.10–2.55 m**뿐. 그 밖은 상수 밴드.
+- 따라서 측정된 −22.3%는 σ 모델이 아니라 **하한**이 만든 것. `capture/`는 대부분 1.5 m 이내 → 밴드 30 → 20 mm.
+- 현 설정의 실효 동작 = 2단 계단(근거리 2 voxel, 원거리 $\delta$). σ 모델은 전환점만 결정.
+- 모델을 실제로 활용하려면 $\delta$를 원거리 요구에 맞춰 상향. 그래야 상한 클램프가 풀린다.
+- 부수 효과: $\varepsilon_d$ 상수 가정이 깨지는 원거리는 상한 클램프 구간이므로 모델을 쓰지 않는다. 미검증 + 모델 사용 구간은 1.35–2.55 m로 한정되고 출력은 20–30 mm 유계.
+
 ### MarchBand / SignedDistance / BandMembership
 
 $$x_t = P + \hat m\,(t\,v_s),\qquad t\in[-T,T],\quad T=\lceil B/v_s\rceil+1$$
@@ -286,7 +302,7 @@ atomicAdd(g_hash[slot].sumNx, int(unitNormal.x * w * TSDF_SCALE));
 
 ## 참고
 
-- Keselman et al. (Intel), *Intel RealSense Stereoscopic Depth Cameras*, arXiv:1705.05548 §2.1 — eq. 1 $z=fB/d$, eq. 2 $\varepsilon_z=z^2\varepsilon_d/(fB)$. D400 계열 1차 출처
+- Keselman et al. (Intel), _Intel RealSense Stereoscopic Depth Cameras_, arXiv:1705.05548 §2.1 — eq. 1 $z=fB/d$, eq. 2 $\varepsilon_z=z^2\varepsilon_d/(fB)$. D400 계열 1차 출처
 - Nguyen, Izadi & Lovell, 3DIMPVT 2012 — $\sigma_z$ 모델, 필터·ICP 가중·트런케이션 적용
 - Curless & Levoy, SIGGRAPH 1996 — space carving
 - Oleynikova et al., _Voxblox_, IROS 2017 — eq. 5 뒤쪽 감쇠 ($\delta=4v$, $\epsilon=v$)
