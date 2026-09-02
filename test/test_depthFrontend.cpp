@@ -440,3 +440,294 @@ TEST(DepthFrontend, ThePrefilterIsOffByDefaultAndByDefinitionAtWindowOne) {
         EXPECT_EQ(byDefault.nrm[i], one.nrm[i]) << i;
     }
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+// Confidence gates. Every one defaults off, so the first thing each fixture proves is that the
+// gate it exercises is the reason a point disappeared -- not the depth-jump guard that was
+// already there.
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+// Stereo depth error grows as z^2/(f*baseline), so beyond a few metres a D435 reports surface that
+// is not there. The far gate must cut it, and must not touch a plane inside the band.
+TEST(DepthFrontend, TheFarRangeGateDropsSurfaceBeyondTheLimit) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFilterOptions gate;
+    gate.maximumDepthMeters = 4.0f;
+
+    DepthFrame beyond;
+    beyond.depth.assign(std::size_t(k.width) * k.height, 6.0f);
+    EXPECT_EQ(BackprojectDepth(beyond, k, gate).pts.size(), 0u);
+
+    DepthFrame within;
+    within.depth.assign(std::size_t(k.width) * k.height, 1.5f);
+    EXPECT_EQ(BackprojectDepth(within, k, gate).pts.size(),
+              std::size_t(k.width - 1) * (k.height - 1));
+}
+
+// Below its minimum stereo range the sensor reports depth it cannot have measured.
+TEST(DepthFrontend, TheNearRangeGateDropsSurfaceInsideTheLimit) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFilterOptions gate;
+    gate.minimumDepthMeters = 0.3f;
+
+    DepthFrame tooNear;
+    tooNear.depth.assign(std::size_t(k.width) * k.height, 0.15f);
+    EXPECT_EQ(BackprojectDepth(tooNear, k, gate).pts.size(), 0u);
+
+    DepthFrame within;
+    within.depth.assign(std::size_t(k.width) * k.height, 1.5f);
+    EXPECT_EQ(BackprojectDepth(within, k, gate).pts.size(),
+              std::size_t(k.width - 1) * (k.height - 1));
+}
+
+// A stereo sensor scatters small islands of valid pixels through the invalid regions it could not
+// match. The depth-jump guard does not catch them: an island's interior pixel has a right and a
+// down neighbour that agree with it perfectly, so it emits a point that describes nothing. What
+// separates it from real surface is how much of its neighbourhood exists at all.
+TEST(DepthFrontend, TheNeighbourSupportGateDropsAnIsolatedIsland) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFrame island;
+    island.depth.assign(std::size_t(k.width) * k.height, 0.0f);
+    for (int v = 10; v < 12; ++v)
+        for (int u = 10; u < 12; ++u) island.depth[std::size_t(v) * k.width + u] = 1.5f;
+
+    // Without the gate the island's top-left pixel survives -- this is the point the gate exists
+    // to remove, and asserting it first is what proves the gate is doing the removing.
+    ASSERT_EQ(BackprojectDepth(island, k, DepthFilterOptions{}).pts.size(), 1u);
+
+    DepthFilterOptions gate;
+    gate.minimumValidNeighbours = 6;
+    EXPECT_EQ(BackprojectDepth(island, k, gate).pts.size(), 0u);
+}
+
+// The same gate must leave real surface alone. Only the one-pixel image border falls short of a
+// full neighbourhood, so a plane keeps its whole interior.
+TEST(DepthFrontend, TheNeighbourSupportGateKeepsAPlanesInterior) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFrame plane;
+    plane.depth.assign(std::size_t(k.width) * k.height, 1.5f);
+
+    DepthFilterOptions gate;
+    gate.minimumValidNeighbours = 6;
+    // BackprojectDepth walks [0,W-1) x [0,H-1); of those, the pixels with all eight neighbours
+    // inside the image are [1,W-2] x [1,H-2].
+    EXPECT_EQ(BackprojectDepth(plane, k, gate).pts.size(),
+              std::size_t(k.width - 2) * (k.height - 2));
+}
+
+// Support is not mere validity. A 2x2 patch of near surface floating on a far wall is the flying
+// blob at an object boundary: its top-left pixel has a right and a down neighbour that agree with
+// it, so the depth-jump guard emits it, and all eight of its neighbours are valid, so a gate that
+// counted validity alone would read 8 and admit it too. Only three of those eight are on its own
+// surface. Counting same-surface neighbours is the whole difference, and this fixture is the only
+// one that can tell the two implementations apart.
+TEST(DepthFrontend, NeighbourSupportCountsOnlyNeighboursOnTheSameSurface) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFrame blob;
+    blob.depth.assign(std::size_t(k.width) * k.height, 3.0f); // a far wall everywhere
+    for (int v = 15; v < 17; ++v)
+        for (int u = 15; u < 17; ++u) blob.depth[std::size_t(v) * k.width + u] = 1.0f;
+
+    auto nearPointCount = [](const Pipeline::Frame &f) {
+        return std::count_if(f.pts.begin(), f.pts.end(),
+                             [](const Eigen::Vector3f &p) { return p.z() < 2.0f; });
+    };
+
+    // Ungated, the blob emits -- otherwise the gate below would have nothing to remove and the
+    // test would pass for the wrong reason.
+    ASSERT_GT(nearPointCount(BackprojectDepth(blob, k, DepthFilterOptions{})), 0);
+
+    DepthFilterOptions gate;
+    gate.minimumValidNeighbours = 6;
+    EXPECT_EQ(nearPointCount(BackprojectDepth(blob, k, gate)), 0)
+            << "a validity-only count reads 8 here and wrongly admits the blob";
+}
+
+namespace {
+    // A plane tilted `degrees` away from facing the camera, at 1.5 m on the optical axis. Depth is
+    // solved per ray: for plane normal m through X0, z = (m . X0) / (m . r) along ray r.
+    DepthFrame TiltedPlane(const CameraIntrinsics &k, float degrees) {
+        const float radians = degrees * float(M_PI) / 180.0f;
+        const Eigen::Vector3f planeNormal(std::sin(radians), 0.0f, -std::cos(radians));
+        const Eigen::Vector3f onPlane(0.0f, 0.0f, 1.5f);
+        const float numerator = planeNormal.dot(onPlane);
+
+        DepthFrame frame;
+        frame.depth.assign(std::size_t(k.width) * k.height, 0.0f);
+        for (int v = 0; v < k.height; ++v)
+            for (int u = 0; u < k.width; ++u) {
+                const Eigen::Vector3f ray((u - k.cx) / k.fx, (v - k.cy) / k.fy, 1.0f);
+                const float denominator = planeNormal.dot(ray);
+                const float z = numerator / denominator;
+                if (z > 0.0f) frame.depth[std::size_t(v) * k.width + u] = z;
+            }
+        return frame;
+    }
+} // namespace
+
+// Stereo triangulation degrades as the surface turns edge-on, and point-to-plane fusion depends on
+// the normal twice -- it is the SDF value AND the direction the truncation band is marched along.
+// A grazing surface is therefore wrong in a way the depth-jump guard cannot see: the plane is
+// perfectly continuous, it is just not measurable.
+TEST(DepthFrontend, TheIncidenceGateDropsAGrazingSurface) {
+    const CameraIntrinsics k = MakeIntrinsics(16, 16);
+    const DepthFrame grazing = TiltedPlane(k, 80.0f);
+
+    // Ungated it survives whole -- the surface is continuous, so nothing else removes it.
+    ASSERT_GT(BackprojectDepth(grazing, k, DepthFilterOptions{}).pts.size(), 0u);
+
+    DepthFilterOptions gate;
+    gate.maximumIncidenceDegrees = 70.0f;
+    EXPECT_EQ(BackprojectDepth(grazing, k, gate).pts.size(), 0u);
+}
+
+// The same gate must leave a surface the sensor can actually measure alone.
+TEST(DepthFrontend, TheIncidenceGateKeepsASurfaceFacingTheCamera) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFrame facing;
+    facing.depth.assign(std::size_t(k.width) * k.height, 1.5f);
+
+    DepthFilterOptions gate;
+    gate.maximumIncidenceDegrees = 70.0f;
+    EXPECT_EQ(BackprojectDepth(facing, k, gate).pts.size(),
+              std::size_t(k.width - 1) * (k.height - 1));
+}
+
+// Incidence is measured against the pixel's own view ray, not against the optical axis. On a
+// fronto-parallel wall every normal is (0,0,-1), so a gate reading n.z() alone sees zero incidence
+// everywhere and drops nothing -- yet at a 45 degree ray angle that wall genuinely is 54.7 degrees
+// off the ray. This fixture is what separates the two.
+TEST(DepthFrontend, IncidenceIsMeasuredAgainstTheViewRayNotTheOpticalAxis) {
+    CameraIntrinsics k = MakeIntrinsics(128, 128);
+    k.fx = k.fy = 64.0f; // half-angle atan(64/64) = 45 degrees at the image edge
+    DepthFrame wall;
+    wall.depth.assign(std::size_t(k.width) * k.height, 1.5f);
+
+    DepthFilterOptions gate;
+    gate.maximumIncidenceDegrees = 40.0f;
+    const Pipeline::Frame out = BackprojectDepth(wall, k, gate);
+
+    EXPECT_GT(out.pts.size(), 0u) << "the centre of the wall is square to its ray and must survive";
+    EXPECT_LT(out.pts.size(), std::size_t(k.width - 1) * (k.height - 1))
+            << "a gate reading n.z() alone keeps the whole wall";
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+// Gate counters. A silently dropped point is indistinguishable from surface the sensor never saw,
+// so every gate reports what it removed, split by cause. Each fixture asserts its own counter AND
+// that the other two stayed at zero -- checking a sum would pass an implementation that charged a
+// rejection to the wrong gate, which is precisely the mistake that makes the counters useless.
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+TEST(DepthFrontend, TheRangeGateCountsEveryPixelItRejected) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFrame beyond;
+    beyond.depth.assign(std::size_t(k.width) * k.height, 6.0f);
+
+    DepthFilterOptions gate;
+    gate.maximumDepthMeters = 4.0f;
+    Pipeline::DepthFilterStats stats;
+    BackprojectDepth(beyond, k, gate, &stats);
+
+    EXPECT_EQ(stats.rejectedByRange.load(), std::uint64_t(k.width) * k.height);
+    EXPECT_EQ(stats.rejectedByNeighbourSupport.load(), 0u);
+    EXPECT_EQ(stats.rejectedByIncidence.load(), 0u);
+    EXPECT_EQ(stats.emittedPoints.load(), 0u);
+}
+
+TEST(DepthFrontend, TheNeighbourSupportGateCountsEveryPointItRejected) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFrame island;
+    island.depth.assign(std::size_t(k.width) * k.height, 0.0f);
+    for (int v = 10; v < 12; ++v)
+        for (int u = 10; u < 12; ++u) island.depth[std::size_t(v) * k.width + u] = 1.5f;
+
+    DepthFilterOptions gate;
+    gate.minimumValidNeighbours = 6;
+    Pipeline::DepthFilterStats stats;
+    BackprojectDepth(island, k, gate, &stats);
+
+    EXPECT_EQ(stats.rejectedByNeighbourSupport.load(), 1u);
+    EXPECT_EQ(stats.rejectedByRange.load(), 0u);
+    EXPECT_EQ(stats.rejectedByIncidence.load(), 0u);
+    EXPECT_EQ(stats.emittedPoints.load(), 0u);
+}
+
+TEST(DepthFrontend, TheIncidenceGateCountsEveryPointItRejected) {
+    const CameraIntrinsics k = MakeIntrinsics(16, 16);
+    const DepthFrame grazing = TiltedPlane(k, 80.0f);
+    const std::size_t ungated = BackprojectDepth(grazing, k, DepthFilterOptions{}).pts.size();
+    ASSERT_GT(ungated, 0u);
+
+    DepthFilterOptions gate;
+    gate.maximumIncidenceDegrees = 70.0f;
+    Pipeline::DepthFilterStats stats;
+    BackprojectDepth(grazing, k, gate, &stats);
+
+    EXPECT_EQ(stats.rejectedByIncidence.load(), std::uint64_t(ungated));
+    EXPECT_EQ(stats.rejectedByRange.load(), 0u);
+    EXPECT_EQ(stats.rejectedByNeighbourSupport.load(), 0u);
+    EXPECT_EQ(stats.emittedPoints.load(), 0u);
+}
+
+TEST(DepthFrontend, EmittedPointsAreCountedWhenNoGateIsOn) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFrame plane;
+    plane.depth.assign(std::size_t(k.width) * k.height, 1.5f);
+
+    Pipeline::DepthFilterStats stats;
+    const Pipeline::Frame out = BackprojectDepth(plane, k, DepthFilterOptions{}, &stats);
+
+    EXPECT_EQ(stats.emittedPoints.load(), std::uint64_t(out.pts.size()));
+    EXPECT_EQ(stats.rejectedByRange.load(), 0u);
+    EXPECT_EQ(stats.rejectedByNeighbourSupport.load(), 0u);
+    EXPECT_EQ(stats.rejectedByIncidence.load(), 0u);
+}
+
+// The counters have to survive the source, not just one call: a caller watches them while
+// acquisition runs, so they accumulate across frames rather than resetting per Next().
+TEST(DepthFrontend, TheSourceAccumulatesGateCountsAcrossFrames) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFilterOptions gate;
+    gate.maximumDepthMeters = 0.5f; // FakeDepthProvider emits ~1.0 m, so every pixel is rejected
+
+    auto stats = std::make_shared<Pipeline::DepthFilterStats>();
+    Pipeline::DepthCameraFrameSource source(std::make_unique<FakeDepthProvider>(3, k), gate, stats);
+
+    Pipeline::Frame frame;
+    int grabbed = 0;
+    while (source.Next(frame)) ++grabbed;
+
+    ASSERT_EQ(grabbed, 3);
+    EXPECT_EQ(stats->rejectedByRange.load(), std::uint64_t(k.width) * k.height * 3);
+    EXPECT_EQ(stats->emittedPoints.load(), 0u);
+}
+
+// Exposing a knob must not change what existing callers get. Each fixture here is one a gate would
+// remove, so a non-zero default on any of the three shows up as a missing point cloud.
+TEST(DepthFrontend, TheConfidenceGatesAreAllOffByDefault) {
+    const CameraIntrinsics wide = MakeIntrinsics(32, 32);
+    DepthFrame farPlane;
+    farPlane.depth.assign(std::size_t(wide.width) * wide.height, 6.0f);
+    EXPECT_EQ(BackprojectDepth(farPlane, wide, DepthFilterOptions{}).pts.size(),
+              std::size_t(wide.width - 1) * (wide.height - 1))
+            << "a range gate is on by default";
+
+    DepthFrame nearPlane;
+    nearPlane.depth.assign(std::size_t(wide.width) * wide.height, 0.10f);
+    EXPECT_EQ(BackprojectDepth(nearPlane, wide, DepthFilterOptions{}).pts.size(),
+              std::size_t(wide.width - 1) * (wide.height - 1))
+            << "a near range gate is on by default";
+
+    DepthFrame island;
+    island.depth.assign(std::size_t(wide.width) * wide.height, 0.0f);
+    for (int v = 10; v < 12; ++v)
+        for (int u = 10; u < 12; ++u) island.depth[std::size_t(v) * wide.width + u] = 1.5f;
+    EXPECT_EQ(BackprojectDepth(island, wide, DepthFilterOptions{}).pts.size(), 1u)
+            << "a neighbour-support gate is on by default";
+
+    const CameraIntrinsics small = MakeIntrinsics(16, 16);
+    EXPECT_EQ(BackprojectDepth(TiltedPlane(small, 80.0f), small, DepthFilterOptions{}).pts.size(),
+              std::size_t(small.width - 1) * (small.height - 1))
+            << "an incidence gate is on by default";
+}

@@ -5,6 +5,7 @@
 #include <Eigen/Core>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -86,6 +87,41 @@ namespace Pipeline {
         // second threshold: "average only neighbours on the same surface" and "do not difference
         // across a step" are the same rule, and a plain box mean would undo the flying-pixel guard.
         int prefilterWindow = 0;
+
+        // Range gate, in metres; 0 disables an end. A stereo sensor reports depth outside the range
+        // it can actually measure -- below its minimum the disparity search has nothing to match,
+        // and above it the z^2/(f*baseline) error growth turns a reading into a guess. Neither end
+        // announces itself: the pixel arrives with a value like any other.
+        //
+        // This duplicates rs2::threshold_filter on purpose. The recorded frames in capture/ are raw
+        // Z16 taken before any SDK filter ran, so a gate that lives only in the device cannot be
+        // measured on a replay -- and a replay is where every A/B in this repo is taken.
+        float minimumDepthMeters = 0.0f;
+        float maximumDepthMeters = 0.0f;
+
+        // How many of the eight neighbours must be valid AND on the same surface for a pixel to be
+        // emitted. 0 (default) disables it; 8 keeps only pixels with a complete neighbourhood.
+        //
+        // This is the closest thing a D400 gives to a per-pixel confidence. The device publishes no
+        // confidence channel (that is L515), so what is left is how the pixel sits in its
+        // neighbourhood: real surface arrives in sheets, and a mismatch arrives as a small island
+        // in a field of pixels the matcher rejected. The depth-jump guard cannot see the
+        // difference, because it looks at two neighbours and an island's interior agrees with both.
+        //
+        // "Same surface" reuses the jump tolerance rather than counting mere validity: a neighbour
+        // across a step belongs to another surface, and counting it would admit the flying pixels
+        // at every object boundary -- the ones this is for.
+        int minimumValidNeighbours = 0;
+
+        // Reject a point whose surface is turned further than this from its own view ray, in
+        // degrees. 0 (default) disables it; 90 would admit everything.
+        //
+        // Stereo triangulation degrades as a surface turns edge-on -- the same disparity error
+        // displaces the point further along the ray -- and the reading stays perfectly continuous
+        // while it happens, so no discontinuity guard can see it. Point-to-plane fusion is the part
+        // that pays: the normal is both the SDF value and the direction the truncation band is
+        // marched along, so a grazing patch mis-values AND mis-places what it writes.
+        float maximumIncidenceDegrees = 0.0f;
     };
 
     // Discontinuity-aware square mean over `depth`: each pixel averages only the neighbours that are
@@ -123,10 +159,58 @@ namespace Pipeline {
         return out;
     }
 
+    // What the confidence gates removed, split by cause, plus what survived.
+    //
+    // The gates are the only place in the depth front end that discards measurements silently: a
+    // point that was never emitted looks exactly like surface the sensor never saw, so a gate set
+    // too tight presents as "the reconstruction is a bit thin" and nothing else. Counting per cause
+    // rather than in total is what makes it diagnosable -- the three gates fail for opposite
+    // reasons and want opposite corrections.
+    //
+    // rejectedByRange counts PIXELS (the gate runs before back-projection); the other two count
+    // candidate POINTS, which the depth-jump guard has already thinned. The three are not
+    // populations of the same thing and must not be summed.
+    //
+    // Atomic because a caller may read them from its own thread while acquisition runs.
+    struct DepthFilterStats {
+        std::atomic<std::uint64_t> emittedPoints{0};
+        std::atomic<std::uint64_t> rejectedByRange{0};
+        std::atomic<std::uint64_t> rejectedByNeighbourSupport{0};
+        std::atomic<std::uint64_t> rejectedByIncidence{0};
+    };
+
+    // How many of the eight neighbours of (u,v) are valid AND within `tolerance` of its depth --
+    // the neighbourhood support behind DepthFilterOptions::minimumValidNeighbours.
+    //
+    // A neighbour outside the image does not exist and is not counted, so the one-pixel image
+    // border can never reach eight. That is deliberate: a pixel whose neighbourhood leaves the
+    // sensor is exactly as unsupported as one whose neighbourhood was never matched.
+    inline int CountSameSurfaceNeighbours(const std::vector<float> &depth,
+                                          const std::vector<char> &valid, int width, int height,
+                                          int u, int v, float tolerance) {
+        const float z = depth[std::size_t(v) * width + u];
+        int count = 0;
+        for (int dv = -1; dv <= 1; ++dv) {
+            const int vv = v + dv;
+            if (vv < 0 || vv >= height) continue;
+            for (int du = -1; du <= 1; ++du) {
+                if (du == 0 && dv == 0) continue;
+                const int uu = u + du;
+                if (uu < 0 || uu >= width) continue;
+                const std::size_t j = std::size_t(vv) * width + uu;
+                if (!valid[j]) continue;
+                if (std::abs(depth[j] - z) > tolerance) continue;
+                ++count;
+            }
+        }
+        return count;
+    }
+
     // Back-project a depth image to camera-frame points + normals (normals from the organized-grid
     // neighbours, oriented toward the camera). Reusable across any depth device.
     inline Frame BackprojectDepth(const DepthFrame &d, const CameraIntrinsics &k,
-                                   const DepthFilterOptions &filter = {}) {
+                                  const DepthFilterOptions &filter = {},
+                                  DepthFilterStats *stats = nullptr) {
         Frame fr;
         const int W = k.width, H = k.height;
         if (W <= 0 || H <= 0 || int(d.depth.size()) < W * H) return fr;
@@ -141,10 +225,25 @@ namespace Pipeline {
             for (int u = 0; u < W; ++u) {
                 const float z = depth[std::size_t(v) * W + u];
                 if (z <= 0.0f) continue;
+                // Out of range makes the pixel INVALID rather than merely unemitted: a reading the
+                // sensor could not have measured must not be a neighbour either, or it still sets
+                // the normal of the pixel next to it.
+                if ((filter.minimumDepthMeters > 0.0f && z < filter.minimumDepthMeters) ||
+                    (filter.maximumDepthMeters > 0.0f && z > filter.maximumDepthMeters)) {
+                    if (stats) stats->rejectedByRange.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
                 grid[std::size_t(v) * W + u] =
                         Eigen::Vector3f((u - k.cx) / k.fx * z, (v - k.cy) / k.fy * z, z);
                 valid[std::size_t(v) * W + u] = 1;
             }
+        // Hoisted: the gate is a comparison against one cosine, and computing it per pixel would
+        // put a trigonometric call in the inner loop of every frame for a value that never changes.
+        const float minimumIncidenceCosine =
+                filter.maximumIncidenceDegrees > 0.0f
+                        ? std::cos(filter.maximumIncidenceDegrees * float(M_PI) / 180.0f)
+                        : 0.0f;
+
         fr.pts.reserve(std::size_t(W) * H);
         fr.nrm.reserve(std::size_t(W) * H);
         for (int v = 0; v + 1 < H; ++v)
@@ -160,6 +259,16 @@ namespace Pipeline {
                 if (std::abs(grid[i + 1].z() - z) > maxJump) continue;
                 if (std::abs(grid[i + W].z() - z) > maxJump) continue;
 
+                // Neighbourhood support: the two neighbours above agree with this pixel, which is
+                // just as true of a mismatched island as of real surface. How much of the
+                // neighbourhood exists at all is what separates them.
+                if (filter.minimumValidNeighbours > 0 &&
+                    CountSameSurfaceNeighbours(depth, valid, W, H, u, v, maxJump) <
+                            filter.minimumValidNeighbours) {
+                    if (stats) stats->rejectedByNeighbourSupport.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+
                 Eigen::Vector3f n = (grid[i + 1] - grid[i]).cross(grid[i + W] - grid[i]);
                 if (n.norm() < 1e-9f) continue;
                 n.normalize();
@@ -170,9 +279,21 @@ namespace Pipeline {
                 // inverts from roughly 40 degrees of incidence outward. An inverted normal flips
                 // the sign of the TSDF update and of every point-to-plane ICP residual.
                 if (n.dot(grid[i]) > 0.0f) n = -n;
+
+                // Incidence against the pixel's OWN ray, for the same reason the orientation flip
+                // above uses it: on a wide field of view the optical axis is not the direction this
+                // pixel is looking. n is now camera-facing, so -n.rayDirection is cos(incidence)
+                // and falls toward 0 as the surface turns edge-on.
+                if (minimumIncidenceCosine > 0.0f &&
+                    -n.dot(grid[i].normalized()) < minimumIncidenceCosine) {
+                    if (stats) stats->rejectedByIncidence.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+
                 fr.pts.push_back(grid[i]);
                 fr.nrm.push_back(n);
             }
+        if (stats) stats->emittedPoints.fetch_add(fr.pts.size(), std::memory_order_relaxed);
         fr.cam = Eigen::Vector3f::Zero(); // camera at the origin of its own frame
         return fr;
     }
@@ -181,9 +302,14 @@ namespace Pipeline {
     public:
         // The filter options travel with the source, not with AcquisitionConfig: makeSource is a
         // caller-supplied lambda, so a tool opts in here without every config gaining a depth field.
+        //
+        // `stats` is shared rather than owned because the source is built inside makeSource, on the
+        // acquisition thread, and nothing hands it back -- a caller that wants to read the counters
+        // has to have created them before the pipeline existed. nullptr disables the counting.
         explicit DepthCameraFrameSource(std::unique_ptr<IDepthProvider> device,
-                                        DepthFilterOptions filter = {})
-            : m_device(std::move(device)), m_filter(filter) {}
+                                        DepthFilterOptions filter = {},
+                                        std::shared_ptr<DepthFilterStats> stats = nullptr)
+            : m_device(std::move(device)), m_filter(filter), m_stats(std::move(stats)) {}
 
         EAcquisitionType Type() const override { return EAcquisitionType::DepthCamera; }
         const char *Name() const override { return "depth-camera"; }
@@ -191,7 +317,7 @@ namespace Pipeline {
         bool Next(Frame &out) override {
             DepthFrame d;
             if (!m_device || !m_device->Grab(d)) return false;
-            out = BackprojectDepth(d, m_device->Intrinsics(), m_filter);
+            out = BackprojectDepth(d, m_device->Intrinsics(), m_filter, m_stats.get());
             return true;
         }
 
@@ -202,6 +328,7 @@ namespace Pipeline {
     private:
         std::unique_ptr<IDepthProvider> m_device;
         DepthFilterOptions m_filter;
+        std::shared_ptr<DepthFilterStats> m_stats;
     };
 
 } // namespace Pipeline

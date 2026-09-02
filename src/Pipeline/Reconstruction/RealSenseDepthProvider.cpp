@@ -5,10 +5,14 @@
 
 #include "Pipeline/Reconstruction/RealSenseDepthProvider.h"
 
+#include <librealsense2/rs_advanced_mode.hpp>
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -66,8 +70,33 @@ namespace Pipeline {
     void RealSenseDepthProvider::StartStream(int width, int height, int fps) {
         rs2::config config;
         config.enable_stream(RS2_STREAM_DEPTH, width, height, RS2_FORMAT_Z16, fps);
+
+        // Advanced-mode controls are written BEFORE the stream starts: the SDK documents them as
+        // set while not streaming, and resolve() reaches the device without opening it.
+        if (!m_options.advancedModeJsonPath.empty()) LoadAdvancedModeJson(config);
+
         const rs2::pipeline_profile profile = m_pipeline.start(config);
-        m_depthScale = profile.get_device().first<rs2::depth_sensor>().get_depth_scale();
+
+        rs2::depth_sensor sensor = profile.get_device().first<rs2::depth_sensor>();
+        // The preset goes on FIRST, and the depth scale is read after it. A visual preset may change
+        // RS2_OPTION_DEPTH_UNITS, so a scale read beforehand describes the previous configuration --
+        // and a wrong scale mis-sizes the entire reconstruction with no symptom, which is the reason
+        // this class reads the scale from the device at all.
+        if (m_options.highAccuracyPreset && sensor.supports(RS2_OPTION_VISUAL_PRESET))
+            sensor.set_option(RS2_OPTION_VISUAL_PRESET,
+                              float(RS2_RS400_VISUAL_PRESET_HIGH_ACCURACY));
+        m_depthScale = sensor.get_depth_scale();
+
+        m_useThresholdFilter =
+                m_options.minimumDepthMeters > 0.0f || m_options.maximumDepthMeters > 0.0f;
+        if (m_useThresholdFilter) {
+            // Each end is set only when asked for, so leaving one at 0 keeps the filter's own
+            // default for that end rather than clamping the stream to zero.
+            if (m_options.minimumDepthMeters > 0.0f)
+                m_thresholdFilter.set_option(RS2_OPTION_MIN_DISTANCE, m_options.minimumDepthMeters);
+            if (m_options.maximumDepthMeters > 0.0f)
+                m_thresholdFilter.set_option(RS2_OPTION_MAX_DISTANCE, m_options.maximumDepthMeters);
+        }
 
         const rs2_intrinsics intrinsics =
                 profile.get_stream(RS2_STREAM_DEPTH).as<rs2::video_stream_profile>().get_intrinsics();
@@ -79,7 +108,33 @@ namespace Pipeline {
     // D435 defaults: 640x480 depth @ 30 fps -- the highest depth mode BOTH USB 2.1 and USB 3.x
     // offer, and a hub or dock will give you USB 2.1. The depth scale comes from the device: it
     // varies by model and firmware, so hard-coding 0.001 would silently mis-scale everything.
-    RealSenseDepthProvider::RealSenseDepthProvider(int width, int height, int fps) {
+    // Reads the preset file and hands it to the device. Failing loudly matters more here than
+    // elsewhere: a preset that silently did not load leaves the camera on its previous settings,
+    // and the whole point of passing one is that the defaults were not good enough.
+    void RealSenseDepthProvider::LoadAdvancedModeJson(rs2::config &config) {
+        const std::string path = m_options.advancedModeJsonPath;
+        std::ifstream file(path);
+        if (!file)
+            throw std::runtime_error(
+                    "RealSenseDepthProvider::LoadAdvancedModeJson: could not open '" + path + "'");
+        const std::string json((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+
+        const rs2::pipeline_profile resolved = config.resolve(m_pipeline);
+        rs2::device device = resolved.get_device();
+        if (!device.is<rs400::advanced_mode>())
+            throw std::runtime_error("RealSenseDepthProvider::LoadAdvancedModeJson: this device "
+                                     "has no advanced mode, so '" +
+                                     path + "' cannot be applied");
+
+        rs400::advanced_mode advanced = device.as<rs400::advanced_mode>();
+        if (!advanced.is_enabled()) advanced.toggle_advanced_mode(true);
+        advanced.load_json(json);
+    }
+
+    RealSenseDepthProvider::RealSenseDepthProvider(int width, int height, int fps,
+                                                   RealSenseOptions options)
+        : m_options(std::move(options)) {
         try {
             StartStream(width, height, fps);
             return;
@@ -153,10 +208,14 @@ namespace Pipeline {
 
             // A frameset can arrive without a depth frame. get_data() on one returns null, and
             // dereferencing it segfaults -- inside a worker thread, where the process simply dies.
-            const rs2::depth_frame depth = frames.get_depth_frame();
+            rs2::depth_frame depth = frames.get_depth_frame();
             if (!depth)
                 throw std::runtime_error("RealSenseDepthProvider::Grab: the frameset carried no "
                                          "depth frame");
+
+            // Out-of-range pixels are zeroed at the device, so they never reach back-projection.
+            // The filter does not resample, so the size check below still describes this frame.
+            if (m_useThresholdFilter) depth = m_thresholdFilter.process(depth);
 
             // Size the read from the FRAME, never from the stored intrinsics. A device may
             // renegotiate its mode -- USB 2.1 bandwidth pressure is exactly when it does -- and
