@@ -38,6 +38,7 @@ TSDF::Integrate → kernel_AdvancedTSDF.integrate           per point
 ```
 
 기본값
+
 - on: `[H3]` `[F1]` `[F3]`=symmetric
 - off: `[D1]` `[H2]` `[H4]` `[H5]` `[H6]` `[F2]`
 - `[H1]`: `realsense_scan` 3, 그 외 0
@@ -58,20 +59,36 @@ out[row * width + column] = float(raw) * metresPerUnit;
 - 행 stride ≠ $2W$ 가능. 선형 순회 시 이미지 점진 전단.
 - $s$는 장치에서 읽음. 비주얼 프리셋 적용 **후**. 프리셋이 `RS2_OPTION_DEPTH_UNITS` 변경 가능.
 
-### 점프 허용치 $\tau$
+### 점프 허용치 $\tau$(tolerance)
 
-$$\tau(z)=\max\bigl(\text{minimumDepthJump},\ \text{relativeDepthJump}\cdot z\bigr)$$
+$$tolerance = \tau(z)=\max\bigl(\text{minimumDepthJump},\ \text{relativeDepthJump}\cdot z\bigr)$$
 
-- 기본 $(0.005,\ 0.02)$. `[H1]` `[H3]` `[H4]` `[H5]` 공유.
-- 상대항 근거: 스테레오 오차 $\propto z^2/(f b)$. 고정값은 근거리 과잉 거부, 원거리 과소 거부.
+| $z$ | $z^{2} / (fb)$ = 1px 오차당 깊이 오차 |
+| :-: | :-----------------------------------: |
+| 1m  |                 52mm                  |
+| 2m  |                 209mm                 |
+| 4m  |                 835mm                 |
+
+- 위 값에 따라
+  - minimumDepthJump: 0.05(m)
+  - relativeDepthJump: 0.2(m)
+- 상대항 근거: 스테레오 오차 $\varepsilon_z = \frac{z^2}{f B}\varepsilon_d$ (Keselman et al. eq. 2). $z=fB/d$의 $d$ 미분. $f$ 초점거리(px), $B$ baseline(m), $\varepsilon_d$ 매칭 불확실도(px).
+- 고정 임계는 근거리 과잉 거부, 원거리 과소 거부. $\tau$의 선형항은 2차 법칙의 값싼 근사이며, `[F2]`가 2차항을 직접 쓴다.
+- $\varepsilon_d$ 상수 가정은 active 시스템의 원거리에서 깨진다. 프로젝터 밝기 $1/z^2$ 감쇠 → SNR 저하 → 실제 오차는 $z^2$보다 빠르게 증가 (Keselman et al. §2.1 각주).
+- `capture/` 검증: 13,684개 평탄 윈도, $\varepsilon_d$ = 0.0198–0.0216 px (0.5–1.6 m, 편차 8%). 0.26–1.35 m만 커버하며 원거리 미검증.
+  - $f$: 초점 거리 (pixel, 383)
+  - $b$: baseline - 좌우 적외선 카메라 간 거리 (m, 0.05)
 
 ### [H1] PrefilterDepth
 
 $$\tilde z(u,v)=\frac{\sum_{W} z'\,\mathbb 1[\,z'>0 \wedge |z'-z|\le\tau(z)\,]}{\sum_{W}\mathbb 1[\cdots]}$$
 
 ```cpp
-if (neighbour <= 0.0f || std::abs(neighbour - z) > tolerance) continue;
-sum += neighbour; ++count;
+if (neighbour <= 0.0f || std::abs(neighbour - z) > tolerance) {
+    continue;
+}
+sum += neighbour;
+++count;
 out[centre] = count > 0 ? sum / float(count) : z;
 ```
 
@@ -243,20 +260,20 @@ atomicAdd(g_hash[slot].sumNx, int(unitNormal.x * w * TSDF_SCALE));
 
 `capture/` 477프레임, `--no-submap`, icp, `[H1]`=3.
 
-| 설정 | 점 유지 | 맵 복셀 | 추적 | align ms |
-|---|---|---|---|---|
-| 게이트 없음 | 123,471,684 | 1,000,198 | 476/476 | 70.6 |
-| `[H4]` + `[H5]`=6 + `[F3]`=drop | −1.19% | −4.34% | 476/476 | 69.7 |
-| 위 + `[H5]`=8 + `[H2]` far 4.0 | −3.58% | −6.73% | 476/476 | 64.3 |
-| `[F2]`=3σ 단독 | — | −22.3% | 476/476 | −21.5% |
+| 설정                            | 점 유지     | 맵 복셀   | 추적    | align ms |
+| ------------------------------- | ----------- | --------- | ------- | -------- |
+| 게이트 없음                     | 123,471,684 | 1,000,198 | 476/476 | 70.6     |
+| `[H4]` + `[H5]`=6 + `[F3]`=drop | −1.19%      | −4.34%    | 476/476 | 69.7     |
+| 위 + `[H5]`=8 + `[H2]` far 4.0  | −3.58%      | −6.73%    | 476/476 | 64.3     |
+| `[F2]`=3σ 단독                  | —           | −22.3%    | 476/476 | −21.5%   |
 
 원인 규명 (raw depth 직접 분석, 12프레임):
 
-| 가설 | 판정 | 근거 |
-|---|---|---|
-| 불연속 flying pixel | 원인 | 방출 점 0.17%, 가려진 이웃과 중앙값 403 mm |
-| 센서 축방향 노이즈 | 기각 | 평탄면 $\sigma_z$ 0.68–1.12 mm < 횡방향 간격 1.8–2.4 mm |
-| 소프트 보간 램프 | 기각 | `[H4]` 후 7×7 중앙값 대비 50 mm 초과 점 0개 |
+| 가설                | 판정 | 근거                                                    |
+| ------------------- | ---- | ------------------------------------------------------- |
+| 불연속 flying pixel | 원인 | 방출 점 0.17%, 가려진 이웃과 중앙값 403 mm              |
+| 센서 축방향 노이즈  | 기각 | 평탄면 $\sigma_z$ 0.68–1.12 mm < 횡방향 간격 1.8–2.4 mm |
+| 소프트 보간 램프    | 기각 | `[H4]` 후 7×7 중앙값 대비 50 mm 초과 점 0개             |
 
 측정 함정: `submap = true`에서 entry 수는 입력 점 수에 비단조. [분류 커널](../src/TSDF/Memory/RegionClassifier/kernel_DenseRegionClassifier.classify.comp.glsl)의 `g_dense[i]`가 latch 후 불변 → 경로 의존. 블록 1개 latch당 부피 $32^3\to64^3$(약 8배). dense blocks 27→28 차이가 entry +8.3% 유발. 프런트엔드 A/B는 `--no-submap`.
 
@@ -269,8 +286,9 @@ atomicAdd(g_hash[slot].sumNx, int(unitNormal.x * w * TSDF_SCALE));
 
 ## 참고
 
+- Keselman et al. (Intel), *Intel RealSense Stereoscopic Depth Cameras*, arXiv:1705.05548 §2.1 — eq. 1 $z=fB/d$, eq. 2 $\varepsilon_z=z^2\varepsilon_d/(fB)$. D400 계열 1차 출처
 - Nguyen, Izadi & Lovell, 3DIMPVT 2012 — $\sigma_z$ 모델, 필터·ICP 가중·트런케이션 적용
 - Curless & Levoy, SIGGRAPH 1996 — space carving
-- Oleynikova et al., *Voxblox*, IROS 2017 — eq. 5 뒤쪽 감쇠 ($\delta=4v$, $\epsilon=v$)
+- Oleynikova et al., _Voxblox_, IROS 2017 — eq. 5 뒤쪽 감쇠 ($\delta=4v$, $\epsilon=v$)
 - Bylow et al. 2013 — 뒤쪽 감쇠 원출처
-- Weder et al., *RoutedFusion*, CVPR 2020 — 학습 융합, thickening artifact
+- Weder et al., _RoutedFusion_, CVPR 2020 — 학습 융합, thickening artifact
