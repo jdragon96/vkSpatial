@@ -11,7 +11,6 @@ layout(push_constant) uniform PC
 	float g_minimumDepthJump;    // metres, near-field floor
 };
 
-// Row-major width * height, metres. <= 0 means the matcher produced no depth for that pixel.
 layout(std430, set = 0, binding = 0) readonly buffer SourceDepth   { float g_source[]; };
 layout(std430, set = 0, binding = 1) writeonly buffer FilteredDepth { float g_filtered[]; };
 
@@ -19,7 +18,6 @@ float DepthJumpTolerance(float depth)
 {
 	return max(g_minimumDepthJump, g_relativeDepthJump * depth);
 }
-
 
 void main()
 {

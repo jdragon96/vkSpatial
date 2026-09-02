@@ -233,3 +233,169 @@ TEST(ValidationMask, PrefilterTakesTheToleranceFromTheCentrePixel) {
                           << " cpu " << expected[i];
     EXPECT_EQ(mismatches, 0);
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+// [H2] BuildVertexGrid + RangeGate
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace {
+
+    struct VertexGridResult {
+        std::vector<Eigen::Vector4f> vertices;
+        std::vector<ValidationMaskProperty> mask;
+        std::uint32_t rejectedByRange = 0;
+    };
+
+    VertexGridResult RunVertexGrid(Engine::Core::Context &context, const std::vector<float> &depth,
+                                   const Pipeline::CameraIntrinsics &intrinsics,
+                                   const Pipeline::DepthFilterOptions &filter) {
+        const std::size_t count = depth.size();
+        ValidationMask mask(context, intrinsics.width, intrinsics.height);
+        auto source = UploadDepth(context, depth);
+
+        Engine::Core::Buffer vertices(context);
+        Engine::Core::Buffer maskBuffer(context);
+        Engine::Core::Buffer counter(context);
+        vertices.AllocateHostVisibleReadback(uint32_t(count * sizeof(Eigen::Vector4f)));
+        maskBuffer.AllocateHostVisibleReadback(uint32_t(count * sizeof(ValidationMaskProperty)));
+        counter.AllocateHostVisibleReadback(uint32_t(sizeof(std::uint32_t)));
+
+        {
+            Engine::Compute::CommandBatch batch(context);
+            batch.FillBuffer(counter.Handle(), 0, sizeof(std::uint32_t), 0u);
+            // Sentinel, so "the kernel zeroed this vertex" is distinguishable from "the allocation
+            // came back zero". Without it the rejected-pixel assertion passes on an empty kernel.
+            batch.FillBuffer(vertices.Handle(), 0, uint32_t(count * sizeof(Eigen::Vector4f)),
+                             0x7F7FFFFFu);
+            batch.Barrier();
+            mask.RecordBuildVertexGrid(batch, *source, vertices, maskBuffer, counter, intrinsics,
+                                       filter.minimumDepthMeters, filter.maximumDepthMeters);
+            batch.Submit();
+        }
+
+        VertexGridResult result;
+        vertices.MakeVisibleToCPU(uint32_t(count * sizeof(Eigen::Vector4f)));
+        maskBuffer.MakeVisibleToCPU(uint32_t(count * sizeof(ValidationMaskProperty)));
+        counter.MakeVisibleToCPU(uint32_t(sizeof(std::uint32_t)));
+        result.vertices.resize(count);
+        result.mask.resize(count);
+        std::memcpy(result.vertices.data(), vertices.MappedPtr(), count * sizeof(Eigen::Vector4f));
+        std::memcpy(result.mask.data(), maskBuffer.MappedPtr(),
+                    count * sizeof(ValidationMaskProperty));
+        std::memcpy(&result.rejectedByRange, counter.MappedPtr(), sizeof(std::uint32_t));
+        return result;
+    }
+
+    Pipeline::CameraIntrinsics TestIntrinsics(int width, int height) {
+        Pipeline::CameraIntrinsics intrinsics;
+        intrinsics.width = width;
+        intrinsics.height = height;
+        intrinsics.fx = 383.18f;
+        intrinsics.fy = 381.44f; // deliberately != fx: a kernel using fx for both still passes
+                                 // every square fixture, so the two must differ here
+        intrinsics.cx = 313.94f;
+        intrinsics.cy = 237.30f;
+        return intrinsics;
+    }
+
+} // namespace
+
+// The back-projection, checked against the formula rather than against a second copy of the same
+// code. cx/cy are off-centre and fx != fy, so a kernel that swapped an axis or dropped a principal
+// point offset cannot pass by symmetry.
+TEST(ValidationMask, VertexGridBackProjectsEveryValidPixel) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(23, 17);
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::vector<float> depth(count);
+    for (std::size_t i = 0; i < count; ++i) depth[i] = 0.4f + 0.017f * float(i % 61);
+
+    const VertexGridResult result = RunVertexGrid(context, depth, intrinsics, {});
+
+    for (int v = 0; v < intrinsics.height; ++v)
+        for (int u = 0; u < intrinsics.width; ++u) {
+            const std::size_t i = std::size_t(v) * intrinsics.width + u;
+            const float z = depth[i];
+            EXPECT_EQ(result.mask[i].valid, 1u) << "pixel " << i;
+            EXPECT_NEAR(result.vertices[i].x(), (float(u) - intrinsics.cx) / intrinsics.fx * z, 1e-5f)
+                    << "pixel (" << u << "," << v << ")";
+            EXPECT_NEAR(result.vertices[i].y(), (float(v) - intrinsics.cy) / intrinsics.fy * z, 1e-5f)
+                    << "pixel (" << u << "," << v << ")";
+            EXPECT_NEAR(result.vertices[i].z(), z, 1e-6f) << "pixel (" << u << "," << v << ")";
+        }
+    EXPECT_EQ(result.rejectedByRange, 0u);
+}
+
+// A pixel the matcher produced no depth for is invalid, and it is NOT a range rejection: the two
+// have opposite corrections (one is the sensor's own dropout, the other is a knob the caller set),
+// so charging a dropout to the range counter would make the counter useless for tuning it.
+TEST(ValidationMask, VertexGridMarksZeroDepthInvalidWithoutChargingTheRangeCounter) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(16, 4);
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::vector<float> depth(count, 1.0f);
+    depth[3] = 0.0f;
+    depth[20] = -1.0f; // a negative reading is as absent as a zero one
+
+    const VertexGridResult result = RunVertexGrid(context, depth, intrinsics, {});
+
+    EXPECT_EQ(result.mask[3].valid, 0u);
+    EXPECT_EQ(result.mask[20].valid, 0u);
+    EXPECT_EQ(result.mask[4].valid, 1u);
+    EXPECT_EQ(result.rejectedByRange, 0u) << "a dropout is not a range rejection";
+}
+
+// Each end of the gate is independent and 0 disables it, matching DepthFilterOptions.
+TEST(ValidationMask, VertexGridAppliesEachEndOfTheRangeGateIndependently) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(8, 2);
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::vector<float> depth(count, 1.0f);
+    depth[0] = 0.15f; // below a near gate
+    depth[1] = 6.0f;  // above a far gate
+
+    Pipeline::DepthFilterOptions off;
+    const VertexGridResult none = RunVertexGrid(context, depth, intrinsics, off);
+    EXPECT_EQ(none.mask[0].valid, 1u) << "0 must disable the near end";
+    EXPECT_EQ(none.mask[1].valid, 1u) << "0 must disable the far end";
+    EXPECT_EQ(none.rejectedByRange, 0u);
+
+    Pipeline::DepthFilterOptions nearOnly;
+    nearOnly.minimumDepthMeters = 0.3f;
+    const VertexGridResult near = RunVertexGrid(context, depth, intrinsics, nearOnly);
+    EXPECT_EQ(near.mask[0].valid, 0u);
+    EXPECT_EQ(near.mask[1].valid, 1u) << "the near gate must not reject a far pixel";
+    EXPECT_EQ(near.rejectedByRange, 1u);
+
+    Pipeline::DepthFilterOptions farOnly;
+    farOnly.maximumDepthMeters = 4.0f;
+    const VertexGridResult far = RunVertexGrid(context, depth, intrinsics, farOnly);
+    EXPECT_EQ(far.mask[0].valid, 1u) << "the far gate must not reject a near pixel";
+    EXPECT_EQ(far.mask[1].valid, 0u);
+    EXPECT_EQ(far.rejectedByRange, 1u);
+}
+
+// An out-of-range pixel must be INVALID, not merely unemitted: the later passes read this mask to
+// decide whether a neighbour exists, and a reading the sensor could not have made must not be
+// allowed to set the normal of the pixel next to it. The vertex it leaves behind must therefore
+// be zeroed too, so nothing can pick it up by reading the grid without the mask.
+TEST(ValidationMask, VertexGridLeavesNoVertexBehindForARejectedPixel) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(8, 2);
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::vector<float> depth(count, 1.0f);
+    depth[5] = 9.0f;
+
+    Pipeline::DepthFilterOptions filter;
+    filter.maximumDepthMeters = 4.0f;
+    const VertexGridResult result = RunVertexGrid(context, depth, intrinsics, filter);
+
+    EXPECT_EQ(result.mask[5].valid, 0u);
+    EXPECT_EQ(result.vertices[5].x(), 0.0f);
+    EXPECT_EQ(result.vertices[5].y(), 0.0f);
+    EXPECT_EQ(result.vertices[5].z(), 0.0f);
+}
