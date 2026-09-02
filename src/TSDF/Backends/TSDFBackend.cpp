@@ -24,6 +24,12 @@ namespace {
             m_tsdf.SetPointToPlane(config.pointToPlane);
             m_tsdf.SetHermitePosition(config.hermitePosition);
             m_tsdf.SetConfidenceWeight(config.confidenceWeight);
+            m_tsdf.SetAdaptiveBand({config.adaptiveBand.sigmaMultiplier,
+                                    config.adaptiveBand.minimumVoxels,
+                                    config.adaptiveBand.sigmaConstant,
+                                    config.adaptiveBand.sigmaQuadratic,
+                                    config.adaptiveBand.sigmaOffsetMeters,
+                                    config.adaptiveBand.sigmaAngular});
             m_tsdf.SetIntegrationQuality(
                     {config.maxDirections, config.directionExponent, config.viewAngleWeight});
         }

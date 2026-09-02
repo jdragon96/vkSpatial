@@ -13,6 +13,17 @@ namespace Engine::Core {
     class Context;
 }
 
+// Mirror of TSDF::AdaptiveBandConfig; see AdvancedTSDF.h for what the coefficients mean and why
+// they are exposed (they are fitted to a Kinect v1 and want refitting per sensor).
+struct TSDFAdaptiveBand {
+    float sigmaMultiplier = 0.0f; // band = multiplier * sigma_z; 0 = off
+    float minimumVoxels = 2.0f;   // floor in voxels; below one voxel the band admits nothing
+    float sigmaConstant = 0.0012f;
+    float sigmaQuadratic = 0.0019f;
+    float sigmaOffsetMeters = 0.4f;
+    float sigmaAngular = 0.0001f; // 0 = axial only
+};
+
 struct TSDFBackendConfig {
     float voxelSize = 0.01f;
     float truncation = 0.03f;
@@ -31,6 +42,12 @@ struct TSDFBackendConfig {
     uint32_t maxDirections = 1;
     uint32_t directionExponent = 4;
     bool viewAngleWeight = false;
+
+    // Range-adaptive truncation band. sigmaMultiplier 0 (the default) disables it, leaving the
+    // fixed band this backend always had. Every default mirrors TSDF::AdaptiveBandConfig exactly;
+    // the struct is repeated rather than included because this header is the namespace-free
+    // boundary and naming the implementation type here would drag TSDF:: into every consumer.
+    TSDFAdaptiveBand adaptiveBand;
 
     // Counts hash probes. A development switch -- it recompiles the integrate kernel and adds
     // three atomics per lookup.

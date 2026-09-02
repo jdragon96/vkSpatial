@@ -56,6 +56,47 @@ namespace TSDF {
     // default (only correct at voxelSize=0.1), the default window here is CENTRED on the world
     // origin at ANY voxelSize (originVoxel = -256). Pass an explicit windowMinCorner to
     // re-centre elsewhere. Scenes larger than one 512^3 window need tiling.
+    ///////////////////////////////////////////////////////////////////////////////////////////
+    // Range-adaptive truncation band.
+    //
+    // A depth sensor's axial noise grows quadratically with range, so one fixed truncation is the
+    // wrong width almost everywhere: up close it smears a surface the sensor resolved to a
+    // millimetre across the whole band, and far away it is barely wider than the uncertainty it
+    // is supposed to cover. The empirical model is Nguyen, Izadi and Lovell, "Modeling Kinect
+    // Sensor Noise for Improved 3D Reconstruction and Tracking" (3DIMPVT 2012), eq. 4.
+    //
+    // What adapts is only the band WIDTH -- how far the march reaches and which samples are
+    // admitted. The stored value stays normalized by the build-time truncation, because
+    // GpuIcpTracker, PointToPlaneIcpTracker, GlobalRegistrationTracker and the extract kernel all
+    // recover a metric distance as `tsdf * truncationDistance` from a single global number; a
+    // per-point normalizer would put their surface in the wrong place with no other symptom.
+    // A consequence worth stating: the band can only NARROW. To widen it far away, raise the
+    // build-time truncation -- which is now safe, because near range no longer pays for it.
+    //
+    // The coefficients are the paper's, fitted to a Kinect v1 (structured light). A D435 is active
+    // stereo: the functional form carries over (quadratic in z, hyperbolic blow-up toward 90
+    // degrees of incidence) but the constants do not, and they are exposed here to be refitted
+    // against a real capture rather than trusted.
+    ///////////////////////////////////////////////////////////////////////////////////////////
+    struct AdaptiveBandConfig {
+        // Band = sigmaMultiplier * sigma_z, clamped to [minimumVoxels * voxelSize, truncation].
+        // 0 (default) disables the whole thing: the band is the build-time truncation everywhere.
+        // The paper uses 3 sigma, widened to 6 sigma to absorb camera tracking error.
+        float sigmaMultiplier = 0.0f;
+
+        // Floor, in voxels. Not optional: 3 sigma_z at close range is a few millimetres, BELOW a
+        // 10 mm voxel, and a band narrower than the grid admits no sample at all -- the surface
+        // vanishes rather than sharpening.
+        float minimumVoxels = 2.0f;
+
+        // sigma_z(z, theta) = sigmaConstant + sigmaQuadratic * (z - sigmaOffsetMeters)^2
+        //                   + sigmaAngular / sqrt(z) * theta^2 / (pi/2 - theta)^2
+        float sigmaConstant = 0.0012f;
+        float sigmaQuadratic = 0.0019f;
+        float sigmaOffsetMeters = 0.4f;
+        float sigmaAngular = 0.0001f; // 0 = axial only, ignoring incidence
+    };
+
     class AdvancedTSDF {
     public:
         AdvancedTSDF() = default;
@@ -90,6 +131,9 @@ namespace TSDF {
         // AdvancedEntry::firstFrame). Set it before each integrate; lets the caller recover
         // "first-seen frame" + "new this frame" without a CPU tracker re-hashing the whole model.
         void SetCurrentFrame(int frame) { m_currentFrame = frame; }
+
+        // Range-adaptive truncation band; see AdaptiveBandConfig. Off by default.
+        void SetAdaptiveBand(const AdaptiveBandConfig &band) { m_band = band; }
 
         // Integrate a normal-carrying point cloud observed from cameraPos. Normals drive the
         // dominant-direction selection, the view-angle weight, and the stored gradient.
@@ -208,6 +252,7 @@ namespace TSDF {
         bool m_probeStats = false;
         bool m_pointToPlane = true; // measured-best default
         float m_confWeight = 0.5f;  // A1: adopted (measured cube RMSE -29%); 0 disables
+        AdaptiveBandConfig m_band;  // range-adaptive band width; sigmaMultiplier 0 disables
         bool m_hermite = false;     // A2: off by default (no measured gain on synthetic fixtures)
         int m_currentFrame = 0;     // stamped into a slot on its first fill (see SetCurrentFrame)
         const HashStrategy *m_hash = &LinearProbeStrategy();

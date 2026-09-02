@@ -33,6 +33,12 @@ namespace TSDF {
             uint32_t pointToPlane;
             float confWeight;
             int32_t currentFrame;
+            float bandSigmaMultiplier;
+            float bandMinimumVoxels;
+            float sigmaConstant;
+            float sigmaQuadratic;
+            float sigmaOffsetMeters;
+            float sigmaAngular;
         };
 
         // Must match the push_constant block in kernel_AdvancedTSDF.extract.comp.glsl.
@@ -234,7 +240,9 @@ namespace TSDF {
                 m_quality.maxDirections, m_quality.dirExponent,
                 m_quality.viewAngleWeight ? 1u : 0u,
                 m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z(),
-                uint32_t(m_pointToPlane ? 1u : 0u), m_confWeight, m_currentFrame};
+                uint32_t(m_pointToPlane ? 1u : 0u), m_confWeight, m_currentFrame,
+                m_band.sigmaMultiplier, m_band.minimumVoxels, m_band.sigmaConstant,
+                m_band.sigmaQuadratic, m_band.sigmaOffsetMeters, m_band.sigmaAngular};
         kernel_integratePoints->Args(pc);
         batch.DispatchElements(*kernel_integratePoints, n);
     }
@@ -263,7 +271,13 @@ namespace TSDF {
                 m_originVoxel.z(),
                 uint32_t(m_pointToPlane ? 1u : 0u),
                 m_confWeight,
-                m_currentFrame};
+                m_currentFrame,
+                m_band.sigmaMultiplier,
+                m_band.minimumVoxels,
+                m_band.sigmaConstant,
+                m_band.sigmaQuadratic,
+                m_band.sigmaOffsetMeters,
+                m_band.sigmaAngular};
         kernel_integratePoints->Args(pc);
         batch.DispatchElements(*kernel_integratePoints, n);
     }

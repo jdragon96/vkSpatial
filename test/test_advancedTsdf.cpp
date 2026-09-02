@@ -1,6 +1,7 @@
 #include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
 #include "TSDF/Backends/AdvancedTSDF.h"
+#include "TSDF/Backends/TSDFBackend.h"
 
 #include <gtest/gtest.h>
 
@@ -437,4 +438,130 @@ TEST(AdvancedTsdf, HashAutoGrowMatchesLargeHashNoLoss) {
     for (const auto &n : cloud.normals) meanNz += n.z();
     meanNz /= double(cloud.normals.size());
     EXPECT_GT(meanNz, 0.99);
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+// Adaptive truncation band. Axial depth noise grows quadratically with range (Nguyen, Izadi and
+// Lovell, 3DIMPVT 2012), so one fixed band is simultaneously too wide up close -- where it smears
+// a surface the sensor resolved to a millimetre across many voxels -- and only just wide enough
+// far away. The band width follows sigma_z; the NORMALIZER stays g_truncation, because three
+// trackers and the extract kernel all recover a metric distance as tsdf * truncationDistance and
+// would read a per-point normalizer as surface in the wrong place.
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace {
+    // Entries written for a +Z plane observed from `distance` along its normal.
+    std::size_t bandEntryCount(Engine::Core::Context &ctx, float distance,
+                               const TSDF::AdaptiveBandConfig &band) {
+        AdvancedTSDF tsdf;
+        buildPointToPlaneFixture(tsdf, ctx, 0.01f, 0.06f, /*pointToPlane=*/true);
+        tsdf.SetAdaptiveBand(band);
+        std::vector<Vector3f> pts, nrm;
+        makePlane(pts, nrm, 0.2f, 10, 0.0f);
+        tsdf.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, distance));
+        return tsdf.DownloadEntries().size();
+    }
+} // namespace
+
+// At 0.5 m sigma_z is about 1.2 mm, so 3 sigma is far below the 0.06 m truncation: the band
+// narrows to its floor and writes a fraction of the voxels.
+TEST(AdvancedTSDF, TheAdaptiveBandNarrowsANearSurface) {
+    Engine::Core::Context ctx;
+    TSDF::AdaptiveBandConfig off;
+    TSDF::AdaptiveBandConfig on;
+    on.sigmaMultiplier = 3.0f;
+
+    const std::size_t fixed = bandEntryCount(ctx, 0.5f, off);
+    const std::size_t adaptive = bandEntryCount(ctx, 0.5f, on);
+    ASSERT_GT(fixed, 0u);
+    ASSERT_GT(adaptive, 0u) << "the floor must keep the surface itself";
+    EXPECT_LT(adaptive, fixed) << "a near surface must not be smeared over the full band";
+}
+
+// At 4 m, 3 sigma_z is about 0.077 m -- wider than the 0.06 m truncation -- so the band clamps to
+// the truncation and nothing changes. The model must never widen past the normalizer, or |tsdf|
+// would saturate before the band ends.
+TEST(AdvancedTSDF, TheAdaptiveBandKeepsTheFullTruncationFarAway) {
+    Engine::Core::Context ctx;
+    TSDF::AdaptiveBandConfig off;
+    TSDF::AdaptiveBandConfig on;
+    on.sigmaMultiplier = 3.0f;
+
+    EXPECT_EQ(bandEntryCount(ctx, 4.0f, on), bandEntryCount(ctx, 4.0f, off));
+}
+
+// 3 sigma at close range is a few millimetres -- BELOW one 0.01 m voxel. Without a floor the band
+// collapses, every marched sample fails the membership test, and the surface silently disappears.
+TEST(AdvancedTSDF, TheAdaptiveBandFloorKeepsTheSurfaceAtCloseRange) {
+    Engine::Core::Context ctx;
+    TSDF::AdaptiveBandConfig on;
+    on.sigmaMultiplier = 3.0f;
+
+    AdvancedTSDF tsdf;
+    buildPointToPlaneFixture(tsdf, ctx, 0.01f, 0.06f, /*pointToPlane=*/true);
+    tsdf.SetAdaptiveBand(on);
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, 0.2f, 10, 0.0f);
+    tsdf.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, 0.3f));
+
+    std::set<int> zLayers;
+    for (const AdvancedEntry &e : tsdf.DownloadEntries())
+        if (e.weight > 0.0f) zLayers.insert(int(std::lround(e.center.z() / 0.01f)));
+    EXPECT_GE(zLayers.size(), 2u) << "the band collapsed below one voxel";
+}
+
+// Exposing a knob must not change what existing callers get.
+TEST(AdvancedTSDF, TheAdaptiveBandIsOffByDefault) {
+    Engine::Core::Context ctx;
+    TSDF::AdaptiveBandConfig defaulted;
+    EXPECT_EQ(defaulted.sigmaMultiplier, 0.0f);
+    EXPECT_EQ(bandEntryCount(ctx, 0.5f, defaulted), bandEntryCount(ctx, 0.5f, {}));
+}
+
+// TSDFAdaptiveBand repeats TSDF::AdaptiveBandConfig's fields to keep the implementation namespace
+// out of the boundary header, so the two default sets can drift apart silently -- and a drifted
+// default is a behaviour change nobody asked for. This is the only thing holding them together.
+TEST(AdvancedTSDF, TheBoundaryBandDefaultsMirrorTheImplementation) {
+    const TSDF::AdaptiveBandConfig implementation;
+    const TSDFAdaptiveBand boundary;
+    EXPECT_EQ(boundary.sigmaMultiplier, implementation.sigmaMultiplier);
+    EXPECT_EQ(boundary.minimumVoxels, implementation.minimumVoxels);
+    EXPECT_EQ(boundary.sigmaConstant, implementation.sigmaConstant);
+    EXPECT_EQ(boundary.sigmaQuadratic, implementation.sigmaQuadratic);
+    EXPECT_EQ(boundary.sigmaOffsetMeters, implementation.sigmaOffsetMeters);
+    EXPECT_EQ(boundary.sigmaAngular, implementation.sigmaAngular);
+}
+
+// The band decides which voxels are written, but the stored value must still denormalize with the
+// BUILD-TIME truncation, because that is what every reader has. GpuIcpTracker,
+// PointToPlaneIcpTracker and GlobalRegistrationTracker all recover an ICP target as
+// `center - tsdf * truncationDistance * normal`, over every entry rather than only the
+// zero-crossing ones -- so a per-point normalizer would land the whole target cloud off the
+// surface. (Extraction cannot see this: rescaling tsdf by a positive factor leaves the zero
+// crossing exactly where it was, which is why this asserts the tracker's reconstruction instead.)
+TEST(AdvancedTSDF, EveryBandEntryDenormalizesWithTheBuildTimeTruncation) {
+    Engine::Core::Context ctx;
+    const float truncation = 0.06f;
+
+    AdvancedTSDF tsdf;
+    buildPointToPlaneFixture(tsdf, ctx, 0.01f, truncation, /*pointToPlane=*/true);
+    TSDF::AdaptiveBandConfig band;
+    band.sigmaMultiplier = 3.0f;
+    tsdf.SetAdaptiveBand(band);
+
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, 0.2f, 10, 0.0f);
+    tsdf.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, 0.5f));
+
+    int checked = 0;
+    for (const AdvancedEntry &e : tsdf.DownloadEntries()) {
+        if (e.weight <= 0.0f) continue;
+        // Exactly the reconstruction the trackers perform.
+        const Vector3f surface = e.center - e.tsdf * truncation * e.normal;
+        EXPECT_NEAR(surface.z(), 0.0f, 0.006f)
+                << "entry at z=" << e.center.z() << " tsdf=" << e.tsdf
+                << " denormalizes to a surface off the plane";
+        ++checked;
+    }
+    EXPECT_GT(checked, 0);
 }

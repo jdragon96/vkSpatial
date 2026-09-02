@@ -39,6 +39,15 @@ layout(push_constant) uniform PC {
 	uint  g_pointToPlane;   // 1 = point-to-plane SDF (removes grazing bias), 0 = projective
 	float g_confWeight;     // A1: surface-proximity confidence lambda in [0,1] (0 = uniform/off)
 	int   g_currentFrame;   // stamped into g_firstFrame[slot] the first time a slot is filled
+
+	// Range-adaptive truncation band (see AdvancedTSDF::AdaptiveBandConfig).
+	// g_bandSigmaMultiplier == 0 disables it and the band is g_truncation everywhere.
+	float g_bandSigmaMultiplier;
+	float g_bandMinimumVoxels;
+	float g_sigmaConstant;
+	float g_sigmaQuadratic;
+	float g_sigmaOffsetMeters;
+	float g_sigmaAngular;
 };
 
 layout(std430, set = 0, binding = 0) buffer HashTable
@@ -159,6 +168,40 @@ int selectDirections(
 }
 
 /// *********************************************
+/// Adaptive band
+/// *********************************************
+
+/// Empirical axial depth noise, Nguyen/Izadi/Lovell 3DIMPVT 2012 eq. 4: quadratic in range, with a
+/// hyperbolic term that blows up as the surface turns edge-on.
+float AxialNoiseSigma(float depth, float incidenceRadians)
+{
+	// 1. Axial term. Quadratic in range about sigmaOffsetMeters.
+	float fromOffset = depth - g_sigmaOffsetMeters;
+	float sigma = g_sigmaConstant + g_sigmaQuadratic * fromOffset * fromOffset;
+
+	// 2. Incidence term. The paper's denominator vanishes at exactly 90 degrees, so the angle is
+	//    held just below it -- a grazing observation must come out very uncertain, not infinite.
+	if (g_sigmaAngular > 0.0 && depth > 0.0)
+	{
+		const float kHalfPi = 1.5707963;
+		float theta = clamp(incidenceRadians, 0.0, kHalfPi - 0.087266); // <= 85 degrees
+		float toGrazing = kHalfPi - theta;
+		sigma += (g_sigmaAngular / sqrt(depth)) * (theta * theta) / (toGrazing * toGrazing);
+	}
+	return sigma;
+}
+
+/// Band half-width for one observation. Clamped BELOW by the voxel grid, because a band narrower
+/// than a voxel admits no sample and the surface disappears instead of sharpening, and ABOVE by
+/// the build-time truncation, which stays the normalizer every reader denormalizes with.
+float AdaptiveBandWidth(float depth, float incidenceRadians, float voxelSize, float truncateDistance)
+{
+	if (g_bandSigmaMultiplier <= 0.0) return truncateDistance;
+	float sigma = AxialNoiseSigma(depth, incidenceRadians);
+	return clamp(g_bandSigmaMultiplier * sigma, g_bandMinimumVoxels * voxelSize, truncateDistance);
+}
+
+/// *********************************************
 /// Integrate
 /// *********************************************
 void Integrate(
@@ -198,7 +241,13 @@ void Integrate(
 	// kernel's Hermite branch assumes.
 	bool usePointToPlane = (g_pointToPlane != 0u);
 	vec3 marchDirection  = usePointToPlane ? unitNormal : rayDirection;
-	int  steps = int(ceil(truncateDistance / voxelSize)) + 1;
+
+	// The band width follows the sensor's own uncertainty at this range and incidence; the stored
+	// value below is still normalized by truncateDistance, so every reader's `tsdf * truncation`
+	// keeps meaning what it did.
+	float incidence = acos(clamp(dot(unitNormal, -rayDirection), 0.0, 1.0));
+	float bandWidth = AdaptiveBandWidth(depth, incidence, voxelSize, truncateDistance);
+	int  steps = int(ceil(bandWidth / voxelSize)) + 1;
 	for (int t = -steps; t <= steps; t++) {
 
 		// 2.1. Signed distance from this voxel centre to the surface.
@@ -210,7 +259,7 @@ void Integrate(
 		float voxel2point = usePointToPlane
 			? dot(voxelCenter - point, unitNormal)
 			: depth - dot(voxelCenter - camera, rayDirection);
-		if (abs(voxel2point) > truncateDistance) continue;
+		if (abs(voxel2point) > bandWidth) continue;
 		float tsdf = clamp(voxel2point / truncateDistance, -1.0, 1.0);
 
 		// A1: surface-proximity confidence — down-weight band voxels far from the surface
