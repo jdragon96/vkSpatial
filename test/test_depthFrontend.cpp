@@ -731,3 +731,98 @@ TEST(DepthFrontend, TheConfidenceGatesAreAllOffByDefault) {
               std::size_t(small.width - 1) * (small.height - 1))
             << "an incidence gate is on by default";
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+// Symmetric depth-jump guard.
+//
+// The existing guard tests u+1 and v+1 because those are the neighbours the forward-difference
+// normal is built from -- it protects the NORMAL, and it does that correctly. Admitting the POINT
+// is a different question, and on the trailing edge of every step the two disagree: a pixel whose
+// right and down neighbours are its own surface but whose left or up neighbour is half a metre
+// away is emitted today. Measured on capture/ those are 0.17% of emitted points and sit a median
+// 403 mm from the neighbour nobody looked at -- the streaks along the view direction.
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+// The leading column of the near half straddles the step: its right and down neighbours are near
+// surface (so the existing guard is satisfied) while its left neighbour is a metre behind it.
+TEST(DepthFrontend, TheSymmetricGuardRejectsAPointStraddlingAStepBehindIt) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFrame step;
+    step.depth.assign(std::size_t(k.width) * k.height, 0.0f);
+    for (int v = 0; v < k.height; ++v)
+        for (int u = 0; u < k.width; ++u)
+            step.depth[std::size_t(v) * k.width + u] = u < 16 ? 2.0f : 1.0f;
+
+    auto leadingColumnPoints = [&](const DepthFilterOptions &filter) {
+        const Pipeline::Frame out = BackprojectDepth(step, k, filter);
+        // Column 16 back-projects to x = (16 - 16) / fx * 1.0 = 0 at z = 1.0.
+        return std::count_if(out.pts.begin(), out.pts.end(), [](const Eigen::Vector3f &p) {
+            return p.z() < 1.5f && std::abs(p.x()) < 1e-6f;
+        });
+    };
+
+    ASSERT_GT(leadingColumnPoints(DepthFilterOptions{}), 0)
+            << "the forward-only guard admits this column -- that is the point of the fixture";
+
+    DepthFilterOptions symmetric;
+    symmetric.symmetricDepthJumpGuard = true;
+    EXPECT_EQ(leadingColumnPoints(symmetric), 0);
+}
+
+// The invariant the guard is supposed to establish: no emitted point straddles a step in ANY
+// direction. Asserting the invariant rather than a count is what stops a fix that only adds the
+// u-1 test and leaves v-1 (or the diagonals) open.
+TEST(DepthFrontend, NoEmittedPointStraddlesAStepInAnyDirectionUnderTheSymmetricGuard) {
+    const CameraIntrinsics k = MakeIntrinsics(48, 48);
+    DepthFrame scene;
+    scene.depth.assign(std::size_t(k.width) * k.height, 0.0f);
+    // A near block on a far wall: every one of its four edges is a step, so each of the eight
+    // neighbour directions is exercised somewhere along its border.
+    for (int v = 0; v < k.height; ++v)
+        for (int u = 0; u < k.width; ++u) {
+            const bool inBlock = u >= 18 && u < 30 && v >= 18 && v < 30;
+            scene.depth[std::size_t(v) * k.width + u] = inBlock ? 1.0f : 2.0f;
+        }
+
+    DepthFilterOptions symmetric;
+    symmetric.symmetricDepthJumpGuard = true;
+    const Pipeline::Frame out = BackprojectDepth(scene, k, symmetric);
+    ASSERT_GT(out.pts.size(), 0u);
+
+    // Rebuild the pixel each point came from and check all eight neighbours.
+    for (const Eigen::Vector3f &p : out.pts) {
+        const int u = int(std::lround(p.x() / p.z() * k.fx + k.cx));
+        const int v = int(std::lround(p.y() / p.z() * k.fy + k.cy));
+        const float z = scene.depth[std::size_t(v) * k.width + u];
+        const float tolerance = std::max(0.005f, 0.02f * z);
+        for (int dv = -1; dv <= 1; ++dv)
+            for (int du = -1; du <= 1; ++du) {
+                const int uu = u + du, vv = v + dv;
+                if ((du == 0 && dv == 0) || uu < 0 || uu >= k.width || vv < 0 || vv >= k.height)
+                    continue;
+                const float neighbour = scene.depth[std::size_t(vv) * k.width + uu];
+                if (neighbour <= 0.0f) continue;
+                EXPECT_LE(std::abs(neighbour - z), tolerance)
+                        << "point at pixel (" << u << "," << v << ") straddles a step toward ("
+                        << du << "," << dv << ")";
+            }
+    }
+}
+
+// A surface with no step must be untouched, and the guard must not eat the image border: a
+// neighbour outside the sensor is not a depth step, it is simply absent.
+TEST(DepthFrontend, TheSymmetricGuardKeepsAnUnbrokenPlaneWhole) {
+    const CameraIntrinsics k = MakeIntrinsics(32, 32);
+    DepthFrame plane;
+    plane.depth.assign(std::size_t(k.width) * k.height, 1.5f);
+
+    DepthFilterOptions symmetric;
+    symmetric.symmetricDepthJumpGuard = true;
+    EXPECT_EQ(BackprojectDepth(plane, k, symmetric).pts.size(),
+              std::size_t(k.width - 1) * (k.height - 1));
+}
+
+TEST(DepthFrontend, TheSymmetricGuardIsOffByDefault) {
+    const DepthFilterOptions defaulted;
+    EXPECT_FALSE(defaulted.symmetricDepthJumpGuard);
+}

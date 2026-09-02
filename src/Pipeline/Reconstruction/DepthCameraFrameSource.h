@@ -122,6 +122,18 @@ namespace Pipeline {
         // that pays: the normal is both the SDF value and the direction the truncation band is
         // marched along, so a grazing patch mis-values AND mis-places what it writes.
         float maximumIncidenceDegrees = 0.0f;
+
+        // Test the point against ALL EIGHT neighbours for a depth step, not only the two the
+        // normal is differenced from. false (default) keeps the historical forward-only test.
+        //
+        // The forward-only test is not a bug -- it protects the normal, which is built from u+1
+        // and v+1, and it does that exactly. Admitting the point is a separate question, and the
+        // two answers differ on the TRAILING edge of every step: a pixel whose right and down
+        // neighbours are its own surface but whose left or up neighbour is half a metre behind it
+        // is a stereo interpolation between two surfaces, and it is emitted today. Measured on
+        // capture/ (12 frames, prefilter 3) those are 0.17% of emitted points, sitting a median
+        // 403 mm from the neighbour nobody tested -- the streaks along the view direction.
+        bool symmetricDepthJumpGuard = false;
     };
 
     // Discontinuity-aware square mean over `depth`: each pixel averages only the neighbours that are
@@ -178,6 +190,27 @@ namespace Pipeline {
         std::atomic<std::uint64_t> rejectedByNeighbourSupport{0};
         std::atomic<std::uint64_t> rejectedByIncidence{0};
     };
+
+    // True when any of the eight neighbours of (u,v) exists and lies further than `tolerance` in
+    // depth -- i.e. this pixel straddles a surface boundary. A neighbour outside the image is
+    // absent, not a step, so the image border is never rejected for having one.
+    inline bool StraddlesADepthStep(const std::vector<float> &depth, const std::vector<char> &valid,
+                                    int width, int height, int u, int v, float tolerance) {
+        const float z = depth[std::size_t(v) * width + u];
+        for (int dv = -1; dv <= 1; ++dv) {
+            const int vv = v + dv;
+            if (vv < 0 || vv >= height) continue;
+            for (int du = -1; du <= 1; ++du) {
+                if (du == 0 && dv == 0) continue;
+                const int uu = u + du;
+                if (uu < 0 || uu >= width) continue;
+                const std::size_t j = std::size_t(vv) * width + uu;
+                if (!valid[j]) continue;
+                if (std::abs(depth[j] - z) > tolerance) return true;
+            }
+        }
+        return false;
+    }
 
     // How many of the eight neighbours of (u,v) are valid AND within `tolerance` of its depth --
     // the neighbourhood support behind DepthFilterOptions::minimumValidNeighbours.
@@ -258,6 +291,13 @@ namespace Pipeline {
                 const float maxJump = std::max(filter.minimumDepthJump, filter.relativeDepthJump * z);
                 if (std::abs(grid[i + 1].z() - z) > maxJump) continue;
                 if (std::abs(grid[i + W].z() - z) > maxJump) continue;
+
+                // The forward test above protects the NORMAL, which is differenced from exactly
+                // those two neighbours. Whether the POINT is trustworthy is a different question,
+                // and it is answered on the trailing edge of the step the forward test cannot see.
+                if (filter.symmetricDepthJumpGuard &&
+                    StraddlesADepthStep(depth, valid, W, H, u, v, maxJump))
+                    continue;
 
                 // Neighbourhood support: the two neighbours above agree with this pixel, which is
                 // just as true of a mismatched island as of real surface. How much of the

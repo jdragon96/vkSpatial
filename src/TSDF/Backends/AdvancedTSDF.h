@@ -132,6 +132,14 @@ namespace TSDF {
         // "first-seen frame" + "new this frame" without a CPU tracker re-hashing the whole model.
         void SetCurrentFrame(int frame) { m_currentFrame = frame; }
 
+        // Discount the OCCLUDED side of the band instead of both sides equally (Bylow et al.
+        // 2013; Voxblox eq. 5). The A1 profile above is symmetric in |tsdf|, which treats the free
+        // space the sensor looked through as no more trustworthy than the volume behind the
+        // surface that nothing has ever seen. With this on, the front of the band keeps full
+        // weight and only the back ramps to zero at the truncation. false (default) = the
+        // symmetric A1 profile, unchanged.
+        void SetBehindSurfaceDropoff(bool on) { m_behindSurfaceDropoff = on; }
+
         // Range-adaptive truncation band; see AdaptiveBandConfig. Off by default.
         void SetAdaptiveBand(const AdaptiveBandConfig &band) { m_band = band; }
 
@@ -253,6 +261,7 @@ namespace TSDF {
         bool m_pointToPlane = true; // measured-best default
         float m_confWeight = 0.5f;  // A1: adopted (measured cube RMSE -29%); 0 disables
         AdaptiveBandConfig m_band;  // range-adaptive band width; sigmaMultiplier 0 disables
+        bool m_behindSurfaceDropoff = false; // asymmetric weight profile; false = A1's symmetric one
         bool m_hermite = false;     // A2: off by default (no measured gain on synthetic fixtures)
         int m_currentFrame = 0;     // stamped into a slot on its first fill (see SetCurrentFrame)
         const HashStrategy *m_hash = &LinearProbeStrategy();

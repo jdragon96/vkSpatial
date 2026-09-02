@@ -565,3 +565,81 @@ TEST(AdvancedTSDF, EveryBandEntryDenormalizesWithTheBuildTimeTruncation) {
     }
     EXPECT_GT(checked, 0);
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+// Behind-surface weight drop-off (Bylow et al. 2013; Voxblox eq. 5, Oleynikova et al. 2017).
+//
+// The A1 confidence profile is `1 - lambda * |tsdf|`, symmetric about the surface: it discounts a
+// voxel in FRONT of the surface exactly as much as one BEHIND it. The two are not alike. The
+// front of the band is free space the sensor looked through and actually observed; the back is
+// occluded -- nothing has ever seen it, and its value is an extrapolation. The literature keeps
+// full weight in front and ramps only the occluded side to zero.
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace {
+    // Mean stored weight of the band in front of (tsdf > 0) and behind (tsdf < 0) a +Z plane.
+    std::pair<double, double> frontAndBehindWeight(Engine::Core::Context &ctx, bool dropoff) {
+        AdvancedTSDF tsdf;
+        tsdf.Build(ctx, 0.01f, 0.05f);
+        tsdf.SetPointToPlane(true);
+        tsdf.SetIntegrationQuality({1, 4, /*viewAngleWeight=*/false});
+        tsdf.SetConfidenceWeight(0.0f); // isolate the profile under test from A1
+        tsdf.SetBehindSurfaceDropoff(dropoff);
+
+        std::vector<Vector3f> pts, nrm;
+        // Off the voxel lattice: a plane on a boundary makes floor() a knife edge and the band
+        // comes out asymmetric by quantization luck rather than by the profile under test.
+        makePlane(pts, nrm, 0.2f, 20, 0.005f);
+        tsdf.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, 0.5f));
+
+        double front = 0.0, behind = 0.0;
+        int nFront = 0, nBehind = 0;
+        for (const AdvancedEntry &e : tsdf.DownloadEntries()) {
+            if (e.weight <= 0.0f) continue;
+            if (e.tsdf > 0.3f) { front += e.weight; ++nFront; }
+            else if (e.tsdf < -0.3f) { behind += e.weight; ++nBehind; }
+        }
+        EXPECT_GT(nFront, 0);
+        EXPECT_GT(nBehind, 0);
+        return {nFront ? front / nFront : 0.0, nBehind ? behind / nBehind : 0.0};
+    }
+} // namespace
+
+TEST(AdvancedTSDF, TheBehindSurfaceDropoffDiscountsOnlyTheOccludedSide) {
+    Engine::Core::Context ctx;
+
+    const auto off = frontAndBehindWeight(ctx, false);
+    EXPECT_NEAR(off.second / off.first, 1.0, 0.05)
+            << "without the drop-off the profile is symmetric: front " << off.first << " behind "
+            << off.second;
+
+    const auto on = frontAndBehindWeight(ctx, true);
+    EXPECT_LT(on.second / on.first, 0.9)
+            << "the occluded side must be discounted: front " << on.first << " behind "
+            << on.second;
+    EXPECT_NEAR(on.first / off.first, 1.0, 0.05)
+            << "the observed side must keep the weight it had: " << on.first << " vs " << off.first;
+}
+
+TEST(AdvancedTSDF, TheBehindSurfaceDropoffIsOffByDefault) {
+    Engine::Core::Context ctx;
+    AdvancedTSDF tsdf;
+    tsdf.Build(ctx, 0.01f, 0.05f);
+    tsdf.SetPointToPlane(true);
+    tsdf.SetIntegrationQuality({1, 4, false});
+    tsdf.SetConfidenceWeight(0.0f);
+    // No SetBehindSurfaceDropoff call at all: the default must match the explicit `false`.
+    std::vector<Vector3f> pts, nrm;
+    makePlane(pts, nrm, 0.2f, 20, 0.005f);
+    tsdf.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, 0.5f));
+    const std::size_t defaulted = tsdf.DownloadEntries().size();
+
+    AdvancedTSDF explicitlyOff;
+    explicitlyOff.Build(ctx, 0.01f, 0.05f);
+    explicitlyOff.SetPointToPlane(true);
+    explicitlyOff.SetIntegrationQuality({1, 4, false});
+    explicitlyOff.SetConfidenceWeight(0.0f);
+    explicitlyOff.SetBehindSurfaceDropoff(false);
+    explicitlyOff.Integrate(pts, nrm, Vector3f(0.0f, 0.0f, 0.5f));
+    EXPECT_EQ(defaulted, explicitlyOff.DownloadEntries().size());
+}

@@ -30,6 +30,7 @@ namespace {
                                     config.adaptiveBand.sigmaQuadratic,
                                     config.adaptiveBand.sigmaOffsetMeters,
                                     config.adaptiveBand.sigmaAngular});
+            m_tsdf.SetBehindSurfaceDropoff(config.behindSurfaceDropoff);
             m_tsdf.SetIntegrationQuality(
                     {config.maxDirections, config.directionExponent, config.viewAngleWeight});
         }

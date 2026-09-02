@@ -49,6 +49,10 @@ struct TSDFBackendConfig {
     // boundary and naming the implementation type here would drag TSDF:: into every consumer.
     TSDFAdaptiveBand adaptiveBand;
 
+    // Discount only the occluded side of the band (Bylow / Voxblox eq. 5) instead of both sides
+    // equally. false (default) = the symmetric confidenceWeight profile, unchanged.
+    bool behindSurfaceDropoff = false;
+
     // Counts hash probes. A development switch -- it recompiles the integrate kernel and adds
     // three atomics per lookup.
     bool probeStats = false;

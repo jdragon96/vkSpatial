@@ -32,6 +32,9 @@ namespace Pipeline {
             config.backendConfig.directionExponent = cfg.directionExponent;
             config.backendConfig.viewAngleWeight = cfg.viewAngleWeight;
             config.backendConfig.probeStats = cfg.probeStats;
+            config.backendConfig.adaptiveBand.sigmaMultiplier = cfg.bandSigmaMultiplier;
+            config.backendConfig.adaptiveBand.minimumVoxels = cfg.bandMinimumVoxels;
+            config.backendConfig.behindSurfaceDropoff = cfg.behindSurfaceDropoff;
             config.splitterConfig.baseResolution = cfg.baseVoxel;
             config.splitterConfig.blockVoxels = cfg.blockVoxels;
             config.splitterConfig.maxPointPerFrame = int(cfg.maxPoints);
@@ -72,6 +75,9 @@ namespace Pipeline {
             snap.processedFrame = processed;
             snap.voxel = baseVoxel;                       // lets the tracker scale its correspondence distance
             snap.truncationDistance = truncationDistance; // lets it recover a sub-voxel target point
+            // Built here, on the integration thread, so the registration thread's per-frame crop
+            // pays a bucket lookup instead of a full O(entries) scan.
+            BuildSnapshotEntryIndex(snap);
 
             snap.baseTiles = uint32_t(tsdf.BaseWindowCount());
             snap.detailTiles = uint32_t(tsdf.DetailWindowCount());

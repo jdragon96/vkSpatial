@@ -39,6 +39,7 @@ namespace TSDF {
             float sigmaQuadratic;
             float sigmaOffsetMeters;
             float sigmaAngular;
+            uint32_t behindSurfaceDropoff;
         };
 
         // Must match the push_constant block in kernel_AdvancedTSDF.extract.comp.glsl.
@@ -242,7 +243,8 @@ namespace TSDF {
                 m_originVoxel.x(), m_originVoxel.y(), m_originVoxel.z(),
                 uint32_t(m_pointToPlane ? 1u : 0u), m_confWeight, m_currentFrame,
                 m_band.sigmaMultiplier, m_band.minimumVoxels, m_band.sigmaConstant,
-                m_band.sigmaQuadratic, m_band.sigmaOffsetMeters, m_band.sigmaAngular};
+                m_band.sigmaQuadratic, m_band.sigmaOffsetMeters, m_band.sigmaAngular,
+                m_behindSurfaceDropoff ? 1u : 0u};
         kernel_integratePoints->Args(pc);
         batch.DispatchElements(*kernel_integratePoints, n);
     }
@@ -277,7 +279,8 @@ namespace TSDF {
                 m_band.sigmaConstant,
                 m_band.sigmaQuadratic,
                 m_band.sigmaOffsetMeters,
-                m_band.sigmaAngular};
+                m_band.sigmaAngular,
+                m_behindSurfaceDropoff ? 1u : 0u};
         kernel_integratePoints->Args(pc);
         batch.DispatchElements(*kernel_integratePoints, n);
     }

@@ -48,6 +48,10 @@ layout(push_constant) uniform PC {
 	float g_sigmaQuadratic;
 	float g_sigmaOffsetMeters;
 	float g_sigmaAngular;
+
+	// 1 = discount only the occluded side of the band (Bylow / Voxblox eq. 5);
+	// 0 = the symmetric A1 profile driven by g_confWeight.
+	uint  g_behindSurfaceDropoff;
 };
 
 layout(std430, set = 0, binding = 0) buffer HashTable
@@ -262,9 +266,27 @@ void Integrate(
 		if (abs(voxel2point) > bandWidth) continue;
 		float tsdf = clamp(voxel2point / truncateDistance, -1.0, 1.0);
 
-		// A1: surface-proximity confidence — down-weight band voxels far from the surface
-		//     (|tsdf|→1) relative to near-surface ones (|tsdf|→0). lambda=0 disables it.
-		float confidence = 1.0 - g_confWeight * abs(tsdf);
+		// Observation confidence for this band voxel. Two profiles:
+		//
+		//  * Behind-surface drop-off (Bylow et al. 2013; Voxblox eq. 5). The front of the band is
+		//    free space the sensor looked THROUGH -- it was observed. The back is occluded and
+		//    nothing has ever seen it, so its value is an extrapolation from the surface. Full
+		//    weight in front and for one voxel behind, then a linear ramp to zero at the
+		//    truncation. Voxblox uses exactly this with epsilon = v and delta = 4v.
+		//  * A1 (the default): symmetric in |tsdf|, which discounts the observed side of the band
+		//    as much as the occluded one.
+		float confidence;
+		if (g_behindSurfaceDropoff != 0u)
+		{
+			float epsilon = voxelSize;
+			confidence = (voxel2point > -epsilon)
+				? 1.0
+				: max(0.0, (voxel2point + truncateDistance) / max(truncateDistance - epsilon, 1e-9));
+		}
+		else
+		{
+			confidence = 1.0 - g_confWeight * abs(tsdf);
+		}
 
 		// 2.2. Accumulate the weighted TSDF and the observed normal (stored gradient)
 		//      into every selected direction layer.
