@@ -1,128 +1,275 @@
-# Depth 프레임 노이즈 제거
+# Depth 센서 필터링
 
-D435 depth 프레임의 노이즈를 어디서 어떻게 거르는지, 무엇이 실제로 원인이고 무엇이 아닌지, 그리고 무엇이 아직 없는지. 측정은 전부 `capture/`(477프레임 D435 실측 녹화, 결정론적 재생) 위에서 했다.
+depth 프레임이 점으로, 점이 복셀로 가는 동안 걸리는 필터 전부. 기준 파일은 [`DepthCameraFrameSource.h`](../src/Pipeline/Reconstruction/DepthCameraFrameSource.h), [`RealSenseDepthProvider.cpp`](../src/Pipeline/Reconstruction/RealSenseDepthProvider.cpp), [`kernel_AdvancedTSDF.integrate.comp.glsl`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl).
 
-## 1. 다섯 층
+## 1. 의사코드
 
-노이즈 처리가 다섯 층에 걸쳐 있고 **각 층이 볼 수 있는 정보가 다르다.** 실행 순서대로다.
+```
+DepthCameraFrameSource::Next(out Frame)
+├─ IDepthProvider::Grab(out DepthFrame)                   RealSenseDepthProvider
+│  ├─ try_wait_for_frames
+│  ├─ ThresholdFilter                                     [D1] opt-in
+│  └─ UnpackDepthRows                                     uint16 → metres
+│
+└─ BackprojectDepth(DepthFrame, CameraIntrinsics) → Frame
+   ├─ PrefilterDepth                                      [H1] opt-in
+   ├─ BuildVertexGrid                                     per pixel
+   │  └─ RangeGate                                        [H2] opt-in
+   └─ EmitPoints                                          per pixel
+      ├─ ForwardJumpGuard                                 [H3] always
+      ├─ StraddlesADepthStep                              [H4] opt-in
+      ├─ CountSameSurfaceNeighbours                       [H5] opt-in
+      ├─ EstimateNormal
+      │  └─ OrientTowardCamera
+      └─ IncidenceGate                                    [H6] opt-in
 
-| 층 | 어디서 | 볼 수 있는 것 |
-|---|---|---|
-| 1. 디바이스 | `RealSenseDepthProvider` | raw 스테레오 쌍 — **케이블 이쪽에서는 영원히 못 보는 정보** |
-| 2. 이미지 스무딩 | `PrefilterDepth` | depth 이미지의 국소 이웃 |
-| 3. 점 admission | `BackprojectDepth` | 이웃 + 복원된 3D 기하 |
-| 4. 융합 가중 | TSDF integrate 커널 | 표면 대비 복셀의 위치, 시선 |
-| 5. 맵 | (없음) | 여러 프레임에 걸친 관측의 일관성 |
+TSDF::Integrate → kernel_AdvancedTSDF.integrate           per point
+├─ SelectDirections                                       → dirCount, reliability[]
+├─ ViewReliabilityFactor                                  [F1] on by default
+├─ AdaptiveBandWidth                                      [F2] opt-in
+│  └─ AxialNoiseSigma
+└─ MarchBand                                              t ∈ [−steps, steps]
+   ├─ SignedDistance                                      point-to-plane | projective
+   ├─ BandMembership
+   ├─ Confidence                                          [F3] symmetric | behind-dropoff
+   └─ AccumulateWeighted                                  atomic
+```
 
-## 2. 층 1 — 디바이스 (`RealSenseOptions`)
+기본값: `[D1] [H1] [H2] [H4] [H5] [H6] [F2]` off, `[H3] [F1] [F3=symmetric]` on. `realsense_scan`만 `[H1]`을 3으로 켠다.
 
-| 노브 | 기본 | 비고 |
-|---|---|---|
-| `highAccuracyPreset` | off | 매처의 거부 임계를 올린다. 점은 줄고 남은 점의 신뢰도는 오른다 |
-| `minimum/maximumDepthMeters` | off | `rs2::threshold_filter` |
-| `advancedModeJsonPath` | off | `rs400::advanced_mode::load_json` |
+---
 
-**프리셋은 `get_depth_scale()` 전에 적용한다.** 비주얼 프리셋이 `RS2_OPTION_DEPTH_UNITS`를 바꿀 수 있어, 먼저 읽으면 이전 설정의 스케일이 잡히고 재구성 전체가 **증상 없이** 오배율된다.
+## 2. 세부
 
-**이 층은 재생으로 A/B가 원리적으로 불가능하다.** 녹화는 매처가 판단을 끝낸 뒤의 raw Z16이라, 디바이스에 사는 게이트는 녹화가 실어 나를 흔적을 남기지 않는다.
+기호: $z$ 깊이(m), $(u,v)$ 픽셀, $P$ 카메라 좌표 점, $\hat n$ 단위 법선, $\hat r$ 시선 단위벡터, $v_s$ 복셀 크기, $\delta$ truncation.
 
-## 3. 층 2 — `PrefilterDepth`
+### UnpackDepthRows
 
-불연속 인지형 정사각 평균. 같은 표면 위 이웃만 평균하므로 스텝을 넘어 뭉개지 않는다.
+$$z(u,v) = \text{raw}_{16}(u,v)\cdot s,\qquad s=\texttt{get\_depth\_scale()}$$
 
-- 실측: 인접 법선 불일치 **중앙값 24° → 4.7°(3×3) → 2.9°(5×5)**
-- 이 저장소에서 가장 큰 단일 효과다. `realsense_scan` 기본 3, `icp_quality_diag` 기본 0
+행 stride가 $2W$가 아닐 수 있어 행마다 재계산한다. 선형으로 걸으면 이미지가 점진적으로 전단된다.
 
-## 4. 층 3 — 점 admission (`DepthFilterOptions`)
+```cpp
+const unsigned char *rowBase = base + std::size_t(row) * rowStrideBytes;
+out[row * width + column] = float(raw) * metresPerUnit;
+```
 
-**순서가 의미를 가진다.** 앞 게이트가 픽셀을 invalid로 만들면 뒤 게이트의 이웃 계산이 달라진다.
+$s$는 장치에서 읽는다. **비주얼 프리셋 적용 후에** 읽어야 한다 — 프리셋이 `RS2_OPTION_DEPTH_UNITS`를 바꿀 수 있다.
 
-| 순서 | 노브 | 잡는 것 | 기본 |
-|---|---|---|---|
-| 1 | `minimum/maximumDepthMeters` | 센서 측정 범위 밖. **invalid로 만든다** — 단순히 안 내보내면 옆 픽셀의 법선을 여전히 결정한다 | off |
-| 2 | `relative/minimumDepthJump` | 전방(`u+1`,`v+1`) 점프. **법선을 보호한다** | 항상 on |
-| 3 | `symmetricDepthJumpGuard` | 8이웃 전부. **점을 보호한다** | off |
-| 4 | `minimumValidNeighbours` | 이웃 지지도. "유효"가 아니라 **"같은 표면"** 이웃을 센다 | off |
-| 5 | `maximumIncidenceDegrees` | 스치는 입사각 | off |
+### 점프 허용치 $\tau$
 
-### 2번과 3번의 관계
+이하 모든 게이트가 공유한다.
 
-전방 가드가 `u+1`,`v+1`만 보는 건 **버그가 아니라 범위의 문제**다. 법선이 그 두 이웃의 전방차분이므로 가드는 *법선*을 정확히 보호한다. 점의 신뢰도는 별개 질문이고, 둘은 **모든 스텝의 뒤쪽 가장자리에서 갈린다.**
+$$\tau(z)=\max\bigl(\text{minimumDepthJump},\ \text{relativeDepthJump}\cdot z\bigr)$$
 
-### 5번은 권하지 않는다
+기본 $(0.005,\ 0.02)$. 상대항인 이유는 스테레오 오차가 $\propto z^2/(f\cdot b)$로 자라기 때문 — 고정값은 근거리에서 과잉 거부, 원거리에서 과소 거부다.
 
-`MapConfig::viewAngleWeight`가 기본 `true`라 융합이 이미 `cos(θ)`로 가중된다. hard 게이트는 그 위에 **이중으로** 얹히는 것이다.
+### [H1] PrefilterDepth
 
-## 5. 층 4 — 융합 가중 (TSDF integrate)
+$$\tilde z(u,v)=\frac{\sum_{(u',v')\in W} z'\,\mathbb 1[\,z'>0\,\wedge\,|z'-z|\le\tau(z)\,]}{\sum_{(u',v')\in W}\mathbb 1[\cdots]}$$
 
-| 노브 | 기본 | 측정 효과 |
-|---|---|---|
-| `viewAngleWeight` — `dot(n, -ray)` | **on** | 층 3의 5번과 중복 |
-| `confidenceWeight` (A1) — `1 − λ\|tsdf\|` | 0.5 | **대칭** — 관측한 앞쪽을 본 적 없는 뒤쪽과 똑같이 깎는다 |
-| `behindSurfaceDropoff` (Voxblox eq. 5) | off | 앞쪽 온전히, 뒤쪽만 램프. 맵 복셀 −2.33% |
-| `adaptiveBand` — 밴드폭 `N·σ_z(z,θ)` | off | 맵 복셀 −22.3%, ICP −21.5% |
+$W$는 한 변 `prefilterWindow`의 정사각. 유효 이웃이 없으면 $z$ 그대로.
 
-## 6. 층 5 — 없음: 자유공간 카빙
+```cpp
+if (neighbour <= 0.0f || std::abs(neighbour - z) > tolerance) continue;
+sum += neighbour; ++count;
+out[centre] = count > 0 ? sum / float(count) : z;
+```
 
-integrate 커널은 각 점의 **±truncation 밴드만** 쓴다. 카메라와 표면 사이 자유공간에 아무것도 쓰지 않고, 감쇠·삭제 경로도 없다.
+$\mathbb 1[\cdot]$의 $\tau$ 조건이 없으면 스텝을 가로질러 평균되어 [H3]의 flying-pixel 방어가 무효화된다.
 
-표준(Curless & Levoy 1996, Voxblox)은 센서 원점에서 광선을 따라가며 자유공간을 갱신한다. 그래서 나중 프레임이 flyer가 있던 자리를 통과하면 그 복셀을 밀어낸다. **여기서는 한 번 융합된 flyer가 영구적이다.**
+**측정**: 인접 법선 불일치 중앙값 raw 24° → 3×3 4.7° → 5×5 2.9°.
 
-층 3의 게이트들은 flyer가 **들어오지 못하게** 막는다. 들어온 뒤 지워지게 하는 것은 카빙뿐이고, 둘은 서로를 대체하지 않는다.
+### [H2] RangeGate + 백프로젝션
 
-## 7. 시선 방향 스트리크 — 원인 규명
+$$\text{valid}(u,v) \iff z>0 \;\wedge\; (z_{\min}=0 \vee z\ge z_{\min}) \;\wedge\; (z_{\max}=0 \vee z\le z_{\max})$$
 
-`capture/` raw depth 직접 분석(12프레임, prefilter 3):
+$$P(u,v)=\Bigl(\tfrac{u-c_x}{f_x}z,\ \tfrac{v-c_y}{f_y}z,\ z\Bigr)$$
 
-| 가설 | 판정 | 근거 |
-|---|---|---|
-| 불연속 경계의 flying pixel | **원인** | 방출 점의 0.17%, 가려진 이웃과 **중앙값 403 mm** (p90 543, 최대 616) |
-| 센서 축방향 노이즈 | **기각** | 평탄면 σ_z 0.68 mm(0.3–0.8 m) / 1.12 mm(0.8–1.5 m) — 횡방향 샘플 간격(1.8–2.4 mm)보다 **작다** |
-| 소프트 보간 램프 | **기각** | 대칭 가드 적용 후 7×7 중앙값에서 50 mm 이상 벗어난 점 **0개**. 남는 종류가 없다 |
-| 트런케이션 밴드 | 설계 | truncation 0.03 / voxel 0.01 → 표면마다 ±3 복셀, 약 70 mm 두께 |
+```cpp
+if ((filter.minimumDepthMeters > 0.0f && z < filter.minimumDepthMeters) ||
+    (filter.maximumDepthMeters > 0.0f && z > filter.maximumDepthMeters)) {
+    if (stats) stats->rejectedByRange.fetch_add(1, std::memory_order_relaxed);
+    continue;
+}
+```
 
-즉 **국소 점프 검사가 못 보는 잔여 클래스는 없다.** 대칭 가드를 켜면 depth 이미지 안의 이상점은 사라진다.
+`continue`가 `valid[i]=0`을 남긴다. 방출만 막고 `valid`를 세우면 그 픽셀이 이웃 자격을 유지해 옆 픽셀의 법선을 계속 결정한다.
 
-## 8. 권장 설정
+### [H3] ForwardJumpGuard
 
-`--no-submap`, icp 트래커, prefilter 3, `capture/` 477프레임:
+$$|z(u{+}1,v)-z|\le\tau \;\wedge\; |z(u,v{+}1)-z|\le\tau$$
+
+```cpp
+if (std::abs(grid[i + 1].z() - z) > maxJump) continue;
+if (std::abs(grid[i + W].z() - z) > maxJump) continue;
+```
+
+법선이 그 두 이웃의 전방차분이므로 검사 대상도 그 둘이다. **법선의 유효성**을 보장하며, 점의 신뢰도는 보장하지 않는다.
+
+### [H4] StraddlesADepthStep
+
+$$\exists\,(du,dv)\in\{-1,0,1\}^2\setminus\{(0,0)\}\ :\ \text{valid}(u{+}du,v{+}dv)\ \wedge\ |z_{nb}-z|>\tau$$
+
+```cpp
+if (!valid[j]) continue;
+if (std::abs(depth[j] - z) > tolerance) return true;
+```
+
+이미지 밖 이웃은 부재이지 스텝이 아니므로 세지 않는다. [H3]과의 차이는 **스텝의 뒤쪽 가장자리** — 오른쪽·아래가 자기 표면이고 왼쪽·위가 40 cm 뒤인 픽셀은 [H3]을 통과한다.
+
+### [H5] CountSameSurfaceNeighbours
+
+$$S(u,v)=\sum_{(du,dv)\ne(0,0)}\mathbb 1[\,\text{valid}\,\wedge\,|z_{nb}-z|\le\tau\,]\ \ \ge\ \text{minimumValidNeighbours}$$
+
+```cpp
+if (!valid[j]) continue;
+if (std::abs(depth[j] - z) > tolerance) continue;
+++count;
+```
+
+$\tau$ 조건 없이 유효성만 세면 2×2 근접 blob이 $S=8$로 통과한다(자기 표면 이웃은 3개).
+
+### EstimateNormal
+
+$$\mathbf n = \bigl(P(u{+}1,v)-P\bigr)\times\bigl(P(u,v{+}1)-P\bigr),\qquad \hat n=\frac{\mathbf n}{\|\mathbf n\|}$$
+
+$$\hat n \leftarrow -\hat n \quad\text{if}\quad \hat n\cdot P>0$$
+
+```cpp
+Eigen::Vector3f n = (grid[i + 1] - grid[i]).cross(grid[i + W] - grid[i]);
+if (n.norm() < 1e-9f) continue;
+n.normalize();
+if (n.dot(grid[i]) > 0.0f) n = -n;
+```
+
+카메라가 원점이라 $P$가 곧 시선이다. $n_z$ 부호만 보면 광축 위에서만 같고, 87° 화각의 가장자리에서는 약 40° 입사부터 반전된다.
+
+### [H6] IncidenceGate
+
+$$-\hat n\cdot\hat P \ \ge\ \cos\theta_{\max},\qquad \hat P = P/\|P\|$$
+
+```cpp
+if (minimumIncidenceCosine > 0.0f &&
+    -n.dot(grid[i].normalized()) < minimumIncidenceCosine)
+```
+
+$\cos\theta_{\max}$는 루프 밖에서 한 번 계산한다. `viewAngleWeight`([F1])가 이미 같은 양을 가중치로 쓰므로 **이중 적용**이다 — 권하지 않는다.
+
+---
+
+### [F1] ViewReliabilityFactor
+
+$$w_{\text{view}}=\max\bigl(0,\ \hat n\cdot(-\hat r)\bigr)$$
+
+```glsl
+float viewReliabilityFactor = (g_viewAngleWeight != 0u)
+    ? max(0.0, dot(unitNormal, -rayDirection))
+    : 1.0;
+if (viewReliabilityFactor <= 0.0) return;
+```
+
+### [F2] AxialNoiseSigma / AdaptiveBandWidth
+
+$$\sigma_z(z,\theta)=a_0+a_1(z-z_0)^2+\frac{a_\theta}{\sqrt z}\cdot\frac{\theta^2}{(\pi/2-\theta)^2}$$
+
+$$B=\operatorname{clamp}\bigl(N\sigma_z,\ m\,v_s,\ \delta\bigr),\qquad \theta=\arccos\bigl(\hat n\cdot(-\hat r)\bigr)$$
+
+계수 $(a_0,a_1,z_0,a_\theta)=(0.0012,\,0.0019,\,0.4,\,0.0001)$ — Nguyen et al. 2012 eq. 4, Kinect v1 피팅.
+
+```glsl
+float sigma = g_sigmaConstant + g_sigmaQuadratic * fromOffset * fromOffset;
+float theta = clamp(incidenceRadians, 0.0, kHalfPi - 0.087266);
+sigma += (g_sigmaAngular / sqrt(depth)) * (theta * theta) / (toGrazing * toGrazing);
+return clamp(g_bandSigmaMultiplier * sigma, g_bandMinimumVoxels * voxelSize, truncateDistance);
+```
+
+하한 $m\,v_s$($m=2$)가 없으면 근거리에서 $3\sigma_z\approx$ 4 mm $< v_s$가 되어 밴드가 격자보다 좁아지고 **표면이 사라진다.** 상한 $\delta$는 정규화 계약 때문이다(아래).
+
+### MarchBand / SignedDistance / BandMembership
+
+$$x_t = P + \hat m\,(t\,v_s),\qquad t\in[-T,T],\quad T=\bigl\lceil B/v_s\bigr\rceil+1$$
+
+$$d(x_t)=\begin{cases}(x_c-P)\cdot\hat n & \text{point-to-plane}\\ z-(x_c-\text{cam})\cdot\hat r & \text{projective}\end{cases}\qquad \hat m=\begin{cases}\hat n\\ \hat r\end{cases}$$
+
+$$|d|\le B,\qquad \text{tsdf}=\operatorname{clamp}(d/\delta,\,-1,\,1)$$
+
+```glsl
+vec3 marchDirection = usePointToPlane ? unitNormal : rayDirection;
+float voxel2point = usePointToPlane
+    ? dot(voxelCenter - point, unitNormal)
+    : depth - dot(voxelCenter - camera, rayDirection);
+if (abs(voxel2point) > bandWidth) continue;
+float tsdf = clamp(voxel2point / truncateDistance, -1.0, 1.0);
+```
+
+행진 축과 거리 측정 축이 같아야 한다. 섞으면 밴드가 입사각 코사인만큼 잘린다(75°에서 1/3).
+
+**정규화는 $B$가 아니라 $\delta$다.** 세 트래커와 extract 커널이 $P_{\text{surf}}=x_c-\text{tsdf}\cdot\delta\cdot\hat n$로 미터 거리를 복원한다. $B$로 나누면 그 전부가 표면을 엉뚱한 곳에 놓는다.
+
+### [F3] Confidence
+
+$$w_{\text{conf}}^{\text{sym}} = 1-\lambda|\text{tsdf}|$$
+
+$$w_{\text{conf}}^{\text{drop}} = \begin{cases}1 & d>-\epsilon\\[4pt] \max\Bigl(0,\ \dfrac{d+\delta}{\delta-\epsilon}\Bigr) & d\le-\epsilon\end{cases}\qquad \epsilon=v_s$$
+
+```glsl
+confidence = (voxel2point > -epsilon)
+    ? 1.0
+    : max(0.0, (voxel2point + truncateDistance) / max(truncateDistance - epsilon, 1e-9));
+```
+
+symmetric은 $|{\cdot}|$이라 센서가 통과해 관측한 앞쪽을 아무것도 본 적 없는 뒤쪽과 똑같이 깎는다. drop-off는 앞쪽을 온전히 두고 가림 쪽만 램프한다(Bylow et al. 2013; Voxblox eq. 5).
+
+### AccumulateWeighted
+
+$$w=w_{\text{view}}\cdot w_{\text{dir}}\cdot w_{\text{conf}}$$
+
+$$\sum DW \mathrel{+}= \text{tsdf}\cdot w\cdot K,\quad \sum W \mathrel{+}= w\cdot K,\quad \sum \mathbf N \mathrel{+}= \hat n\,w\,K$$
+
+```glsl
+float w = viewReliabilityFactor * reliability[di] * confidence;
+atomicAdd(g_hash[slot].sumDW, int(tsdf * w * TSDF_SCALE));
+atomicAdd(g_hash[slot].sumW,  uint(w * TSDF_SCALE));
+atomicAdd(g_hash[slot].sumNx, int(unitNormal.x * w * TSDF_SCALE));
+```
+
+$K=$ `TSDF_SCALE` 고정소수점. 추출 시 $\text{tsdf}=\sum DW/\sum W$, $\hat n=\sum\mathbf N/\|\sum\mathbf N\|$.
+
+---
+
+## 3. 측정
+
+`capture/` 477프레임, `--no-submap`, icp, `[H1]`=3.
 
 | 설정 | 점 유지 | 맵 복셀 | 추적 | align ms |
 |---|---|---|---|---|
 | 게이트 없음 | 123,471,684 | 1,000,198 | 476/476 | 70.6 |
-| **moderate** `--symmetric-guard --min-neighbours 6 --behind-dropoff` | −1.19% | −4.34% | 476/476 | 69.7 |
-| **aggressive** 위 + `--min-neighbours 8 --far 4.0` | **−3.58%** | **−6.73%** | 476/476 | 64.3 |
+| `[H4] [H5]=6 [F3]=drop` | −1.19% | −4.34% | 476/476 | 69.7 |
+| 위 + `[H5]=8 [H2]`far 4.0 | −3.58% | −6.73% | 476/476 | 64.3 |
+| `[F2]`=3σ 단독 | — | −22.3% | 476/476 | −21.5% |
 
-추적은 전 설정에서 476/476(프레임 0의 `NoModel` 1건 제외)이고 RMSE는 나빠지지 않는다. **신뢰 점을 조금 잃더라도 의심 점을 지우고 싶다면 aggressive가 그 트레이드다.**
+원인 규명 (raw depth 직접 분석, 12프레임):
 
-`--min-neighbours 8`은 이웃 8개가 전부 유효하고 같은 표면일 것을 요구하므로, 이미지 1픽셀 테두리와 invalid 픽셀에 인접한 모든 점을 버린다. 의도된 공격성이다.
+| 가설 | 판정 |
+|---|---|
+| 불연속 flying pixel | **원인** — 방출 점의 0.17%, 가려진 이웃과 중앙값 403 mm |
+| 센서 축방향 노이즈 | 기각 — 평탄면 $\sigma_z$ 0.68–1.12 mm < 횡방향 간격 1.8–2.4 mm |
+| 소프트 보간 램프 | 기각 — `[H4]` 후 7×7 중앙값 대비 50 mm 초과 점 **0개** |
 
-## 9. 측정 함정 — 맵 복셀 수를 품질 프록시로 쓰지 말 것
+**측정 함정**: `submap = true`에서 entry 수는 입력 점 수의 단조 함수가 아니다. [분류 커널](../src/TSDF/Memory/RegionClassifier/kernel_DenseRegionClassifier.classify.comp.glsl)의 `g_dense[i]`가 latch되고 되돌아가지 않아 경로 의존적이고, 한 블록이 latch될 때마다 부피가 $32^3\to64^3$(약 8배)이 된다. dense blocks 27→28 하나 차이가 entry +8.3%를 만들었다. 프런트엔드 A/B는 `--no-submap`으로 한다.
 
-`submap = true`(기본)에서 **entry 수는 입력 점 수의 단조 함수가 아니다.**
+## 4. 없는 것
 
-| | 베이스라인 | 대칭 가드 | 변화 |
-|---|---|---|---|
-| `submap = true` | 9,124,516 | 9,878,809 | **+8.3%** |
-| `--no-submap` | 2,728,887 | 2,717,576 | **−0.41%** |
-
-원인은 [분류 커널](../src/TSDF/Memory/RegionClassifier/kernel_DenseRegionClassifier.classify.comp.glsl)의 `if (g_dense[i] != 0u) { // latched: never revert`. 분류가 latch되고 되돌아가지 않아 경로 의존적이다 — 입력이 0.27% 바뀌면 어느 블록이 언제 latch되는지가 달라지고, 한 블록이 latch될 때마다 그 부피가 base 32³에서 detail 64³로 약 8배가 된다. 실측에서 dense blocks **27→28, 단 한 개 차이**가 +8.3%를 만들었다.
-
-기각한 대안: 해시 오버플로(insert failures 0, window refusals 0), 포즈 변화(`identity`로 고정해도 발생), 용량 클램프(버퍼는 성장).
-
-**프런트엔드 A/B는 `--no-submap`으로 해야 한다.**
-
-## 10. 아직 없는 것
-
-1. **자유공간 카빙** (Curless & Levoy) — flyer를 영구적이지 않게 만드는 유일한 수단. 걸림돌 둘: point-to-plane은 **법선**을 따라 행진하는데 카빙은 **광선**을 따라야 하고(두 축을 섞으면 안 된다), directional TSDF에서 "빈 공간"을 어느 방향 레이어에 쓸지가 자명하지 않다(자유공간에는 법선이 없다)
-2. **σ 가중 prefilter** (Nguyen) — 층 2를 하드 임계에서 $w=\exp(-\frac{\Delta u^2}{2\sigma_L^2}-\frac{\Delta z^2}{2\sigma_z^2})$로
-3. **ICP 잔차 가중** $\sigma_z(z_{min},0)/\sigma_z$ — 현재 Huber만이라 먼 점이 가까운 점과 같은 발언권을 갖는다
-4. **σ_z 계수 D435 재피팅** — 현재 계수는 Kinect v1(구조광) 피팅이다. 함수 형태는 전이되지만 상수는 아니다
+1. **자유공간 카빙** — integrate는 $\pm B$ 밴드만 쓴다. 카메라–표면 사이를 갱신하지 않으므로 **한 번 융합된 flyer는 영구적이다.** point-to-plane은 $\hat n$을 따라 행진하는데 카빙은 $\hat r$을 따라야 하고, directional TSDF에서 자유공간의 방향 레이어가 자명하지 않다
+2. **σ 가중 prefilter** — `[H1]`을 하드 임계에서 $w=\exp\bigl(-\tfrac{\Delta u^2}{2\sigma_L^2}-\tfrac{\Delta z^2}{2\sigma_z^2}\bigr)$로
+3. **ICP 잔차 가중** $\sigma_z(z_{\min},0)/\sigma_z$
+4. **$\sigma_z$ 계수 D435 재피팅** — 현재 계수는 Kinect v1(구조광) 피팅
 
 ## 참고
 
-- Nguyen, Izadi & Lovell, *Modeling Kinect Sensor Noise for Improved 3D Reconstruction and Tracking*, 3DIMPVT 2012 — σ_z 모델과 KinectFusion 적용(필터·ICP 가중·트런케이션)
-- Curless & Levoy, *A Volumetric Method for Building Complex Models from Range Images*, SIGGRAPH 1996 — space carving, outlier robustness
-- Oleynikova et al., *Voxblox*, IROS 2017 — eq. 5의 뒤쪽 감쇠 가중치(δ = 4v, ε = v); `1/z²`는 Nguyen 모델에서
-- Bylow et al. 2013 — 뒤쪽 감쇠의 원출처(Voxblox 경유)
-- Weder et al., *RoutedFusion*, CVPR 2020 — 학습 기반 융합; 표면 경계·얇은 물체의 thickening artifact를 직접 겨냥
+- Nguyen, Izadi & Lovell, 3DIMPVT 2012 — $\sigma_z$ 모델, 필터·ICP 가중·트런케이션 적용
+- Curless & Levoy, SIGGRAPH 1996 — space carving
+- Oleynikova et al., *Voxblox*, IROS 2017 — eq. 5 뒤쪽 감쇠 ($\delta=4v$, $\epsilon=v$)
+- Bylow et al. 2013 — 뒤쪽 감쇠 원출처
+- Weder et al., *RoutedFusion*, CVPR 2020 — 학습 융합, thickening artifact
