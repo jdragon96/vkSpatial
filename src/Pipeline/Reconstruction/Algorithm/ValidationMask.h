@@ -54,12 +54,18 @@ public:
 
         kernel_clearProperty = std::make_unique<Engine::Core::ComputePipeline>(context);
         kernel_clearProperty->Build("Pipeline/Reconstruction/Algorithm/kernel_ClearValidMask.comp.glsl");
-        kernel_PrefilterDepth = std::make_unique<Engine::Core::ComputePipeline>(context);
-        kernel_PrefilterDepth->Build("Pipeline/Reconstruction/Algorithm/kernel_PrefilterDepth.comp.glsl");
+        kernel_windowAveraging = std::make_unique<Engine::Core::ComputePipeline>(context);
+        kernel_windowAveraging->Build("Pipeline/Reconstruction/Algorithm/kernel_WindowAveraging.comp.glsl");
         kernel_buildVertexGrid = std::make_unique<Engine::Core::ComputePipeline>(context);
         kernel_buildVertexGrid->Build("Pipeline/Reconstruction/Algorithm/kernel_BuildVertexGrid.comp.glsl");
         kernel_estimateNormal = std::make_unique<Engine::Core::ComputePipeline>(context);
         kernel_estimateNormal->Build("Pipeline/Reconstruction/Algorithm/kernel_EstimateNormal.comp.glsl");
+        kernel_countEmittedPerRow = std::make_unique<Engine::Core::ComputePipeline>(context);
+        kernel_countEmittedPerRow->Build("Pipeline/Reconstruction/Algorithm/kernel_CountEmittedPerRow.comp.glsl");
+        kernel_scanRows = std::make_unique<Engine::Core::ComputePipeline>(context);
+        kernel_scanRows->Build("Pipeline/Reconstruction/Algorithm/kernel_ScanRows.comp.glsl");
+        kernel_scatterPoints = std::make_unique<Engine::Core::ComputePipeline>(context);
+        kernel_scatterPoints->Build("Pipeline/Reconstruction/Algorithm/kernel_ScatterPoints.comp.glsl");
     }
 
     void Execute() {
@@ -96,9 +102,9 @@ public:
                                              window,
                                              relativeDepthJump,
                                              minimumDepthJump};
-        kernel_PrefilterDepth->Bind(0, source).Bind(1, filtered);
-        kernel_PrefilterDepth->Args(pushConstants);
-        dispatchOverImage(batch, *kernel_PrefilterDepth, width, height);
+        kernel_windowAveraging->Bind(0, source).Bind(1, filtered);
+        kernel_windowAveraging->Args(pushConstants);
+        dispatchOverImage(batch, *kernel_windowAveraging, width, height);
     }
 
     // [H2] back-project the depth image into camera-frame vertices and mark which pixels the
@@ -150,6 +156,36 @@ public:
         dispatchOverImage(batch, *kernel_estimateNormal, width, height);
     }
 
+    // Gathers the `emitted` pixels into compact point + normal arrays, in the SAME row-major order
+    // BackprojectDepth emits in.
+    //
+    // Three dispatches rather than one atomicAdd append, on purpose. This cloud is the ICP source,
+    // and its centroid is a float sum, so the compacted ORDER reaches the solve -- an
+    // atomicAdd order makes a replay diverge, which this repo has measured (four runs of one
+    // command: 1.47, 6.45, 7.84 and 136.76 metres of trajectory).
+    //
+    // `rowOffset` must hold height + 1 uints; slot [height] comes back as the point count.
+    void RecordCompactPoints(Engine::Compute::CommandBatch &batch, Engine::Core::Buffer &mask,
+                             Engine::Core::Buffer &vertices, Engine::Core::Buffer &normals,
+                             Engine::Core::Buffer &rowOffset, Engine::Core::Buffer &points,
+                             Engine::Core::Buffer &compactNormals, int width, int height) {
+        ImagePushConstants imageSize{width, height};
+        kernel_countEmittedPerRow->Bind(0, mask).Bind(1, rowOffset);
+        kernel_countEmittedPerRow->Args(imageSize);
+        batch.DispatchElements(*kernel_countEmittedPerRow, uint32_t(height));
+        batch.Barrier();
+
+        RowScanPushConstants rowCount{height};
+        kernel_scanRows->Bind(0, rowOffset);
+        kernel_scanRows->Args(rowCount);
+        batch.Dispatch(*kernel_scanRows, 1, 1, 1);
+        batch.Barrier();
+
+        kernel_scatterPoints->Bind(0, mask).Bind(1, vertices).Bind(2, normals).Bind(3, rowOffset).Bind(4, points).Bind(5, compactNormals);
+        kernel_scatterPoints->Args(imageSize);
+        batch.DispatchElements(*kernel_scatterPoints, uint32_t(height));
+    }
+
 private:
     // Must match the push_constant block in kernel_ClearValidMask.comp.glsl.
     struct ClearPushConstants {
@@ -157,7 +193,7 @@ private:
         std::int32_t height;
     };
 
-    // Must match the push_constant block in kernel_PrefilterDepth.comp.glsl.
+    // Must match the push_constant block in kernel_WindowAveraging.comp.glsl.
     struct PrefilterPushConstants {
         std::int32_t width;
         std::int32_t height;
@@ -189,6 +225,17 @@ private:
         float minimumIncidenceCosine;
     };
 
+    // Must match the push_constant blocks in kernel_CountEmittedPerRow / kernel_ScatterPoints.
+    struct ImagePushConstants {
+        std::int32_t width;
+        std::int32_t height;
+    };
+
+    // Must match the push_constant block in kernel_ScanRows.comp.glsl.
+    struct RowScanPushConstants {
+        std::int32_t height;
+    };
+
     static void dispatchOverImage(Engine::Compute::CommandBatch &batch,
                                   Engine::Core::ComputePipeline &pipeline,
                                   int width,
@@ -208,8 +255,12 @@ private:
     int m_height = 0;
     std::unique_ptr<Engine::Core::Buffer> m_propertyBuffer;
     std::unique_ptr<Engine::Core::ComputePipeline> kernel_clearProperty;
-    std::unique_ptr<Engine::Core::ComputePipeline> kernel_PrefilterDepth;
+    std::unique_ptr<Engine::Core::ComputePipeline> kernel_windowAveraging;
     std::unique_ptr<Engine::Core::ComputePipeline> kernel_buildVertexGrid;
     // [H3]
     std::unique_ptr<Engine::Core::ComputePipeline> kernel_estimateNormal;
+    // Compaction: count per row, scan the rows, scatter into a compact array.
+    std::unique_ptr<Engine::Core::ComputePipeline> kernel_countEmittedPerRow;
+    std::unique_ptr<Engine::Core::ComputePipeline> kernel_scanRows;
+    std::unique_ptr<Engine::Core::ComputePipeline> kernel_scatterPoints;
 };

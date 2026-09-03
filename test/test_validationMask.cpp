@@ -716,3 +716,150 @@ TEST(ValidationMask, TheIncidenceGateMeasuresAgainstTheViewRay) {
             << "a gate reading normal.z alone keeps the whole wall";
     EXPECT_GT(result.counters.rejectedByIncidence, 0u);
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+// Compaction
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace {
+
+    struct CompactResult {
+        std::vector<Eigen::Vector4f> points;
+        std::vector<Eigen::Vector4f> normals;
+        std::uint32_t count = 0;
+    };
+
+    CompactResult RunFullChain(Engine::Core::Context &context, const std::vector<float> &depth,
+                              const Pipeline::CameraIntrinsics &intrinsics,
+                              const Pipeline::DepthFilterOptions &filter) {
+        const std::size_t count = depth.size();
+        const int height = intrinsics.height;
+        ValidationMask mask(context, intrinsics.width, height);
+        auto source = UploadDepth(context, depth);
+
+        Engine::Core::Buffer vertices(context), normals(context), maskBuffer(context),
+                counter(context), rowOffset(context), points(context), compactNormals(context);
+        const uint32_t vectorBytes = uint32_t(count * sizeof(Eigen::Vector4f));
+        vertices.AllocateHostVisibleReadback(vectorBytes);
+        normals.AllocateHostVisibleReadback(vectorBytes);
+        maskBuffer.AllocateHostVisibleReadback(uint32_t(count * sizeof(ValidationMaskProperty)));
+        counter.AllocateHostVisibleReadback(uint32_t(sizeof(ValidationMaskCounters)));
+        rowOffset.AllocateHostVisibleReadback(uint32_t((height + 1) * sizeof(std::uint32_t)));
+        points.AllocateHostVisibleReadback(vectorBytes);
+        compactNormals.AllocateHostVisibleReadback(vectorBytes);
+
+        {
+            Engine::Compute::CommandBatch batch(context);
+            batch.FillBuffer(counter.Handle(), 0, sizeof(ValidationMaskCounters), 0u);
+            batch.FillBuffer(points.Handle(), 0, vectorBytes, 0u);
+            batch.FillBuffer(compactNormals.Handle(), 0, vectorBytes, 0u);
+            batch.Barrier();
+            mask.RecordBuildVertexGrid(batch, *source, vertices, maskBuffer, counter, intrinsics,
+                                       filter.minimumDepthMeters, filter.maximumDepthMeters);
+            batch.Barrier();
+            mask.RecordEstimateNormal(batch, vertices, maskBuffer, normals, counter,
+                                      intrinsics.width, height, filter);
+            batch.Barrier();
+            mask.RecordCompactPoints(batch, maskBuffer, vertices, normals, rowOffset, points,
+                                     compactNormals, intrinsics.width, height);
+            batch.Submit();
+        }
+
+        const uint32_t offsetBytes = uint32_t((height + 1) * sizeof(std::uint32_t));
+        rowOffset.MakeVisibleToCPU(offsetBytes);
+        CompactResult result;
+        std::memcpy(&result.count,
+                    static_cast<const std::uint32_t *>(rowOffset.MappedPtr()) + height,
+                    sizeof(std::uint32_t));
+
+        points.MakeVisibleToCPU(vectorBytes);
+        compactNormals.MakeVisibleToCPU(vectorBytes);
+        result.points.resize(result.count);
+        result.normals.resize(result.count);
+        if (result.count > 0) {
+            std::memcpy(result.points.data(), points.MappedPtr(),
+                        result.count * sizeof(Eigen::Vector4f));
+            std::memcpy(result.normals.data(), compactNormals.MappedPtr(),
+                        result.count * sizeof(Eigen::Vector4f));
+        }
+        return result;
+    }
+
+} // namespace
+
+// The end of the chain: the compacted arrays must equal BackprojectDepth's output element for
+// element. Not as sets -- in ORDER. An atomicAdd append would pass a set comparison and still
+// make every replay diverge, because this cloud is the ICP source and its centroid is a float sum.
+TEST(ValidationMask, CompactionReproducesTheCpuFrameInOrder) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(59, 41);
+    const std::size_t pixels = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::mt19937 rng(7u);
+    std::uniform_real_distribution<float> noise(-0.003f, 0.003f);
+    std::vector<float> depth(pixels);
+    for (int v = 0; v < intrinsics.height; ++v)
+        for (int u = 0; u < intrinsics.width; ++u) {
+            float z = (u < 25) ? 1.1f : 1.9f;
+            z += 0.015f * float(v) + noise(rng);
+            if ((u * 3 + v * 5) % 19 == 0) z = 0.0f;
+            depth[std::size_t(v) * intrinsics.width + u] = z;
+        }
+
+    for (int minimumValidNeighbours : {0, 6})
+        for (bool symmetric : {false, true}) {
+            Pipeline::DepthFilterOptions filter;
+            filter.minimumValidNeighbours = minimumValidNeighbours;
+            filter.symmetricDepthJumpGuard = symmetric;
+            SCOPED_TRACE("neighbours=" + std::to_string(minimumValidNeighbours) +
+                         " symmetric=" + std::to_string(int(symmetric)));
+
+            Pipeline::DepthFrame frame;
+            frame.depth = depth;
+            const Pipeline::Frame expected = Pipeline::BackprojectDepth(frame, intrinsics, filter);
+
+            const CompactResult actual = RunFullChain(context, depth, intrinsics, filter);
+
+            ASSERT_EQ(actual.count, expected.pts.size());
+            ASSERT_GT(actual.count, 0u);
+            for (std::size_t i = 0; i < actual.count; ++i) {
+                EXPECT_NEAR((actual.points[i].head<3>() - expected.pts[i]).norm(), 0.0f, 1e-5f)
+                        << "point " << i;
+                EXPECT_NEAR((actual.normals[i].head<3>() - expected.nrm[i]).norm(), 0.0f, 1e-4f)
+                        << "normal " << i;
+            }
+        }
+}
+
+// Same input, same bytes out. The order leaks this repo closed were only visible as divergence
+// across runs, so the property is worth asserting directly rather than inferred from the pass above.
+TEST(ValidationMask, CompactionIsByteIdenticalAcrossRuns) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(48, 32);
+    const std::size_t pixels = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::mt19937 rng(11u);
+    std::uniform_real_distribution<float> noise(-0.004f, 0.004f);
+    std::vector<float> depth(pixels);
+    for (std::size_t i = 0; i < pixels; ++i)
+        depth[i] = (i % 7 == 0) ? 0.0f : 1.3f + noise(rng);
+
+    Pipeline::DepthFilterOptions filter;
+    filter.minimumValidNeighbours = 6;
+    const CompactResult first = RunFullChain(context, depth, intrinsics, filter);
+    const CompactResult second = RunFullChain(context, depth, intrinsics, filter);
+
+    ASSERT_GT(first.count, 0u);
+    EXPECT_EQ(first.count, second.count);
+    EXPECT_EQ(first.points, second.points);
+    EXPECT_EQ(first.normals, second.normals);
+}
+
+// A frame where nothing survives must produce a count of zero rather than a stale one.
+TEST(ValidationMask, CompactionOfAnEmptyFrameCountsZero) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(16, 8);
+    const std::vector<float> depth(std::size_t(intrinsics.width) * intrinsics.height, 0.0f);
+
+    EXPECT_EQ(RunFullChain(context, depth, intrinsics, {}).count, 0u);
+}
