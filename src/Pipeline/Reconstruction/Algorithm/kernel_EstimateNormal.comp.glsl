@@ -9,11 +9,63 @@ layout(push_constant) uniform PC
 	int   g_height;
 	float g_relativeDepthJump;
 	float g_minimumDepthJump;
+	uint  g_symmetricDepthJumpGuard;  // [H4] 0 = off
+	int   g_minimumValidNeighbours;   // [H5] 0 = off
+	float g_minimumIncidenceCosine;   // [H6] 0 = off, else cos(maximumIncidenceDegrees)
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer VertexGrid { vec4 g_vertices[]; };
 layout(std430, set = 0, binding = 1) buffer ValidMask { ValidationMaskProperty g_properties[]; };
 layout(std430, set = 0, binding = 2) writeonly buffer NormalGrid { vec4 g_normals[]; };
+layout(std430, set = 0, binding = 3) buffer Counters { ValidationMaskCounters g_counters; };
+
+/// [H4] Does any of the eight neighbours exist and lie further than `tolerance` in depth?
+///
+/// A neighbour outside the image is absent, not a step, so the image border is never rejected for
+/// having one.
+bool StraddlesADepthStep(int column, int row, float depth, float tolerance)
+{
+	for (int deltaRow = -1; deltaRow <= 1; ++deltaRow) {
+		int neighbourRow = row + deltaRow;
+		if (neighbourRow < 0 || neighbourRow >= g_height) continue;
+
+		for (int deltaColumn = -1; deltaColumn <= 1; ++deltaColumn) {
+			if (deltaRow == 0 && deltaColumn == 0) continue;
+			int neighbourColumn = column + deltaColumn;
+			if (neighbourColumn < 0 || neighbourColumn >= g_width) continue;
+
+			int neighbour = neighbourRow * g_width + neighbourColumn;
+			if (g_properties[neighbour].valid == 0u) continue;
+			if (abs(g_vertices[neighbour].z - depth) > tolerance) return true;
+		}
+	}
+	return false;
+}
+
+/// [H5] How many of the eight neighbours are valid AND on the same surface.
+///
+/// "Same surface" reuses the jump tolerance rather than counting mere validity: a 2x2 blob of near
+/// surface on a far wall has eight valid neighbours and only three of its own.
+int CountSameSurfaceNeighbours(int column, int row, float depth, float tolerance)
+{
+	int count = 0;
+	for (int deltaRow = -1; deltaRow <= 1; ++deltaRow) {
+		int neighbourRow = row + deltaRow;
+		if (neighbourRow < 0 || neighbourRow >= g_height) continue;
+
+		for (int deltaColumn = -1; deltaColumn <= 1; ++deltaColumn) {
+			if (deltaRow == 0 && deltaColumn == 0) continue;
+			int neighbourColumn = column + deltaColumn;
+			if (neighbourColumn < 0 || neighbourColumn >= g_width) continue;
+
+			int neighbour = neighbourRow * g_width + neighbourColumn;
+			if (g_properties[neighbour].valid == 0u) continue;
+			if (abs(g_vertices[neighbour].z - depth) > tolerance) continue;
+			count += 1;
+		}
+	}
+	return count;
+}
 
 void main()
 {
@@ -46,6 +98,20 @@ void main()
 	if (abs(g_vertices[right].z - depth) > maxJump) return;
 	if (abs(g_vertices[below].z - depth) > maxJump) return;
 
+	// [H4] The forward test above protects the NORMAL, which is differenced from exactly those two
+	// neighbours. Whether the POINT is trustworthy is a different question, answered on the
+	// trailing edge of the step the forward test cannot see.
+	if (g_symmetricDepthJumpGuard != 0u && StraddlesADepthStep(column, row, depth, maxJump)) return;
+
+	// [H5] Those two neighbours agreeing is just as true of a mismatched island as of real
+	// surface. How much of the neighbourhood exists at all is what separates them.
+	if (g_minimumValidNeighbours > 0 &&
+	    CountSameSurfaceNeighbours(column, row, depth, maxJump) < g_minimumValidNeighbours)
+	{
+		atomicAdd(g_counters.rejectedByNeighbourSupport, 1u);
+		return;
+	}
+
 	vec3 point  = g_vertices[centre].xyz;
 	vec3 normal = cross(g_vertices[right].xyz - point, g_vertices[below].xyz - point);
 	if (length(normal) < 1e-9) return;
@@ -57,6 +123,16 @@ void main()
 	// update and of every point-to-plane residual.
 	if (dot(normal, point) > 0.0) normal = -normal;
 
+	// [H6] Incidence against the pixel's OWN ray, for the same reason the orientation flip above
+	// uses it. `normal` is camera-facing here, so -dot(normal, rayDirection) is cos(incidence).
+	if (g_minimumIncidenceCosine > 0.0 &&
+	    -dot(normal, normalize(point)) < g_minimumIncidenceCosine)
+	{
+		atomicAdd(g_counters.rejectedByIncidence, 1u);
+		return;
+	}
+
 	g_normals[centre] = vec4(normal, 0.0);
 	g_properties[centre].emitted = 1u;
+	atomicAdd(g_counters.emittedPoints, 1u);
 }

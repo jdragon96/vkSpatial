@@ -407,6 +407,7 @@ TEST(ValidationMask, VertexGridLeavesNoVertexBehindForARejectedPixel) {
 namespace {
 
     struct NormalGridResult {
+        ValidationMaskCounters counters;
         std::vector<Eigen::Vector4f> vertices;
         std::vector<Eigen::Vector4f> normals;
         std::vector<ValidationMaskProperty> mask;
@@ -435,13 +436,14 @@ namespace {
             mask.RecordBuildVertexGrid(batch, *source, vertices, maskBuffer, counter, intrinsics,
                                        filter.minimumDepthMeters, filter.maximumDepthMeters);
             batch.Barrier();
-            mask.RecordEstimateNormal(batch, vertices, maskBuffer, normals, intrinsics.width,
-                                      intrinsics.height, filter.relativeDepthJump,
-                                      filter.minimumDepthJump);
+            mask.RecordEstimateNormal(batch, vertices, maskBuffer, normals, counter,
+                                      intrinsics.width, intrinsics.height, filter);
             batch.Submit();
         }
 
         NormalGridResult result;
+        counter.MakeVisibleToCPU(uint32_t(sizeof(ValidationMaskCounters)));
+        std::memcpy(&result.counters, counter.MappedPtr(), sizeof(ValidationMaskCounters));
         const uint32_t vectorBytes = uint32_t(count * sizeof(Eigen::Vector4f));
         vertices.MakeVisibleToCPU(vectorBytes);
         normals.MakeVisibleToCPU(vectorBytes);
@@ -588,4 +590,129 @@ TEST(ValidationMask, TheNeighbourValidCheckStillRejectsBelowTheJumpFloor) {
     EXPECT_EQ(result.mask[centre].emitted, 0u)
             << "an invalid neighbour was accepted because its zeroed vertex sits inside the "
                "jump tolerance at this depth";
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+// [H4] StraddlesADepthStep / [H5] CountSameSurfaceNeighbours / [H6] IncidenceGate
+//
+// All three live in the normal kernel because the CPU order interleaves them with the normal:
+// H3 -> H4 -> H5 -> EstimateNormal -> H6. Any other arrangement stops matching the CPU.
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+// One fixture, every gate: the CPU emit list and the GPU emitted pixels must agree index for
+// index with the gates on, exactly as they do with the gates off.
+TEST(ValidationMask, EveryGateMatchesTheCpuEmitOrderAndValues) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(53, 37);
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::mt19937 rng(4242u);
+    std::uniform_real_distribution<float> noise(-0.003f, 0.003f);
+    std::vector<float> depth(count);
+    for (int v = 0; v < intrinsics.height; ++v)
+        for (int u = 0; u < intrinsics.width; ++u) {
+            float z = (u < 22) ? 1.0f : 1.8f;                     // step -> H3/H4
+            z += 0.02f * float(v) + noise(rng);                   // slant -> H6 has something to cut
+            if ((u * 3 + v * 7) % 17 == 0) z = 0.0f;              // dropouts -> H5 has islands
+            if (u >= 40 && u < 43 && v >= 10 && v < 13) z = 0.6f; // a near blob on the far half
+            depth[std::size_t(v) * intrinsics.width + u] = z;
+        }
+
+    for (int minimumValidNeighbours : {0, 6, 8})
+        for (bool symmetric : {false, true})
+            for (float maximumIncidenceDegrees : {0.0f, 75.0f}) {
+                Pipeline::DepthFilterOptions filter;
+                filter.symmetricDepthJumpGuard = symmetric;
+                filter.minimumValidNeighbours = minimumValidNeighbours;
+                filter.maximumIncidenceDegrees = maximumIncidenceDegrees;
+
+                Pipeline::DepthFrame frame;
+                frame.depth = depth;
+                Pipeline::DepthFilterStats cpuStats;
+                const Pipeline::Frame expected =
+                        Pipeline::BackprojectDepth(frame, intrinsics, filter, &cpuStats);
+
+                const NormalGridResult result = RunNormalGrid(context, depth, intrinsics, filter);
+
+                SCOPED_TRACE("neighbours=" + std::to_string(minimumValidNeighbours) +
+                             " symmetric=" + std::to_string(int(symmetric)) +
+                             " incidence=" + std::to_string(maximumIncidenceDegrees));
+
+                std::size_t k = 0;
+                for (int v = 0; v + 1 < intrinsics.height; ++v)
+                    for (int u = 0; u + 1 < intrinsics.width; ++u) {
+                        const std::size_t i = std::size_t(v) * intrinsics.width + u;
+                        if (result.mask[i].emitted == 0u) continue;
+                        ASSERT_LT(k, expected.pts.size())
+                                << "GPU emitted more than the CPU, first extra at (" << u << ","
+                                << v << ")";
+                        EXPECT_NEAR((result.vertices[i].head<3>() - expected.pts[k]).norm(), 0.0f,
+                                    1e-5f)
+                                << "point " << k;
+                        EXPECT_NEAR((result.normals[i].head<3>() - expected.nrm[k]).norm(), 0.0f,
+                                    1e-4f)
+                                << "normal " << k;
+                        ++k;
+                    }
+                EXPECT_EQ(k, expected.pts.size()) << "GPU emitted fewer than the CPU";
+                EXPECT_GT(k, 0u);
+
+                // Counters must agree too, per cause. The CPU counts range rejections over PIXELS
+                // and the other two over candidate POINTS -- summing them would hide a rejection
+                // charged to the wrong gate.
+                EXPECT_EQ(result.counters.emittedPoints, cpuStats.emittedPoints.load());
+                EXPECT_EQ(result.counters.rejectedByNeighbourSupport,
+                          cpuStats.rejectedByNeighbourSupport.load());
+                EXPECT_EQ(result.counters.rejectedByIncidence,
+                          cpuStats.rejectedByIncidence.load());
+            }
+}
+
+// [H4] in isolation: the trailing edge of a step is what the forward guard cannot see, and it is
+// where the 400 mm streaks come from.
+TEST(ValidationMask, TheSymmetricGuardRejectsTheTrailingEdgeOfAStep) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(32, 8);
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::vector<float> depth(count);
+    for (int v = 0; v < intrinsics.height; ++v)
+        for (int u = 0; u < intrinsics.width; ++u)
+            depth[std::size_t(v) * intrinsics.width + u] = (u < 16) ? 2.0f : 1.0f;
+
+    // Column 16 leads the near half: its right and down neighbours are its own surface, so the
+    // forward guard admits it, while its left neighbour is a metre behind.
+    const std::size_t trailing = std::size_t(3) * intrinsics.width + 16;
+
+    Pipeline::DepthFilterOptions off;
+    EXPECT_EQ(RunNormalGrid(context, depth, intrinsics, off).mask[trailing].emitted, 1u)
+            << "the forward-only guard admits this pixel -- that is the point of the fixture";
+
+    Pipeline::DepthFilterOptions symmetric;
+    symmetric.symmetricDepthJumpGuard = true;
+    EXPECT_EQ(RunNormalGrid(context, depth, intrinsics, symmetric).mask[trailing].emitted, 0u);
+}
+
+// [H6] in isolation, and against the pixel's own ray rather than the optical axis: on a
+// fronto-parallel wall every normal is (0,0,-1), so a gate reading normal.z sees zero incidence
+// everywhere and cuts nothing, yet at a 45 degree ray angle that wall really is 54.7 degrees off
+// the ray.
+TEST(ValidationMask, TheIncidenceGateMeasuresAgainstTheViewRay) {
+    Engine::Core::Context context;
+    Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(96, 96);
+    intrinsics.fx = intrinsics.fy = 48.0f;
+    intrinsics.cx = intrinsics.cy = 48.0f;
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+    const std::vector<float> depth(count, 1.5f);
+
+    Pipeline::DepthFilterOptions gate;
+    gate.maximumIncidenceDegrees = 40.0f;
+    const NormalGridResult result = RunNormalGrid(context, depth, intrinsics, gate);
+
+    std::size_t emitted = 0;
+    for (std::size_t i = 0; i < count; ++i) emitted += result.mask[i].emitted;
+    EXPECT_GT(emitted, 0u) << "the centre of the wall is square to its ray and must survive";
+    EXPECT_LT(emitted, std::size_t(intrinsics.width - 1) * (intrinsics.height - 1))
+            << "a gate reading normal.z alone keeps the whole wall";
+    EXPECT_GT(result.counters.rejectedByIncidence, 0u);
 }

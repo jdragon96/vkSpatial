@@ -8,6 +8,7 @@
 #include "Pipeline/Reconstruction/DepthCameraFrameSource.h" // CameraIntrinsics
 
 #include <Eigen/Dense>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -128,10 +129,23 @@ public:
     // [H3] forward jump guard + normal estimation. Writes `emitted`, never `valid`: a pixel the
     // guard refuses still has a measurement, and the neighbour counts in [H4]/[H5] read `valid`.
     void RecordEstimateNormal(Engine::Compute::CommandBatch &batch, Engine::Core::Buffer &vertices,
-                              Engine::Core::Buffer &mask, Engine::Core::Buffer &normals, int width,
-                              int height, float relativeDepthJump, float minimumDepthJump) {
-        NormalPushConstants pushConstants{width, height, relativeDepthJump, minimumDepthJump};
-        kernel_estimateNormal->Bind(0, vertices).Bind(1, mask).Bind(2, normals);
+                              Engine::Core::Buffer &mask, Engine::Core::Buffer &normals,
+                              Engine::Core::Buffer &counters, int width, int height,
+                              const Pipeline::DepthFilterOptions &filter) {
+        // cos() once here rather than per pixel: the gate is one comparison and the value never
+        // changes across the image.
+        const float minimumIncidenceCosine =
+                filter.maximumIncidenceDegrees > 0.0f
+                        ? std::cos(filter.maximumIncidenceDegrees * float(M_PI) / 180.0f)
+                        : 0.0f;
+        NormalPushConstants pushConstants{width,
+                                          height,
+                                          filter.relativeDepthJump,
+                                          filter.minimumDepthJump,
+                                          filter.symmetricDepthJumpGuard ? 1u : 0u,
+                                          filter.minimumValidNeighbours,
+                                          minimumIncidenceCosine};
+        kernel_estimateNormal->Bind(0, vertices).Bind(1, mask).Bind(2, normals).Bind(3, counters);
         kernel_estimateNormal->Args(pushConstants);
         dispatchOverImage(batch, *kernel_estimateNormal, width, height);
     }
@@ -170,6 +184,9 @@ private:
         std::int32_t height;
         float relativeDepthJump;
         float minimumDepthJump;
+        std::uint32_t symmetricDepthJumpGuard;
+        std::int32_t minimumValidNeighbours;
+        float minimumIncidenceCosine;
     };
 
     static void dispatchOverImage(Engine::Compute::CommandBatch &batch,
