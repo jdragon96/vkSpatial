@@ -5,6 +5,7 @@ layout(local_size_x = 16, local_size_y = 16) in;
 // Mirrored by ValidationMaskProperty in ValidationMask.h. 4-byte scalars only.
 struct ValidationMaskProperty {
 	uint valid;
+	uint emitted;
 };
 
 layout(push_constant) uniform PC

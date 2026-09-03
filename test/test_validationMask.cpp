@@ -399,3 +399,193 @@ TEST(ValidationMask, VertexGridLeavesNoVertexBehindForARejectedPixel) {
     EXPECT_EQ(result.vertices[5].y(), 0.0f);
     EXPECT_EQ(result.vertices[5].z(), 0.0f);
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+// [H3] ForwardJumpGuard + EstimateNormal
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace {
+
+    struct NormalGridResult {
+        std::vector<Eigen::Vector4f> vertices;
+        std::vector<Eigen::Vector4f> normals;
+        std::vector<ValidationMaskProperty> mask;
+    };
+
+    NormalGridResult RunNormalGrid(Engine::Core::Context &context, const std::vector<float> &depth,
+                                   const Pipeline::CameraIntrinsics &intrinsics,
+                                   const Pipeline::DepthFilterOptions &filter) {
+        const std::size_t count = depth.size();
+        ValidationMask mask(context, intrinsics.width, intrinsics.height);
+        auto source = UploadDepth(context, depth);
+
+        Engine::Core::Buffer vertices(context), normals(context), maskBuffer(context),
+                counter(context);
+        vertices.AllocateHostVisibleReadback(uint32_t(count * sizeof(Eigen::Vector4f)));
+        normals.AllocateHostVisibleReadback(uint32_t(count * sizeof(Eigen::Vector4f)));
+        maskBuffer.AllocateHostVisibleReadback(uint32_t(count * sizeof(ValidationMaskProperty)));
+        counter.AllocateHostVisibleReadback(uint32_t(sizeof(std::uint32_t)));
+
+        {
+            Engine::Compute::CommandBatch batch(context);
+            batch.FillBuffer(counter.Handle(), 0, sizeof(std::uint32_t), 0u);
+            batch.FillBuffer(normals.Handle(), 0, uint32_t(count * sizeof(Eigen::Vector4f)),
+                             0x7F7FFFFFu);
+            batch.Barrier();
+            mask.RecordBuildVertexGrid(batch, *source, vertices, maskBuffer, counter, intrinsics,
+                                       filter.minimumDepthMeters, filter.maximumDepthMeters);
+            batch.Barrier();
+            mask.RecordEstimateNormal(batch, vertices, maskBuffer, normals, intrinsics.width,
+                                      intrinsics.height, filter.relativeDepthJump,
+                                      filter.minimumDepthJump);
+            batch.Submit();
+        }
+
+        NormalGridResult result;
+        const uint32_t vectorBytes = uint32_t(count * sizeof(Eigen::Vector4f));
+        vertices.MakeVisibleToCPU(vectorBytes);
+        normals.MakeVisibleToCPU(vectorBytes);
+        maskBuffer.MakeVisibleToCPU(uint32_t(count * sizeof(ValidationMaskProperty)));
+        result.vertices.resize(count);
+        result.normals.resize(count);
+        result.mask.resize(count);
+        std::memcpy(result.vertices.data(), vertices.MappedPtr(), vectorBytes);
+        std::memcpy(result.normals.data(), normals.MappedPtr(), vectorBytes);
+        std::memcpy(result.mask.data(), maskBuffer.MappedPtr(),
+                    count * sizeof(ValidationMaskProperty));
+        return result;
+    }
+
+} // namespace
+
+// The whole reason `emitted` exists as a field of its own. A pixel the forward guard refuses still
+// HAS a depth measurement, and [H4]/[H5] count neighbours by `valid` -- folding the guard's verdict
+// into `valid` would silently change every neighbour count downstream.
+TEST(ValidationMask, TheForwardGuardRejectsWithoutClearingValid) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(32, 8);
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::vector<float> depth(count);
+    for (int v = 0; v < intrinsics.height; ++v)
+        for (int u = 0; u < intrinsics.width; ++u)
+            depth[std::size_t(v) * intrinsics.width + u] = (u < 16) ? 1.0f : 2.0f;
+
+    const NormalGridResult result = RunNormalGrid(context, depth, intrinsics, {});
+
+    // Column 15 straddles the step through its u+1 neighbour, so the guard refuses it.
+    const std::size_t straddling = std::size_t(2) * intrinsics.width + 15;
+    EXPECT_EQ(result.mask[straddling].emitted, 0u);
+    EXPECT_EQ(result.mask[straddling].valid, 1u)
+            << "the guard cleared valid; the neighbour counts in [H4]/[H5] would shift";
+}
+
+// A plane facing the camera keeps every pixel the CPU loop reaches, with the normal pointing back
+// along the view direction.
+TEST(ValidationMask, EstimateNormalOnAPlaneEmitsEveryInteriorPixel) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(20, 12);
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+    const std::vector<float> depth(count, 1.5f);
+
+    const NormalGridResult result = RunNormalGrid(context, depth, intrinsics, {});
+
+    int emitted = 0;
+    for (int v = 0; v < intrinsics.height; ++v)
+        for (int u = 0; u < intrinsics.width; ++u) {
+            const std::size_t i = std::size_t(v) * intrinsics.width + u;
+            // BackprojectDepth walks [0,W-1) x [0,H-1): it needs the u+1 and v+1 neighbours.
+            const bool reachable = (u + 1 < intrinsics.width) && (v + 1 < intrinsics.height);
+            ASSERT_EQ(result.mask[i].emitted, reachable ? 1u : 0u)
+                    << "pixel (" << u << "," << v << ")";
+            if (!reachable) continue;
+            ++emitted;
+            EXPECT_NEAR(result.normals[i].z(), -1.0f, 1e-3f) << "pixel (" << u << "," << v << ")";
+        }
+    EXPECT_EQ(emitted, (intrinsics.width - 1) * (intrinsics.height - 1));
+}
+
+// Mirrors DepthFrontend.NormalsFaceTheCameraAcrossAWideFieldOfView: the orientation flip is against
+// the pixel's own ray, so a kernel testing n.z() alone leaves the image edges inverted, and an
+// inverted normal flips the sign of every TSDF update and point-to-plane residual.
+TEST(ValidationMask, EstimatedNormalsFaceTheCameraAcrossAWideFieldOfView) {
+    Engine::Core::Context context;
+    Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(96, 96);
+    intrinsics.fx = intrinsics.fy = 48.0f; // 45 degrees of ray angle at the corner
+    intrinsics.cx = intrinsics.cy = 48.0f;
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+    const std::vector<float> depth(count, 1.5f);
+
+    const NormalGridResult result = RunNormalGrid(context, depth, intrinsics, {});
+
+    for (std::size_t i = 0; i < count; ++i) {
+        if (result.mask[i].emitted == 0u) continue;
+        const Eigen::Vector3f normal = result.normals[i].head<3>();
+        const Eigen::Vector3f point = result.vertices[i].head<3>();
+        EXPECT_LT(normal.dot(point), 0.0f) << "pixel " << i << " has a normal facing away";
+    }
+}
+
+// The strongest check available: the CPU emits its points in the same row-major order this pass
+// marks them in, so the k-th emitted pixel must equal the k-th CPU point exactly.
+TEST(ValidationMask, EstimateNormalMatchesTheCpuEmitOrderAndValues) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(47, 31);
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::mt19937 rng(99u);
+    std::uniform_real_distribution<float> noise(-0.003f, 0.003f);
+    std::vector<float> depth(count);
+    for (int v = 0; v < intrinsics.height; ++v)
+        for (int u = 0; u < intrinsics.width; ++u) {
+            float z = (u < 20) ? 1.0f : 1.9f;            // a step the guard must refuse to span
+            z += 0.004f * float(v) + noise(rng);          // a slant it must keep
+            if ((u * 5 + v * 11) % 29 == 0) z = 0.0f;     // dropouts
+            depth[std::size_t(v) * intrinsics.width + u] = z;
+        }
+
+    Pipeline::DepthFrame frame;
+    frame.depth = depth;
+    const Pipeline::Frame expected = Pipeline::BackprojectDepth(frame, intrinsics, {});
+
+    const NormalGridResult result = RunNormalGrid(context, depth, intrinsics, {});
+
+    std::size_t k = 0;
+    for (int v = 0; v + 1 < intrinsics.height; ++v)
+        for (int u = 0; u + 1 < intrinsics.width; ++u) {
+            const std::size_t i = std::size_t(v) * intrinsics.width + u;
+            if (result.mask[i].emitted == 0u) continue;
+            ASSERT_LT(k, expected.pts.size())
+                    << "the GPU emitted more pixels than the CPU did, first extra at (" << u << ","
+                    << v << ")";
+            EXPECT_NEAR((result.vertices[i].head<3>() - expected.pts[k]).norm(), 0.0f, 1e-5f)
+                    << "point " << k << " at (" << u << "," << v << ")";
+            EXPECT_NEAR((result.normals[i].head<3>() - expected.nrm[k]).norm(), 0.0f, 1e-4f)
+                    << "normal " << k << " at (" << u << "," << v << ")";
+            ++k;
+        }
+    EXPECT_EQ(k, expected.pts.size()) << "the GPU emitted fewer pixels than the CPU did";
+    EXPECT_GT(k, 0u);
+}
+
+// The neighbour-valid check is not redundant with the jump guard, though it very nearly is. [H2]
+// zeroes a rejected pixel's vertex, so an invalid neighbour reads as z = 0 and the guard refuses
+// it on |0 - z| > tau for any ordinary depth. The two part company below the absolute floor of
+// tau: at z = 4 mm, |0 - z| = 0.004 is INSIDE tau = max(0.005, 0.02 z), and only the valid check
+// still rejects. Unphysical for a D435, but it is what keeps the check from being dead code.
+TEST(ValidationMask, TheNeighbourValidCheckStillRejectsBelowTheJumpFloor) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(8, 4);
+    const std::size_t count = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::vector<float> depth(count, 0.004f);
+    const std::size_t centre = std::size_t(1) * intrinsics.width + 1;
+    depth[centre + 1] = 0.0f; // the u+1 neighbour is a dropout
+
+    const NormalGridResult result = RunNormalGrid(context, depth, intrinsics, {});
+
+    EXPECT_EQ(result.mask[centre].valid, 1u) << "the centre itself still has a measurement";
+    EXPECT_EQ(result.mask[centre].emitted, 0u)
+            << "an invalid neighbour was accepted because its zeroed vertex sits inside the "
+               "jump tolerance at this depth";
+}

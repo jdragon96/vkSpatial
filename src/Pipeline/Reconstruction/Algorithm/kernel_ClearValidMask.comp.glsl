@@ -3,7 +3,8 @@
 layout(local_size_x = 16, local_size_y = 16) in;
 
 struct ValidationMaskProperty {
-	uint valid;   // 0 = no measurement
+	uint valid;
+	uint emitted;   // 0 = no measurement
 };
 
 layout(std430, set = 0, binding = 0) writeonly buffer ValidMask { ValidationMaskProperty g_properties[]; };
@@ -21,4 +22,5 @@ void main()
 	if (column >= g_width || row >= g_height) return;
 
 	g_properties[row * g_width + column].valid = 0u;
+	g_properties[row * g_width + column].emitted = 0u;
 }

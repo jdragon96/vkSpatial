@@ -15,7 +15,8 @@
 #include <vector>
 
 struct ValidationMaskProperty {
-    std::uint32_t valid = 0;
+    std::uint32_t valid = 0;   // [H2] the pixel carries a depth measurement
+    std::uint32_t emitted = 0; // [H3] the pixel produced a trustworthy point + normal
 };
 
 static_assert(alignof(ValidationMaskProperty) == 4,
@@ -23,6 +24,8 @@ static_assert(alignof(ValidationMaskProperty) == 4,
               "the GPU stride will no longer match sizeof()");
 static_assert(sizeof(ValidationMaskProperty) % 4 == 0,
               "ValidationMaskProperty must stay a pack of 4-byte scalars");
+static_assert(offsetof(ValidationMaskProperty, emitted) == 4,
+              "the GLSL struct lists emitted second; the two orders must not drift");
 static_assert(offsetof(ValidationMaskProperty, valid) == 0,
               "valid must stay the first member: the clear kernel writes it by name, but every "
               "other pass indexes the struct by its GLSL offsets");
@@ -40,6 +43,8 @@ public:
         kernel_PrefilterDepth->Build("Pipeline/Reconstruction/Algorithm/kernel_PrefilterDepth.comp.glsl");
         kernel_buildVertexGrid = std::make_unique<Engine::Core::ComputePipeline>(context);
         kernel_buildVertexGrid->Build("Pipeline/Reconstruction/Algorithm/kernel_BuildVertexGrid.comp.glsl");
+        kernel_estimateNormal = std::make_unique<Engine::Core::ComputePipeline>(context);
+        kernel_estimateNormal->Build("Pipeline/Reconstruction/Algorithm/kernel_EstimateNormal.comp.glsl");
     }
 
     void Execute() {
@@ -106,6 +111,17 @@ public:
         dispatchOverImage(batch, *kernel_buildVertexGrid, intrinsics.width, intrinsics.height);
     }
 
+    // [H3] forward jump guard + normal estimation. Writes `emitted`, never `valid`: a pixel the
+    // guard refuses still has a measurement, and the neighbour counts in [H4]/[H5] read `valid`.
+    void RecordEstimateNormal(Engine::Compute::CommandBatch &batch, Engine::Core::Buffer &vertices,
+                              Engine::Core::Buffer &mask, Engine::Core::Buffer &normals, int width,
+                              int height, float relativeDepthJump, float minimumDepthJump) {
+        NormalPushConstants pushConstants{width, height, relativeDepthJump, minimumDepthJump};
+        kernel_estimateNormal->Bind(0, vertices).Bind(1, mask).Bind(2, normals);
+        kernel_estimateNormal->Args(pushConstants);
+        dispatchOverImage(batch, *kernel_estimateNormal, width, height);
+    }
+
 private:
     // Must match the push_constant block in kernel_ClearValidMask.comp.glsl.
     struct ClearPushConstants {
@@ -134,16 +150,27 @@ private:
         float maximumDepthMeters;
     };
 
+    // Must match the push_constant block in kernel_EstimateNormal.comp.glsl.
+    struct NormalPushConstants {
+        std::int32_t width;
+        std::int32_t height;
+        float relativeDepthJump;
+        float minimumDepthJump;
+    };
+
     static void dispatchOverImage(Engine::Compute::CommandBatch &batch,
                                   Engine::Core::ComputePipeline &pipeline,
                                   int width,
                                   int height) {
         if (width <= 0 || height <= 0) return;
         const VkExtent3D localSize = pipeline.GetLocalSize();
-        if (localSize.width == 0 || localSize.height == 0)
+        if (localSize.width == 0 || localSize.height == 0) {
             throw std::runtime_error("ValidationMask::dispatchOverImage: kernel has a zero local size");
-        batch.Dispatch(pipeline, (uint32_t(width) + localSize.width - 1) / localSize.width,
-                       (uint32_t(height) + localSize.height - 1) / localSize.height, 1);
+        }
+        batch.Dispatch(pipeline,
+                       (uint32_t(width) + localSize.width - 1) / localSize.width,
+                       (uint32_t(height) + localSize.height - 1) / localSize.height,
+                       1);
     }
 
     int m_width = 0;
@@ -151,6 +178,7 @@ private:
     std::unique_ptr<Engine::Core::Buffer> m_propertyBuffer;
     std::unique_ptr<Engine::Core::ComputePipeline> kernel_clearProperty;
     std::unique_ptr<Engine::Core::ComputePipeline> kernel_PrefilterDepth;
-    // [H2]
     std::unique_ptr<Engine::Core::ComputePipeline> kernel_buildVertexGrid;
+    // [H3]
+    std::unique_ptr<Engine::Core::ComputePipeline> kernel_estimateNormal;
 };
