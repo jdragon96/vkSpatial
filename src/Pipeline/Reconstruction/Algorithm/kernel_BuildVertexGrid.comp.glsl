@@ -1,12 +1,7 @@
 #version 450
+#include "kernel_ValidationMaskCommmon.glsl"
 
 layout(local_size_x = 16, local_size_y = 16) in;
-
-// Mirrored by ValidationMaskProperty in ValidationMask.h. 4-byte scalars only.
-struct ValidationMaskProperty {
-	uint valid;
-	uint emitted;
-};
 
 layout(push_constant) uniform PC
 {
@@ -21,11 +16,9 @@ layout(push_constant) uniform PC
 };
 
 layout(std430, set = 0, binding = 0) readonly  buffer SourceDepth { float g_depth[]; };
-// vec4, not vec3: std430 gives a vec3 array a 16-byte stride anyway, so the padding is spelled out
-// rather than left for a CPU mirror to get wrong. w is unused.
 layout(std430, set = 0, binding = 1) writeonly buffer VertexGrid  { vec4 g_vertices[]; };
 layout(std430, set = 0, binding = 2) writeonly buffer ValidMask   { ValidationMaskProperty g_properties[]; };
-layout(std430, set = 0, binding = 3) buffer Counters { uint g_rejectedByRange; };
+layout(std430, set = 0, binding = 3) buffer Counters { ValidationMaskCounters g_counters; };
 
 bool InRange(float depth)
 {
@@ -43,17 +36,12 @@ void main()
 	int   centre = row * g_width + column;
 	float depth  = g_depth[centre];
 
-	// A dropout and a range rejection are both invalid but are NOT the same event: one is the
-	// sensor refusing to match, the other is a threshold the caller chose. Only the second is
-	// counted, or the counter stops being usable for tuning the threshold.
 	bool present = depth > 0.0;
 	bool admitted = present && InRange(depth);
-	if (present && !admitted) atomicAdd(g_rejectedByRange, 1u);
+	if (present && !admitted) atomicAdd(g_counters.rejectedByRange, 1u);
 
 	if (!admitted)
 	{
-		// Zeroed, not left stale: a rejected pixel must not be reachable by reading the grid
-		// without also reading the mask.
 		g_vertices[centre] = vec4(0.0);
 		g_properties[centre].valid = 0u;
 		return;

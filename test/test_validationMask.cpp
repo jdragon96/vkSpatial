@@ -243,7 +243,7 @@ namespace {
     struct VertexGridResult {
         std::vector<Eigen::Vector4f> vertices;
         std::vector<ValidationMaskProperty> mask;
-        std::uint32_t rejectedByRange = 0;
+        ValidationMaskCounters counters;
     };
 
     VertexGridResult RunVertexGrid(Engine::Core::Context &context, const std::vector<float> &depth,
@@ -258,11 +258,11 @@ namespace {
         Engine::Core::Buffer counter(context);
         vertices.AllocateHostVisibleReadback(uint32_t(count * sizeof(Eigen::Vector4f)));
         maskBuffer.AllocateHostVisibleReadback(uint32_t(count * sizeof(ValidationMaskProperty)));
-        counter.AllocateHostVisibleReadback(uint32_t(sizeof(std::uint32_t)));
+        counter.AllocateHostVisibleReadback(uint32_t(sizeof(ValidationMaskCounters)));
 
         {
             Engine::Compute::CommandBatch batch(context);
-            batch.FillBuffer(counter.Handle(), 0, sizeof(std::uint32_t), 0u);
+            batch.FillBuffer(counter.Handle(), 0, sizeof(ValidationMaskCounters), 0u);
             // Sentinel, so "the kernel zeroed this vertex" is distinguishable from "the allocation
             // came back zero". Without it the rejected-pixel assertion passes on an empty kernel.
             batch.FillBuffer(vertices.Handle(), 0, uint32_t(count * sizeof(Eigen::Vector4f)),
@@ -276,13 +276,13 @@ namespace {
         VertexGridResult result;
         vertices.MakeVisibleToCPU(uint32_t(count * sizeof(Eigen::Vector4f)));
         maskBuffer.MakeVisibleToCPU(uint32_t(count * sizeof(ValidationMaskProperty)));
-        counter.MakeVisibleToCPU(uint32_t(sizeof(std::uint32_t)));
+        counter.MakeVisibleToCPU(uint32_t(sizeof(ValidationMaskCounters)));
         result.vertices.resize(count);
         result.mask.resize(count);
         std::memcpy(result.vertices.data(), vertices.MappedPtr(), count * sizeof(Eigen::Vector4f));
         std::memcpy(result.mask.data(), maskBuffer.MappedPtr(),
                     count * sizeof(ValidationMaskProperty));
-        std::memcpy(&result.rejectedByRange, counter.MappedPtr(), sizeof(std::uint32_t));
+        std::memcpy(&result.counters, counter.MappedPtr(), sizeof(ValidationMaskCounters));
         return result;
     }
 
@@ -324,7 +324,7 @@ TEST(ValidationMask, VertexGridBackProjectsEveryValidPixel) {
                     << "pixel (" << u << "," << v << ")";
             EXPECT_NEAR(result.vertices[i].z(), z, 1e-6f) << "pixel (" << u << "," << v << ")";
         }
-    EXPECT_EQ(result.rejectedByRange, 0u);
+    EXPECT_EQ(result.counters.rejectedByRange, 0u);
 }
 
 // A pixel the matcher produced no depth for is invalid, and it is NOT a range rejection: the two
@@ -344,7 +344,7 @@ TEST(ValidationMask, VertexGridMarksZeroDepthInvalidWithoutChargingTheRangeCount
     EXPECT_EQ(result.mask[3].valid, 0u);
     EXPECT_EQ(result.mask[20].valid, 0u);
     EXPECT_EQ(result.mask[4].valid, 1u);
-    EXPECT_EQ(result.rejectedByRange, 0u) << "a dropout is not a range rejection";
+    EXPECT_EQ(result.counters.rejectedByRange, 0u) << "a dropout is not a range rejection";
 }
 
 // Each end of the gate is independent and 0 disables it, matching DepthFilterOptions.
@@ -361,21 +361,21 @@ TEST(ValidationMask, VertexGridAppliesEachEndOfTheRangeGateIndependently) {
     const VertexGridResult none = RunVertexGrid(context, depth, intrinsics, off);
     EXPECT_EQ(none.mask[0].valid, 1u) << "0 must disable the near end";
     EXPECT_EQ(none.mask[1].valid, 1u) << "0 must disable the far end";
-    EXPECT_EQ(none.rejectedByRange, 0u);
+    EXPECT_EQ(none.counters.rejectedByRange, 0u);
 
     Pipeline::DepthFilterOptions nearOnly;
     nearOnly.minimumDepthMeters = 0.3f;
     const VertexGridResult near = RunVertexGrid(context, depth, intrinsics, nearOnly);
     EXPECT_EQ(near.mask[0].valid, 0u);
     EXPECT_EQ(near.mask[1].valid, 1u) << "the near gate must not reject a far pixel";
-    EXPECT_EQ(near.rejectedByRange, 1u);
+    EXPECT_EQ(near.counters.rejectedByRange, 1u);
 
     Pipeline::DepthFilterOptions farOnly;
     farOnly.maximumDepthMeters = 4.0f;
     const VertexGridResult far = RunVertexGrid(context, depth, intrinsics, farOnly);
     EXPECT_EQ(far.mask[0].valid, 1u) << "the far gate must not reject a near pixel";
     EXPECT_EQ(far.mask[1].valid, 0u);
-    EXPECT_EQ(far.rejectedByRange, 1u);
+    EXPECT_EQ(far.counters.rejectedByRange, 1u);
 }
 
 // An out-of-range pixel must be INVALID, not merely unemitted: the later passes read this mask to
@@ -424,11 +424,11 @@ namespace {
         vertices.AllocateHostVisibleReadback(uint32_t(count * sizeof(Eigen::Vector4f)));
         normals.AllocateHostVisibleReadback(uint32_t(count * sizeof(Eigen::Vector4f)));
         maskBuffer.AllocateHostVisibleReadback(uint32_t(count * sizeof(ValidationMaskProperty)));
-        counter.AllocateHostVisibleReadback(uint32_t(sizeof(std::uint32_t)));
+        counter.AllocateHostVisibleReadback(uint32_t(sizeof(ValidationMaskCounters)));
 
         {
             Engine::Compute::CommandBatch batch(context);
-            batch.FillBuffer(counter.Handle(), 0, sizeof(std::uint32_t), 0u);
+            batch.FillBuffer(counter.Handle(), 0, sizeof(ValidationMaskCounters), 0u);
             batch.FillBuffer(normals.Handle(), 0, uint32_t(count * sizeof(Eigen::Vector4f)),
                              0x7F7FFFFFu);
             batch.Barrier();

@@ -1,4 +1,5 @@
 #version 450
+#include "kernel_ValidationMaskCommmon.glsl"
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
@@ -13,11 +14,6 @@ layout(push_constant) uniform PC
 
 layout(std430, set = 0, binding = 0) readonly buffer SourceDepth   { float g_source[]; };
 layout(std430, set = 0, binding = 1) writeonly buffer FilteredDepth { float g_filtered[]; };
-
-float DepthJumpTolerance(float depth)
-{
-	return max(g_minimumDepthJump, g_relativeDepthJump * depth);
-}
 
 void main()
 {
@@ -40,7 +36,7 @@ void main()
 		return;
 	}
 
-	float tolerance = DepthJumpTolerance(centreDepth);
+	float tolerance = DepthJumpTolerance(centreDepth, g_relativeDepthJump, g_minimumDepthJump);
 	int   radius    = g_window / 2;
 	float sum       = 0.0;
 	int   count     = 0;

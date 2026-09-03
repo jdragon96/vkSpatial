@@ -24,6 +24,20 @@ static_assert(alignof(ValidationMaskProperty) == 4,
               "the GPU stride will no longer match sizeof()");
 static_assert(sizeof(ValidationMaskProperty) % 4 == 0,
               "ValidationMaskProperty must stay a pack of 4-byte scalars");
+// Mirrors ValidationMaskCounters in kernel_ValidationMaskCommmon.glsl, and Pipeline::DepthFilterStats
+// field for field so a GPU run and a CPU run report the same numbers under the same names.
+struct ValidationMaskCounters {
+    std::uint32_t emittedPoints = 0;
+    std::uint32_t rejectedByRange = 0;
+    std::uint32_t rejectedByNeighbourSupport = 0;
+    std::uint32_t rejectedByIncidence = 0;
+};
+
+static_assert(sizeof(ValidationMaskCounters) == 16, "the GLSL mirror is four 4-byte scalars");
+static_assert(offsetof(ValidationMaskCounters, rejectedByRange) == 4, "field order drifted");
+static_assert(offsetof(ValidationMaskCounters, rejectedByNeighbourSupport) == 8, "field order drifted");
+static_assert(offsetof(ValidationMaskCounters, rejectedByIncidence) == 12, "field order drifted");
+
 static_assert(offsetof(ValidationMaskProperty, emitted) == 4,
               "the GLSL struct lists emitted second; the two orders must not drift");
 static_assert(offsetof(ValidationMaskProperty, valid) == 0,

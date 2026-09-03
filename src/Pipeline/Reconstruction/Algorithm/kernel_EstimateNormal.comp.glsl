@@ -1,12 +1,7 @@
 #version 450
+#include "kernel_ValidationMaskCommmon.glsl"
 
 layout(local_size_x = 16, local_size_y = 16) in;
-
-// Mirrored by ValidationMaskProperty in ValidationMask.h. 4-byte scalars only.
-struct ValidationMaskProperty {
-	uint valid;     // [H2] the pixel carries a depth measurement
-	uint emitted;   // [H3] the pixel produced a trustworthy point + normal
-};
 
 layout(push_constant) uniform PC
 {
@@ -19,11 +14,6 @@ layout(push_constant) uniform PC
 layout(std430, set = 0, binding = 0) readonly buffer VertexGrid { vec4 g_vertices[]; };
 layout(std430, set = 0, binding = 1) buffer ValidMask { ValidationMaskProperty g_properties[]; };
 layout(std430, set = 0, binding = 2) writeonly buffer NormalGrid { vec4 g_normals[]; };
-
-float DepthJumpTolerance(float depth)
-{
-	return max(g_minimumDepthJump, g_relativeDepthJump * depth);
-}
 
 void main()
 {
@@ -52,7 +42,7 @@ void main()
 	// A step in depth is two surfaces, not one: differencing across it yields a normal belonging
 	// to neither -- the flying pixel a stereo sensor produces at every object boundary.
 	float depth   = g_vertices[centre].z;
-	float maxJump = DepthJumpTolerance(depth);
+	float maxJump = DepthJumpTolerance(depth, g_relativeDepthJump, g_minimumDepthJump);
 	if (abs(g_vertices[right].z - depth) > maxJump) return;
 	if (abs(g_vertices[below].z - depth) > maxJump) return;
 
