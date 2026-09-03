@@ -1,5 +1,5 @@
 #version 450
-#include "kernel_ValidationMaskCommmon.glsl"
+#include "ValidationMask.common.glsl"
 
 layout(local_size_x = 16, local_size_y = 16) in;
 

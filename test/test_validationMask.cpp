@@ -133,7 +133,7 @@ TEST(ValidationMask, PrefilterMatchesTheCpuPathBitExactly) {
 
     {
         Engine::Compute::CommandBatch batch(context);
-        mask.RecordPrefilterDepth(batch, *source, filtered, width, height, filter.prefilterWindow,
+        mask.RecordWindowAveraging(batch, *source, filtered, width, height, filter.prefilterWindow,
                                   filter.relativeDepthJump, filter.minimumDepthJump);
         batch.Submit();
     }
@@ -171,7 +171,7 @@ TEST(ValidationMask, PrefilterWithAWindowOfOneCopiesTheSource) {
         Engine::Compute::CommandBatch batch(context);
         batch.FillBuffer(filtered.Handle(), 0, uint32_t(count * sizeof(float)), 0xDEADBEEFu);
         batch.Barrier();
-        mask.RecordPrefilterDepth(batch, *source, filtered, width, height, 1, 0.02f, 0.005f);
+        mask.RecordWindowAveraging(batch, *source, filtered, width, height, 1, 0.02f, 0.005f);
         batch.Submit();
     }
 
@@ -214,7 +214,7 @@ TEST(ValidationMask, PrefilterTakesTheToleranceFromTheCentrePixel) {
 
     {
         Engine::Compute::CommandBatch batch(context);
-        mask.RecordPrefilterDepth(batch, *source, filtered, width, height, filter.prefilterWindow,
+        mask.RecordWindowAveraging(batch, *source, filtered, width, height, filter.prefilterWindow,
                                   filter.relativeDepthJump, filter.minimumDepthJump);
         batch.Submit();
     }
@@ -862,4 +862,124 @@ TEST(ValidationMask, CompactionOfAnEmptyFrameCountsZero) {
     const std::vector<float> depth(std::size_t(intrinsics.width) * intrinsics.height, 0.0f);
 
     EXPECT_EQ(RunFullChain(context, depth, intrinsics, {}).count, 0u);
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////
+// Execute -- the whole chain in one call
+///////////////////////////////////////////////////////////////////////////////////////////////
+
+// The capstone. Execute() must reproduce BackprojectDepth exactly, over every gate combination,
+// including the prefilter -- which the per-pass tests exercise separately but never together with
+// the gates, and it changes the depth every later pass reads.
+TEST(ValidationMask, ExecuteReproducesTheCpuFrontEnd) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(57, 39);
+    const std::size_t pixels = std::size_t(intrinsics.width) * intrinsics.height;
+
+    std::mt19937 rng(31337u);
+    std::uniform_real_distribution<float> noise(-0.004f, 0.004f);
+    std::vector<float> depth(pixels);
+    for (int v = 0; v < intrinsics.height; ++v)
+        for (int u = 0; u < intrinsics.width; ++u) {
+            float z = (u < 24) ? 1.05f : 1.85f;
+            z += 0.018f * float(v) + noise(rng);
+            if ((u * 3 + v * 7) % 17 == 0) z = 0.0f;
+            if (u >= 44 && u < 47 && v >= 8 && v < 11) z = 0.55f;
+            depth[std::size_t(v) * intrinsics.width + u] = z;
+        }
+
+    for (int prefilterWindow : {0, 3, 5})
+        for (int minimumValidNeighbours : {0, 6})
+            for (bool symmetric : {false, true}) {
+                Pipeline::DepthFilterOptions filter;
+                filter.prefilterWindow = prefilterWindow;
+                filter.minimumValidNeighbours = minimumValidNeighbours;
+                filter.symmetricDepthJumpGuard = symmetric;
+                filter.maximumDepthMeters = 4.0f;
+                SCOPED_TRACE("window=" + std::to_string(prefilterWindow) +
+                             " neighbours=" + std::to_string(minimumValidNeighbours) +
+                             " symmetric=" + std::to_string(int(symmetric)));
+
+                Pipeline::DepthFrame frame;
+                frame.depth = depth;
+                Pipeline::DepthFilterStats cpuStats;
+                const Pipeline::Frame expected =
+                        Pipeline::BackprojectDepth(frame, intrinsics, filter, &cpuStats);
+
+                ValidationMask mask(context, intrinsics.width, intrinsics.height);
+                auto source = UploadDepth(context, depth);
+                {
+                    Engine::Compute::CommandBatch batch(context);
+                    mask.Execute(batch, *source, intrinsics, filter);
+                    batch.Submit();
+                }
+
+                const std::uint32_t count = mask.PointCount();
+                ASSERT_EQ(count, expected.pts.size());
+                ASSERT_GT(count, 0u);
+
+                const auto points = mask.DownloadPoints();
+                const auto normals = mask.DownloadNormals();
+                for (std::size_t i = 0; i < count; ++i) {
+                    EXPECT_NEAR((points[i] - expected.pts[i]).norm(), 0.0f, 1e-5f) << "point " << i;
+                    EXPECT_NEAR((normals[i] - expected.nrm[i]).norm(), 0.0f, 1e-4f)
+                            << "normal " << i;
+                }
+
+                const ValidationMaskCounters counters = mask.DownloadCounters();
+                EXPECT_EQ(counters.emittedPoints, cpuStats.emittedPoints.load());
+                EXPECT_EQ(counters.rejectedByRange, cpuStats.rejectedByRange.load());
+                EXPECT_EQ(counters.rejectedByNeighbourSupport,
+                          cpuStats.rejectedByNeighbourSupport.load());
+            }
+}
+
+// Counters are per frame, not cumulative: Execute zeroes them, so running twice must not double
+// them. The CPU stats object is owned by the caller and accumulates across frames -- this one is
+// scoped to the pass, and mixing the two conventions would silently inflate every report.
+TEST(ValidationMask, ExecuteResetsItsCountersEachRun) {
+    Engine::Core::Context context;
+    const Pipeline::CameraIntrinsics intrinsics = TestIntrinsics(24, 16);
+    const std::size_t pixels = std::size_t(intrinsics.width) * intrinsics.height;
+    std::vector<float> depth(pixels, 1.2f);
+    depth[10] = 9.0f; // one range rejection
+
+    Pipeline::DepthFilterOptions filter;
+    filter.maximumDepthMeters = 4.0f;
+
+    ValidationMask mask(context, intrinsics.width, intrinsics.height);
+    auto source = UploadDepth(context, depth);
+
+    std::uint32_t firstCount = 0;
+    ValidationMaskCounters firstCounters;
+    for (int run = 0; run < 2; ++run) {
+        {
+            Engine::Compute::CommandBatch batch(context);
+            mask.Execute(batch, *source, intrinsics, filter);
+            batch.Submit();
+        }
+        const ValidationMaskCounters counters = mask.DownloadCounters();
+        if (run == 0) {
+            firstCount = mask.PointCount();
+            firstCounters = counters;
+            EXPECT_EQ(counters.rejectedByRange, 1u);
+        } else {
+            EXPECT_EQ(mask.PointCount(), firstCount);
+            EXPECT_EQ(counters.rejectedByRange, firstCounters.rejectedByRange);
+            EXPECT_EQ(counters.emittedPoints, firstCounters.emittedPoints);
+        }
+    }
+}
+
+// The buffers are sized from the constructor's dimensions, so a mismatched intrinsics would write
+// past them. Fail loudly instead.
+TEST(ValidationMask, ExecuteRejectsIntrinsicsThatDoNotMatchTheAllocation) {
+    Engine::Core::Context context;
+    ValidationMask mask(context, 16, 16);
+    Pipeline::CameraIntrinsics wrong = TestIntrinsics(32, 16);
+    std::vector<float> depth(16 * 16, 1.0f);
+    auto source = UploadDepth(context, depth);
+
+    Engine::Compute::CommandBatch batch(context);
+    EXPECT_THROW(mask.Execute(batch, *source, wrong, {}), std::runtime_error);
 }

@@ -9,6 +9,8 @@
 
 #include <Eigen/Dense>
 #include <cmath>
+#include <cstring>
+#include <string>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -25,7 +27,7 @@ static_assert(alignof(ValidationMaskProperty) == 4,
               "the GPU stride will no longer match sizeof()");
 static_assert(sizeof(ValidationMaskProperty) % 4 == 0,
               "ValidationMaskProperty must stay a pack of 4-byte scalars");
-// Mirrors ValidationMaskCounters in kernel_ValidationMaskCommmon.glsl, and Pipeline::DepthFilterStats
+// Mirrors ValidationMaskCounters in ValidationMask.common.glsl, and Pipeline::DepthFilterStats
 // field for field so a GPU run and a CPU run report the same numbers under the same names.
 struct ValidationMaskCounters {
     std::uint32_t emittedPoints = 0;
@@ -49,6 +51,26 @@ class ValidationMask {
 public:
     ValidationMask(Engine::Core::Context &context, int width, int height)
         : m_width(width), m_height(height) {
+        const std::size_t pixels = std::size_t(width) * std::size_t(height);
+        const uint32_t vectorBytes = uint32_t(pixels * 4u * sizeof(float));
+        auto device = [&context](uint32_t bytes) {
+            auto buffer = std::make_unique<Engine::Core::Buffer>(context);
+            buffer->Allocate(bytes);
+            return buffer;
+        };
+        auto readback = [&context](uint32_t bytes) {
+            auto buffer = std::make_unique<Engine::Core::Buffer>(context);
+            buffer->AllocateHostVisibleReadback(bytes);
+            return buffer;
+        };
+        m_filteredDepth = device(uint32_t(pixels * sizeof(float)));
+        m_vertices = device(vectorBytes);
+        m_normals = device(vectorBytes);
+        m_counters = readback(uint32_t(sizeof(ValidationMaskCounters)));
+        m_rowOffset = readback(uint32_t((std::size_t(height) + 1u) * sizeof(std::uint32_t)));
+        m_points = readback(vectorBytes);
+        m_compactNormals = readback(vectorBytes);
+
         m_propertyBuffer = std::make_unique<Engine::Core::Buffer>(context);
         m_propertyBuffer->Allocate(uint32_t(std::size_t(width) * std::size_t(height) * sizeof(ValidationMaskProperty)));
 
@@ -68,7 +90,65 @@ public:
         kernel_scatterPoints->Build("Pipeline/Reconstruction/Algorithm/kernel_ScatterPoints.comp.glsl");
     }
 
-    void Execute() {
+    // The whole front end, recorded into one batch. The caller submits, then reads PointCount(),
+    // DownloadPoints(), DownloadNormals(), DownloadCounters().
+    //
+    // Clear runs first even though BuildVertexGrid writes `valid` and EstimateNormal writes
+    // `emitted` for every pixel, so nothing is stale. It costs one 8-byte store per pixel, and it
+    // is what keeps a future pass that writes only SOME pixels from inheriting the previous
+    // frame's verdict.
+    void Execute(Engine::Compute::CommandBatch &batch, Engine::Core::Buffer &sourceDepth,
+                 const Pipeline::CameraIntrinsics &intrinsics,
+                 const Pipeline::DepthFilterOptions &filter) {
+        if (intrinsics.width != m_width || intrinsics.height != m_height)
+            throw std::runtime_error("ValidationMask::Execute: intrinsics are " +
+                                     std::to_string(intrinsics.width) + "x" +
+                                     std::to_string(intrinsics.height) + " but the buffers were "
+                                     "sized for " + std::to_string(m_width) + "x" +
+                                     std::to_string(m_height));
+
+        // Per frame, not cumulative. Pipeline::DepthFilterStats is owned by its caller and
+        // accumulates; these are scoped to the pass, and mixing the conventions would inflate
+        // every report.
+        batch.FillBuffer(m_counters->Handle(), 0, sizeof(ValidationMaskCounters), 0u);
+        batch.Barrier();
+
+        RecordClear(batch);
+        batch.Barrier();
+        RecordWindowAveraging(batch, sourceDepth, *m_filteredDepth, m_width, m_height,
+                              filter.prefilterWindow, filter.relativeDepthJump,
+                              filter.minimumDepthJump);
+        batch.Barrier();
+        RecordBuildVertexGrid(batch, *m_filteredDepth, *m_vertices, *m_propertyBuffer, *m_counters,
+                              intrinsics, filter.minimumDepthMeters, filter.maximumDepthMeters);
+        batch.Barrier();
+        RecordEstimateNormal(batch, *m_vertices, *m_propertyBuffer, *m_normals, *m_counters,
+                             m_width, m_height, filter);
+        batch.Barrier();
+        RecordCompactPoints(batch, *m_propertyBuffer, *m_vertices, *m_normals, *m_rowOffset,
+                            *m_points, *m_compactNormals, m_width, m_height);
+    }
+
+    // Valid only after the batch Execute() was recorded into has been submitted.
+    std::uint32_t PointCount() const {
+        const uint32_t bytes = uint32_t((std::size_t(m_height) + 1u) * sizeof(std::uint32_t));
+        m_rowOffset->MakeVisibleToCPU(bytes);
+        std::uint32_t total = 0;
+        std::memcpy(&total, static_cast<const std::uint32_t *>(m_rowOffset->MappedPtr()) + m_height,
+                    sizeof total);
+        return total;
+    }
+
+    ValidationMaskCounters DownloadCounters() const {
+        m_counters->MakeVisibleToCPU(uint32_t(sizeof(ValidationMaskCounters)));
+        ValidationMaskCounters counters;
+        std::memcpy(&counters, m_counters->MappedPtr(), sizeof counters);
+        return counters;
+    }
+
+    std::vector<Eigen::Vector3f> DownloadPoints() const { return downloadVectors(*m_points); }
+    std::vector<Eigen::Vector3f> DownloadNormals() const {
+        return downloadVectors(*m_compactNormals);
     }
 
     int Width() const { return m_width; }
@@ -89,7 +169,7 @@ public:
         dispatchOverImage(batch, *kernel_clearProperty, width, height);
     }
 
-    void RecordPrefilterDepth(Engine::Compute::CommandBatch &batch,
+    void RecordWindowAveraging(Engine::Compute::CommandBatch &batch,
                               Engine::Core::Buffer &source,
                               Engine::Core::Buffer &filtered,
                               int width,
@@ -236,6 +316,20 @@ private:
         std::int32_t height;
     };
 
+    // The GPU stores vec4 for std430's sake; the CPU-side Frame wants vec3, so the w is dropped
+    // here rather than leaving every caller to know about the padding.
+    std::vector<Eigen::Vector3f> downloadVectors(Engine::Core::Buffer &buffer) const {
+        const std::uint32_t count = PointCount();
+        std::vector<Eigen::Vector3f> out(count);
+        if (count == 0) return out;
+        const uint32_t bytes = count * 4u * uint32_t(sizeof(float));
+        buffer.MakeVisibleToCPU(bytes);
+        const float *words = static_cast<const float *>(buffer.MappedPtr());
+        for (std::uint32_t i = 0; i < count; ++i)
+            out[i] = Eigen::Vector3f(words[4 * i + 0], words[4 * i + 1], words[4 * i + 2]);
+        return out;
+    }
+
     static void dispatchOverImage(Engine::Compute::CommandBatch &batch,
                                   Engine::Core::ComputePipeline &pipeline,
                                   int width,
@@ -254,6 +348,13 @@ private:
     int m_width = 0;
     int m_height = 0;
     std::unique_ptr<Engine::Core::Buffer> m_propertyBuffer;
+    std::unique_ptr<Engine::Core::Buffer> m_filteredDepth;
+    std::unique_ptr<Engine::Core::Buffer> m_vertices;
+    std::unique_ptr<Engine::Core::Buffer> m_normals;
+    std::unique_ptr<Engine::Core::Buffer> m_counters;
+    std::unique_ptr<Engine::Core::Buffer> m_rowOffset;
+    std::unique_ptr<Engine::Core::Buffer> m_points;
+    std::unique_ptr<Engine::Core::Buffer> m_compactNormals;
     std::unique_ptr<Engine::Core::ComputePipeline> kernel_clearProperty;
     std::unique_ptr<Engine::Core::ComputePipeline> kernel_windowAveraging;
     std::unique_ptr<Engine::Core::ComputePipeline> kernel_buildVertexGrid;
