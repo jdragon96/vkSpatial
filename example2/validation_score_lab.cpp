@@ -53,6 +53,7 @@
 
 namespace {
 
+    using Realsense::DownSampleOptions;
     using Realsense::NormalEstimationOptions;
     using Realsense::ValidationScoreCounters;
     using Realsense::ValidationScoreOptions;
@@ -214,6 +215,7 @@ namespace {
 
         ValidationScoreOptions options;
         NormalEstimationOptions normalOptions;
+        DownSampleOptions downSampleOptions;
         EColorMode colorMode = EColorMode::Score;
         float validThreshold = 0.5f; // what counts as a usable pixel
         bool showRejected = true;    // draw score == 0 dim, so losses are visible not absent
@@ -233,6 +235,7 @@ namespace {
         std::size_t downloadedPoints = 0; // what the compaction actually brought back
         double compactMilliseconds = 0.0;
         Realsense::NormalEstimationCounters normalCounters{};
+        Realsense::DownSampleCounters downSampleCounters{};
         std::size_t normalSegmentCount = 0;
         float medianIncidenceDegrees = 0.0f;
         float histogram[32] = {};
@@ -516,7 +519,7 @@ namespace {
             {
                 Engine::Compute::CommandBatch batch(context);
                 pipeline.RecordExtract(batch, options, intrinsics, gpuThreshold,
-                                       state.normalOptions);
+                                       state.normalOptions, state.downSampleOptions);
                 batch.Submit();
             }
             compactPoints = pipeline.DownloadValidPoints();
@@ -527,6 +530,7 @@ namespace {
             state.downloadedPoints = compactPoints.size();
             state.counters = pipeline.DownloadCounters();
             state.normalCounters = pipeline.DownloadNormalCounters();
+            state.downSampleCounters = pipeline.DownloadDownSampleCounters();
             SummariseScores(compactScores, state);
             state.medianIncidenceDegrees = MedianIncidenceDegrees(compactPoints, compactNormals);
         };
@@ -685,6 +689,33 @@ namespace {
                 ImGui::TextDisabled("bright end is the direction it points.");
             }
 
+            ImGui::SeparatorText("DownSample");
+            // What this can remove is set by the voxel against the sample spacing z/f: there is
+            // nothing to thin unless z < detailVoxel * f, which is why it is off by default rather
+            // than merely tunable.
+            ImGui::Checkbox("thin to detail voxel", &state.downSampleOptions.enabled);
+            if (state.downSampleOptions.enabled) {
+                // Seeded rather than left at zero: enabling with a size of 0 is refused, and a
+                // checkbox that throws the moment it is ticked is not a knob.
+                float millimetres = state.downSampleOptions.detailVoxelMeters > 0.0f
+                                            ? state.downSampleOptions.detailVoxelMeters * 1000.0f
+                                            : 5.0f;
+                ImGui::SliderFloat("detail voxel mm", &millimetres, 0.5f, 40.0f, "%.2f");
+                state.downSampleOptions.detailVoxelMeters = millimetres * 0.001f;
+
+                // The range this actually bites over, from the same z < detailVoxel * f.
+                ImGui::TextDisabled("thins where z < %.2f m",
+                                    double(state.downSampleOptions.detailVoxelMeters *
+                                           state.options.focalLengthPixels));
+                // The absolute saving is already on screen under Readback, as downloaded
+                // points against the dense pixel count.
+                // Both ceilings fail OPEN -- a pixel that could not be placed keeps its flag, so
+                // these being non-zero means less thinning, never a hole.
+                ImGui::TextDisabled("probe fail %u, out of range %u",
+                                    state.downSampleCounters.insertFailures,
+                                    state.downSampleCounters.outOfPackableRange);
+            }
+
             ImGui::SeparatorText("Display");
             int mode = int(state.colorMode);
             if (ImGui::Combo("color", &mode, "score\0threshold\0depth\0normal\0"))
@@ -761,6 +792,7 @@ namespace {
         float appliedThreshold = state.validThreshold;
         bool appliedShowRejected = state.showRejected;
         NormalEstimationOptions appliedNormalOptions = state.normalOptions;
+        DownSampleOptions appliedDownSampleOptions = state.downSampleOptions;
         bool appliedShowNormalLines = state.showNormalLines;
         float appliedNormalLength = state.normalLengthMillimetres;
         int appliedNormalStride = state.normalStride;
@@ -821,7 +853,10 @@ namespace {
                     appliedNormalOptions.planeFitRadius != state.normalOptions.planeFitRadius ||
                     appliedNormalOptions.minimumPlaneFitSamples !=
                             state.normalOptions.minimumPlaneFitSamples ||
-                    appliedNormalOptions.enabled != state.normalOptions.enabled;
+                    appliedNormalOptions.enabled != state.normalOptions.enabled ||
+                    appliedDownSampleOptions.enabled != state.downSampleOptions.enabled ||
+                    appliedDownSampleOptions.detailVoxelMeters !=
+                            state.downSampleOptions.detailVoxelMeters;
             const bool compactionChanged = appliedThreshold != state.validThreshold ||
                                            appliedShowRejected != state.showRejected ||
                                            normalOptionsChanged;
@@ -830,6 +865,7 @@ namespace {
                 appliedThreshold = state.validThreshold;
                 appliedShowRejected = state.showRejected;
                 appliedNormalOptions = state.normalOptions;
+                appliedDownSampleOptions = state.downSampleOptions;
                 runCompact();
             }
 
