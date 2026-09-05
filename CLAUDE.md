@@ -75,7 +75,30 @@ Pipeline          위를 조립하는 재구성 스레드들
 
 ### 알고리즘 모듈의 공통 형태
 
-`src/TSDF`와 `src/BVH`가 레퍼런스다. 세 조각으로 나뉜다:
+**새 모듈은 `src/Realsense` 형태로 간다.** 파이프라인이 조합을 갖고, `Algorithm/` 밑에 세부 알고리즘이
+각자 파일 한 벌씩 앉는다:
+
+```
+src/<도메인>/                    예: GlobalRegistration/
+  <도메인>Pipeline.h / .cpp      세부 알고리즘을 조합해 결과물을 낸다. 알고리즘은 없다
+  <도메인>Pipeline.md            그 조합의 실행 흐름 (단계형)
+  <도메인>Types.h                경계 전용 POD — 옵션, 카운터, 푸시상수 미러
+  README.md                      모듈 설명서
+  Algorithm/
+    Common.glsl                  이 폴더 커널들의 공용 struct·함수 (main() 없음 → 접두사 없음)
+    FPFH.h / .cpp                세부 알고리즘 하나. 자기 커널 변형만 소유한다
+    FPFH.<역할>.glsl             그 알고리즘의 커널
+    FPFH.md                      그 알고리즘의 흐름 + 측정 근거
+```
+
+경계는 하나다: **`Algorithm/`의 클래스는 자기 알고리즘만 알고, 파이프라인이 스테이지 사이의 버퍼와
+순서를 갖는다.** `Realsense::ValidationMask`가 이걸 어겼다가 고친 실물이다 — 한 패스의 이름을 단
+클래스가 읽지도 않는 버퍼 여섯 개를 들고 있었고, "무엇이 무엇 뒤에 도는가"가 60줄 메서드를 읽어야
+알 수 있는 사실이 됐다.
+
+`.md`에는 **측정된 숫자를 남긴다.** 근거 없는 기본값은 다음 사람이 되돌린다.
+
+**기존 `src/TSDF`·`src/BVH`는 이전 형태**이고 그 안에서는 그쪽을 지킨다. 세 조각으로 나뉜다:
 
 1. **파사드**(전역 `class TSDF`, `class BVH`) — 수명·라우팅·집계만. 알고리즘 없음. 설정의 `backend` 문자열로 구현을 고른다.
 2. **전략 인터페이스**(`TSDFBackend`, `BVHBackend`, `DataSplitter`) — 순수 가상 + `Make<Domain>Backend(name)` + `<Domain>BackendNames()`.
