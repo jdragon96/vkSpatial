@@ -215,7 +215,7 @@ namespace {
             applyOpts(m, o, confValue);
             ep::Pipeline::Config config;
             config.map = m;
-            config.acquisition.type = ep::EAcquisitionType::File;
+            config.acquisition.source = ep::EAcquisitionSource::PlyFolder;
             config.acquisition.framePaths = framePaths;
             config.acquisition.intervalMs = intervalMs;
             config.acquisition.loop = loop;

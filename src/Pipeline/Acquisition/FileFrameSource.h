@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Pipeline/Acquisition/FrameLoader.h" // EstimateCameraHint
-#include "Pipeline/Acquisition/ReconstructionSource.h"
+#include "Pipeline/Acquisition/AcquisitionThread.h"
 
 #include "utilities/PointCloudIO.h" // util::LoadPly
 
@@ -24,8 +24,6 @@ namespace Pipeline {
     class FileFrameSource : public IFrameSource {
     public:
         explicit FileFrameSource(FileSourceConfig config) : m_cfg(std::move(config)) {}
-
-        EAcquisitionType Type() const override { return EAcquisitionType::File; }
         const char *Name() const override { return "file"; }
 
         void Open() override {

@@ -278,7 +278,7 @@ int main(int argc, char **argv) {
             }
             const ep::FrameBounds bounds = ep::ComputeBounds(ep::LoadFrames(framePaths));
             voxel = arg.ValueFloat("--voxel", bounds.Extent() / 200.0f);
-            acquisition.type = ep::EAcquisitionType::File;
+            acquisition.source = ep::EAcquisitionSource::PlyFolder;
             acquisition.framePaths = framePaths;
             acquisition.intervalMs = 0.0; // as fast as the stages allow
             acquisition.loop = false;
@@ -295,35 +295,27 @@ int main(int argc, char **argv) {
             voxel = arg.ValueFloat("--voxel", 0.01f); // indoor scale, not the 190 m synthetic default
             if (truncation <= 0.0f) truncation = 3.0f * voxel;
 
-            acquisition.type = ep::EAcquisitionType::DepthCamera;
-            // Two front ends over the SAME recording. The CPU one back-projects and estimates
-            // normals per pixel on the host; the GPU one hands the frame to
-            // Realsense::RealSensePipeline and reads back only the survivors. Selecting here rather
-            // than in two tools is the point -- everything downstream is then identical, so a
-            // difference in the table below is the front end and nothing else.
-            const bool useGpuFrontEnd = g_frontEnd == "gpu";
-            acquisition.makeSource = [replayDirectory, useGpuFrontEnd, k]()
-                    -> std::unique_ptr<ep::IFrameSource> {
-                if (useGpuFrontEnd) {
-                    Realsense::ValidationScoreOptions score;
-                    score.focalLengthPixels = k.fx;
-                    score.depthScale = 0.001f;
-                    // The recording predates this module and carries no baseline, so the D435
-                    // datasheet value stands in. Every comparison here is relative.
-                    score.baselineMeters = 0.05f;
-                    Realsense::DownSampleOptions downSample;
-                    downSample.enabled = g_gpuDownsampleVoxel > 0.0f;
-                    downSample.detailVoxelMeters = g_gpuDownsampleVoxel;
-                    return std::make_unique<ep::GpuDepthFrameSource>(
-                            std::make_unique<ep::RecordedDepthProvider>(replayDirectory), score,
-                            Realsense::NormalEstimationOptions{}, downSample, g_gpuScoreThreshold);
-                }
-                ep::DepthFilterOptions filter = g_depthGates;
-                filter.prefilterWindow = g_prefilterWindow;
-                return std::make_unique<ep::DepthCameraFrameSource>(
-                        std::make_unique<ep::RecordedDepthProvider>(replayDirectory), filter,
-                        g_depthGateStats);
-            };
+            // Two front ends over the SAME recording. The GPU one is a plain configuration now:
+            // the thread builds RealsenseFile itself. The CPU one back-projects and estimates
+            // normals per pixel on the host with its own gate knobs, which no source value
+            // describes, so it still comes in through makeSource. Selecting here rather than in
+            // two tools is the point -- everything downstream is identical, so a difference in the
+            // table below is the front end and nothing else.
+            if (g_frontEnd == "gpu") {
+                acquisition.source = ep::EAcquisitionSource::RealsenseFile;
+                acquisition.recordingDirectory = replayDirectory;
+                acquisition.scoreThreshold = g_gpuScoreThreshold;
+                acquisition.downSample.enabled = g_gpuDownsampleVoxel > 0.0f;
+                acquisition.downSample.detailVoxelMeters = g_gpuDownsampleVoxel;
+            } else {
+                acquisition.makeSource = [replayDirectory]() -> std::unique_ptr<ep::IFrameSource> {
+                    ep::DepthFilterOptions filter = g_depthGates;
+                    filter.prefilterWindow = g_prefilterWindow;
+                    return std::make_unique<ep::DepthCameraFrameSource>(
+                            std::make_unique<ep::RecordedDepthProvider>(replayDirectory), filter,
+                            g_depthGateStats);
+                };
+            }
             char buf[512];
             std::snprintf(buf, sizeof buf, "%s  (%d depth frames, %dx%d, fx %.2f)",
                           replayDirectory.c_str(), probe.FrameCount(), k.width, k.height, k.fx);

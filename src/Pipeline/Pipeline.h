@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Pipeline/Acquisition/ReconstructionSource.h" // AcquisitionConfig, EAcquisitionType
+#include "Pipeline/Acquisition/AcquisitionThread.h" // AcquisitionConfig, EAcquisitionSource
 #include "Pipeline/Types.h"
 
 #include <memory>
@@ -9,7 +9,7 @@
 namespace Pipeline {
 
     struct CommunicationModule; // CommunicationModule.h
-    class ReconstructionThread;
+    class AcquisitionThread;
     class RegistrationThread;
     class IntegrationThread;
     class Tracker; // Tracker.h
@@ -18,7 +18,7 @@ namespace Pipeline {
     public:
         struct Config {
             MapConfig map;                 // TSDF/submap parameters
-            AcquisitionConfig acquisition; // which acquisition strategy + its params
+            AcquisitionConfig acquisition; // which source, and its parameters
             FusionGateConfig fusion;       // extra fusion conditions layered on ShouldFuse; off by default
         };
 
@@ -40,7 +40,7 @@ namespace Pipeline {
 
         std::shared_ptr<const ModelSnapshot> LatestModel() const;
         int ProcessedFrame() const;
-        EAcquisitionType Type() const;
+        EAcquisitionSource Source() const;
         float DownsampleVoxel() const; // acquisition-stage voxel reduction actually in effect
         PipelineStats GetStats() const;
         void CheckErrors() const; // rethrow the first worker-stage exception, if any
@@ -49,7 +49,7 @@ namespace Pipeline {
         void buildStages(Config cfg, std::unique_ptr<Tracker> align); // ctor + Reconfigure
 
         std::unique_ptr<CommunicationModule> m_comm;
-        std::unique_ptr<ReconstructionThread> m_reconstruction;
+        std::unique_ptr<AcquisitionThread> m_acquisition;
         std::unique_ptr<RegistrationThread> m_registration;
         std::unique_ptr<IntegrationThread> m_integration;
     };

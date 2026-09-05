@@ -4,7 +4,7 @@
 #include "Engine/Core/Context.h"
 
 #include "Pipeline/Acquisition/DepthCameraFrameSource.h" // IDepthProvider, CameraIntrinsics
-#include "Pipeline/Acquisition/ReconstructionSource.h"   // IFrameSource
+#include "Pipeline/Acquisition/AcquisitionThread.h"   // IFrameSource
 
 #include "Realsense/RealSensePipeline.h"
 
@@ -76,8 +76,6 @@ namespace Pipeline {
             if (!m_device)
                 throw std::runtime_error("Pipeline::GpuDepthFrameSource: the depth provider is null");
         }
-
-        EAcquisitionType Type() const override { return EAcquisitionType::DepthCamera; }
         const char *Name() const override { return "depth-camera-gpu"; }
 
         // No Open() override: IDepthProvider has no open step -- a provider is live from

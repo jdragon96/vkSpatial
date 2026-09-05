@@ -140,7 +140,7 @@ TEST(GpuDepthFrameSource, RequantisingCostsAtMostOneDepthQuantum) {
                 << "the re-quantised depth drifted further than one quantum";
 }
 
-// The GPU downsample replaces ReconstructionThread's CPU voxel reduce, and it runs BEFORE the
+// The GPU downsample replaces AcquisitionThread's CPU voxel reduce, and it runs BEFORE the
 // readback rather than after -- so the saving is in the transfer too, not only in what the pipeline
 // then carries.
 TEST(GpuDepthFrameSource, TheDownsampleThinsTheFrameAndKeepsNormals) {

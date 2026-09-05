@@ -14,12 +14,6 @@
 
 namespace Pipeline {
 
-    enum class EAcquisitionType {
-        File,
-        DepthCamera,
-        StructuredLight,
-    };
-
     struct Frame {
         std::vector<Eigen::Vector3f> pts, nrm;
         Eigen::Vector3f cam = Eigen::Vector3f::Zero();
@@ -236,7 +230,7 @@ namespace Pipeline {
         int processedFrame = -1;
         std::size_t captureDepth = 0, trackDepth = 0, trackDropped = 0;
 
-        // ReconstructionThread: acquire one frame (File source: dominated by the --interval pacing).
+        // AcquisitionThread: acquire one frame (PlyFolder: dominated by the --interval pacing).
         double acquireMsAvg = 0.0;
         std::uint64_t acquiredFrames = 0;
         // ICPThread: align one frame to the model (0 for identity; real cost for icp/global).

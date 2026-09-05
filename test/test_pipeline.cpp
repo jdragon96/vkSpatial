@@ -1,8 +1,8 @@
 #include "Pipeline/CommunicationModule.h" // Pipeline::CommunicationModule
-#include "Pipeline/Pipeline.h"            // Pipeline::Pipeline / Config / EAcquisitionType
+#include "Pipeline/Pipeline.h"            // Pipeline::Pipeline / Config / EAcquisitionSource
 #include "Pipeline/Acquisition/DepthCameraFrameSource.h"
 #include "Pipeline/Acquisition/DepthRecording.h"
-#include "Pipeline/Acquisition/ReconstructionThread.h" // MakeAcquisitionSource
+#include "Pipeline/Acquisition/AcquisitionThread.h" // MakeAcquisitionSource
 #include "Pipeline/Registration/GpuIcpTracker.h"
 #include "LocalRegistration/Algorithm/GpuPointToPlaneIcp.h"
 #include "Pipeline/Registration/PointToPlaneIcpTracker.h"
@@ -74,7 +74,7 @@ namespace {
         ep::Pipeline::Config cfg;
         cfg.map.baseVoxel = 0.05f;
         cfg.map.truncation = 0.15f;
-        cfg.acquisition.type = ep::EAcquisitionType::File;
+        cfg.acquisition.source = ep::EAcquisitionSource::PlyFolder;
         cfg.acquisition.framePaths = files;
         cfg.acquisition.intervalMs = intervalMs;
         return cfg; // no densityFrames -> base-only integration (still yields entries)
@@ -140,12 +140,12 @@ TEST(Pipeline, FileSourceProducesModel) {
     pipe.Stop();
 }
 
-// The paced File source (intervalMs) still delivers every frame; Type() reports File.
+// The paced PlyFolder source (intervalMs) still delivers every frame; Source() reports it.
 TEST(Pipeline, PacedFileSourceDeliversAllFrames) {
     const FrameDir frames(3);
 
     ep::Pipeline pipe(makeConfig(frames.files, 15.0), identity()); // ~66 fps pacing
-    EXPECT_EQ(pipe.Type(), ep::EAcquisitionType::File);
+    EXPECT_EQ(pipe.Source(), ep::EAcquisitionSource::PlyFolder);
     pipe.Start();
 
     ASSERT_TRUE(waitProcessed(pipe, 2));
@@ -448,7 +448,6 @@ namespace {
     public:
         CountingFrameSource(int frames, int *buildCount) : m_left(frames) { ++(*buildCount); }
 
-        ep::EAcquisitionType Type() const override { return ep::EAcquisitionType::DepthCamera; }
         const char *Name() const override { return "counting"; }
 
         bool Next(ep::Frame &out) override {
@@ -473,13 +472,13 @@ namespace {
 TEST(PipelineSource, InjectedFactoryBuildsTheSource) {
     int buildCount = 0;
     ep::AcquisitionConfig acquisition;
-    acquisition.type = ep::EAcquisitionType::DepthCamera;
+    acquisition.source = ep::EAcquisitionSource::Realsense;
     acquisition.makeSource = [&] { return std::make_unique<CountingFrameSource>(3, &buildCount); };
 
     std::unique_ptr<ep::IFrameSource> source = ep::MakeAcquisitionSource(acquisition);
     ASSERT_NE(source, nullptr);
     EXPECT_EQ(buildCount, 1);
-    EXPECT_EQ(source->Type(), ep::EAcquisitionType::DepthCamera);
+    EXPECT_STREQ(source->Name(), "counting");
 
     int delivered = 0;
     ep::Frame frame;
@@ -487,19 +486,19 @@ TEST(PipelineSource, InjectedFactoryBuildsTheSource) {
     EXPECT_EQ(delivered, 3);
 }
 
-// Without a factory a device type has nothing to build from, and saying so beats a null source
-// that fails later inside the acquisition thread.
-TEST(PipelineSource, DeviceTypeWithoutAFactoryIsRejected) {
+// A device no longer needs an injected factory -- describing it in the config is the whole point
+// of the source enum -- but a source still has to be described COMPLETELY. RealsenseFile without a
+// directory has nothing to replay, and saying so beats a source that opens and delivers nothing.
+TEST(PipelineSource, RealsenseFileWithoutARecordingIsRejected) {
     ep::AcquisitionConfig acquisition;
-    acquisition.type = ep::EAcquisitionType::DepthCamera;
+    acquisition.source = ep::EAcquisitionSource::RealsenseFile;
     EXPECT_THROW(ep::MakeAcquisitionSource(acquisition), std::invalid_argument);
 }
 
 // A factory that returns nothing must be caught where it is called. Handing a null IFrameSource
-// to ReconstructionThread makes Run() exit immediately and the pipeline look merely empty.
+// to AcquisitionThread makes Run() exit immediately and the pipeline look merely empty.
 TEST(PipelineSource, FactoryReturningNullIsRejected) {
     ep::AcquisitionConfig acquisition;
-    acquisition.type = ep::EAcquisitionType::DepthCamera;
     acquisition.makeSource = [] { return std::unique_ptr<ep::IFrameSource>(); };
     EXPECT_THROW(ep::MakeAcquisitionSource(acquisition), std::invalid_argument);
 }
@@ -509,7 +508,7 @@ TEST(PipelineSource, FactoryReturningNullIsRejected) {
 TEST(PipelineSource, FactoryOverridesTheFileDescription) {
     int buildCount = 0;
     ep::AcquisitionConfig acquisition;
-    acquisition.type = ep::EAcquisitionType::File;
+    acquisition.source = ep::EAcquisitionSource::PlyFolder;
     acquisition.framePaths = {"/no/such/frame.ply"};
     acquisition.makeSource = [&] { return std::make_unique<CountingFrameSource>(1, &buildCount); };
 
@@ -563,7 +562,7 @@ TEST(Pipeline, DepthDeviceAccumulatesAMap) {
     cfg.map.baseVoxel = 0.01f;
     cfg.map.truncation = 0.03f;
     cfg.map.submap = false;
-    cfg.acquisition.type = ep::EAcquisitionType::DepthCamera;
+    cfg.acquisition.source = ep::EAcquisitionSource::Realsense;
     cfg.acquisition.makeSource = [] {
         return std::make_unique<ep::DepthCameraFrameSource>(
                 std::make_unique<SyntheticDepthProvider>(6));
@@ -606,7 +605,7 @@ TEST(Pipeline, IcpOnAStaticSceneKeepsTheMapTheSizeOfOneFrame) {
         cfg.map.baseVoxel = 0.01f;
         cfg.map.truncation = 0.03f;
         cfg.map.submap = false;
-        cfg.acquisition.type = ep::EAcquisitionType::DepthCamera;
+        cfg.acquisition.source = ep::EAcquisitionSource::Realsense;
         cfg.acquisition.makeSource = [] {
             return std::make_unique<ep::DepthCameraFrameSource>(
                     std::make_unique<SyntheticDepthProvider>(8));
@@ -709,7 +708,7 @@ TEST(Pipeline, ReleasesTheDeviceWhenAcquisitionEnds) {
     cfg.map.baseVoxel = 0.05f;
     cfg.map.truncation = 0.15f;
     cfg.map.submap = false;
-    cfg.acquisition.type = ep::EAcquisitionType::DepthCamera;
+    cfg.acquisition.source = ep::EAcquisitionSource::Realsense;
     cfg.acquisition.makeSource = [&] {
         return std::make_unique<ep::DepthCameraFrameSource>(
                 std::make_unique<CloseCountingDepthProvider>(2, &closeCount));
@@ -732,7 +731,6 @@ TEST(Pipeline, AcquisitionReducesFramesToTheMapsFinestVoxel) {
     auto makeDenseSource = [] {
         class DenseSource : public ep::IFrameSource {
         public:
-            ep::EAcquisitionType Type() const override { return ep::EAcquisitionType::DepthCamera; }
             const char *Name() const override { return "dense"; }
             bool Next(ep::Frame &out) override {
                 if (m_left-- <= 0) return false;
@@ -753,14 +751,14 @@ TEST(Pipeline, AcquisitionReducesFramesToTheMapsFinestVoxel) {
     };
 
     ep::AcquisitionConfig acquisition;
-    acquisition.type = ep::EAcquisitionType::DepthCamera;
+    acquisition.source = ep::EAcquisitionSource::Realsense;
     acquisition.makeSource = makeDenseSource;
 
     // Off: the frame arrives whole.
     acquisition.downsampleVoxel = -1.0f; // negative disables
     {
         ep::CommunicationModule comm;
-        ep::ReconstructionThread stage(comm, acquisition);
+        ep::AcquisitionThread stage(comm, acquisition);
         stage.Start();
         ep::Frame frame;
         ASSERT_TRUE(comm.capturedFrames.Pop(frame));
@@ -773,7 +771,7 @@ TEST(Pipeline, AcquisitionReducesFramesToTheMapsFinestVoxel) {
     acquisition.downsampleVoxel = 0.05f;
     {
         ep::CommunicationModule comm;
-        ep::ReconstructionThread stage(comm, acquisition);
+        ep::AcquisitionThread stage(comm, acquisition);
         stage.Start();
         ep::Frame frame;
         ASSERT_TRUE(comm.capturedFrames.Pop(frame));
@@ -794,7 +792,7 @@ TEST(Pipeline, DownsamplingIsOffUnlessAskedFor) {
     ep::Pipeline::Config cfg;
     cfg.map.baseVoxel = 0.04f;
     cfg.map.submap = true;
-    cfg.acquisition.type = ep::EAcquisitionType::DepthCamera;
+    cfg.acquisition.source = ep::EAcquisitionSource::Realsense;
     cfg.acquisition.makeSource = [] {
         return std::make_unique<ep::DepthCameraFrameSource>(
                 std::make_unique<SyntheticDepthProvider>(1));
@@ -822,7 +820,7 @@ TEST(Pipeline, OfflineSourceProcessesEveryFrame) {
         cfg.map.baseVoxel = 0.02f;
         cfg.map.truncation = 0.06f;
         cfg.map.submap = false;
-        cfg.acquisition.type = ep::EAcquisitionType::DepthCamera;
+        cfg.acquisition.source = ep::EAcquisitionSource::Realsense;
         cfg.acquisition.realTime = realTime;
         cfg.acquisition.makeSource = [=] {
             return std::make_unique<ep::DepthCameraFrameSource>(

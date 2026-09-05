@@ -314,7 +314,8 @@ int main(int argc, char **argv) {
         config.map.submap = false; // one level until a plain scan is known good
         config.map.behindSurfaceDropoff = arg.Has("--behind-dropoff");
         config.map.bandSigmaMultiplier = arg.ValueFloat("--band-sigma");
-        config.acquisition.type = ep::EAcquisitionType::DepthCamera;
+        // No `source` set: this tool runs the CPU front end with its own gate knobs, which no
+        // enum value describes, so it builds the source through makeSource below.
         // A camera keeps producing whether or not the map keeps up, so live must drop to bound
         // latency. A recording waits, so replaying it losslessly costs only wall-clock.
         config.acquisition.realTime = live;

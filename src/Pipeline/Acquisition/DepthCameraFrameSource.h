@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Pipeline/Acquisition/ReconstructionSource.h"
+#include "Pipeline/Acquisition/AcquisitionThread.h"
 
 #include <Eigen/Core>
 
@@ -395,8 +395,6 @@ namespace Pipeline {
                                         DepthFilterOptions filter = {},
                                         std::shared_ptr<DepthFilterStats> stats = nullptr)
             : m_device(std::move(device)), m_filter(filter), m_stats(std::move(stats)) {}
-
-        EAcquisitionType Type() const override { return EAcquisitionType::DepthCamera; }
         const char *Name() const override { return "depth-camera"; }
 
         bool Next(Frame &out) override {

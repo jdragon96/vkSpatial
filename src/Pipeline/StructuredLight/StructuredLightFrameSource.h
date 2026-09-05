@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Pipeline/Acquisition/DepthCameraFrameSource.h" // CameraIntrinsics (shared)
-#include "Pipeline/Acquisition/ReconstructionSource.h"
+#include "Pipeline/Acquisition/AcquisitionThread.h"
 
 #include <cstdint>
 #include <memory>
@@ -43,8 +43,6 @@ namespace Pipeline {
         StructuredLightFrameSource(std::unique_ptr<IPatternProvider> device,
                                    std::unique_ptr<IStructuredLightDecoder> decoder)
             : m_device(std::move(device)), m_decoder(std::move(decoder)) {}
-
-        EAcquisitionType Type() const override { return EAcquisitionType::StructuredLight; }
         const char *Name() const override { return "structured-light"; }
 
         bool Next(Frame &out) override {
