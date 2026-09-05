@@ -1,6 +1,6 @@
 # GlobalRegistration 프로세스
 
-`Engine::Registration::Estimate` 기준 (`src/GlobalRegistration/GlobalRegistrationPipeline.cpp`).
+`Registration::Estimate` 기준 (`src/GlobalRegistration/GlobalRegistrationPipeline.cpp`).
 초기 추정 없이 `src`를 `tgt`에 맞추는 변환을 낸다.
 
 물리 반경은 전부 `cfg.voxelSize`에서 파생된다 — `RegistrationConfig`는 gain만 담는다. **`voxelSize`를
@@ -8,7 +8,7 @@
 
 ## 1. Downsample
 
-- 두 점군을 `cfg.voxelSize`로 voxel 축소한다 (`Engine::Features::DownsampleVoxel`).
+- 두 점군을 `cfg.voxelSize`로 voxel 축소한다 (`Features::DownsampleVoxel`).
 
 **왜:** 뒤 단계의 비용이 점 수에 제곱으로 붙는다. 그리고 FPFH는 밀도가 고르지 않으면 같은 표면에서도
 다른 기술자를 낸다 — 축소가 그 밀도를 균일하게 만든다.
@@ -16,14 +16,14 @@
 ## 2. Normal + FPFH
 
 - `normalRadiusGain × voxelSize` 반경으로 법선을, `fpfhRadiusGain × voxelSize`로 FPFH를 만든다.
-- 둘 다 `Engine::Features`에 있다. 정합만의 것이 아니라 기술자 일반이라서다.
+- 둘 다 `Features`에 있다. 정합만의 것이 아니라 기술자 일반이라서다.
 
 **불변식:** FPFH 반경은 법선 반경보다 커야 한다. 기술자가 법선이 서술하는 것보다 넓은 이웃을 봐야
 구분력이 생긴다.
 
 ## 3. 대응 후보
 
-- 특징 공간 최근접으로 `src`→`tgt` 대응을 만든다 (`Engine::Features::FeatureMatching`).
+- 특징 공간 최근접으로 `src`→`tgt` 대응을 만든다 (`Features::FeatureMatching`).
 - 이 단계의 출력은 **후보**다. 상당수가 틀렸다는 전제로 다음 단계가 설계돼 있다.
 
 ## 4. RANSAC

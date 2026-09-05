@@ -21,7 +21,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace Engine::Features {
+namespace Features {
 
     static constexpr int FPFH_BINS = 11;              // bins per angular feature
     static constexpr int FPFH_DIM = 3 * FPFH_BINS;    // 33
@@ -140,4 +140,4 @@ namespace Engine::Features {
         return ComputeFPFH(cloud, cfg, nn);
     }
 
-} // namespace Engine::Features
+} // namespace Features

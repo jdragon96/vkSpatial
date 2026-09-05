@@ -46,7 +46,7 @@ TEST(LocalGrid, NearestMatchesBruteForce) {
 #include "Features/RegistrationTypes.h"
 
 // CPU reference: point-to-plane H,b in T's frame, over grid-NN correspondences, CENTRED on tgt centroid.
-static void cpuAccumulate(const std::vector<Vector3f> &src, const Engine::Registration::PointCloud &tgt,
+static void cpuAccumulate(const std::vector<Vector3f> &src, const Registration::PointCloud &tgt,
                           const Eigen::Matrix4f &T, float maxCorr,
                           Eigen::Matrix<double, 6, 6> &H, Eigen::Matrix<double, 6, 1> &b, int &inliers) {
     Vector3f c = Vector3f::Zero();
@@ -80,7 +80,7 @@ TEST(GpuIcp, AccumulateMatchesCpu) {
     Engine::Core::Context ctx;
     // A small +Z plane patch as source; a matching plane as target (with +Z normals).
     std::vector<Vector3f> src;
-    Engine::Registration::PointCloud tgt;
+    Registration::PointCloud tgt;
     for (int i = -15; i <= 15; ++i)
         for (int j = -15; j <= 15; ++j) {
             src.emplace_back(i * 0.02f, j * 0.02f, 0.01f); // 1 cm above the target plane
@@ -113,7 +113,7 @@ TEST(GpuIcp, AccumulateMatchesCpu) {
 TEST(GpuIcp, AccumulateResidualSumHasNoFixedPointFloor) {
     Engine::Core::Context ctx;
     std::vector<Vector3f> src;
-    Engine::Registration::PointCloud tgt;
+    Registration::PointCloud tgt;
     for (int i = -15; i <= 15; ++i)
         for (int j = -15; j <= 15; ++j) {
             src.emplace_back(i * 0.02f, j * 0.02f, 0.003f); // 3 mm: below the historical ~7 mm floor
@@ -136,7 +136,7 @@ TEST(GpuIcp, AccumulateResidualSumHasNoFixedPointFloor) {
 TEST(GpuIcp, SolveMatchesCpuOnCorner) {
     Engine::Core::Context ctx;
     // A 3-plane corner target (constrains all 6 DoF); source = target perturbed by a small transform.
-    Engine::Registration::PointCloud tgt;
+    Registration::PointCloud tgt;
     std::vector<Vector3f> src, srcNormals;
     auto addPlane = [&](const Vector3f &o, const Vector3f &u, const Vector3f &v, const Vector3f &n) {
         for (int i = -10; i <= 10; ++i)
@@ -159,10 +159,10 @@ TEST(GpuIcp, SolveMatchesCpuOnCorner) {
         srcNormals.push_back(perturb.rotation() * tgt.normals[i]);
     }
 
-    Engine::Registration::RegistrationParam params;
+    Registration::RegistrationParam params;
     params.maxCorrDist = 0.1f;
     params.maxIters = 30;
-    const auto cpu = Engine::Registration::AlignPointToPlaneIcp(src, srcNormals, tgt,
+    const auto cpu = Registration::AlignPointToPlaneIcp(src, srcNormals, tgt,
                                                                  Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(cpu.valid);
 
@@ -178,7 +178,7 @@ TEST(GpuIcp, SolveMatchesCpuOnCorner) {
 TEST(GpuIcp, ResidualRmseMatchesCpu) {
     Engine::Core::Context ctx;
     // Same 3-plane corner fixture as SolveMatchesCpuOnCorner (constrains all 6 DoF).
-    Engine::Registration::PointCloud tgt;
+    Registration::PointCloud tgt;
     std::vector<Vector3f> src;
     auto addPlane = [&](const Vector3f &o, const Vector3f &u, const Vector3f &v, const Vector3f &n) {
         for (int i = -10; i <= 10; ++i)
@@ -206,14 +206,14 @@ TEST(GpuIcp, ResidualRmseMatchesCpu) {
         src.push_back(p); // source is the model, moved + jittered
     }
 
-    Engine::Registration::RegistrationParam params;
+    Registration::RegistrationParam params;
     params.maxCorrDist = 0.1f;
 
     // No source normals here (this fixture is about the RESIDUAL-RMSE floor, not normal rejection) --
     // {} skips the normal-compatibility check identically on both paths (see AlignPointToPlaneIcp /
     // GpuPointToPlaneIcp::Solve doc comments).
     const auto cpu =
-            Engine::Registration::AlignPointToPlaneIcp(src, {}, tgt, Eigen::Matrix4f::Identity(), params);
+            Registration::AlignPointToPlaneIcp(src, {}, tgt, Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(cpu.valid);
 
     Pipeline::GpuPointToPlaneIcp gpu(ctx);
@@ -241,7 +241,7 @@ namespace {
     // Dense 3-plane corner target, apex off-origin, extent held ~0.6m across sizes (spacing shrinks as
     // point count grows, per plane count = 3*(2M+1)^2). Normals point along +X/+Y/+Z respectively, so
     // the corner constrains all 6 DoF (matches SolveMatchesCpuOnCorner's fixture, just parameterised).
-    void buildCorner(Engine::Registration::PointCloud &tgt, int M, float spacing) {
+    void buildCorner(Registration::PointCloud &tgt, int M, float spacing) {
         const Vector3f apex(0.3f, 0.3f, 0.3f);
         auto addPlane = [&](const Vector3f &u, const Vector3f &v, const Vector3f &n) {
             for (int i = -M; i <= M; ++i)
@@ -278,7 +278,7 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
     // (ratio grows from 2x at the sparsest size to ~13x at the densest -- both CPU's IcpGridNN and the
     // GPU's LocalGrid bucket with cell == maxCorrDist, so this also bounds per-cell occupancy).
     const float maxCorrDist = 0.03f;
-    Engine::Registration::RegistrationParam params;
+    Registration::RegistrationParam params;
     params.maxCorrDist = maxCorrDist;
     params.maxIters = 20;
 
@@ -293,7 +293,7 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
     fflush(stdout);
 
     for (const auto &sz: sizes) {
-        Engine::Registration::PointCloud tgt;
+        Registration::PointCloud tgt;
         buildCorner(tgt, sz.M, sz.spacing);
         std::vector<Vector3f> src;
         src.reserve(tgt.points.size());
@@ -305,12 +305,12 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
         // normals -- this benchmark is about raw solve throughput, not robust-correspondence behaviour;
         // {} skips the normal-compatibility check identically on both paths.
         const auto warmGpu = gpu.Solve(src, {}, tgt, I, params);
-        const auto warmCpu = Engine::Registration::AlignPointToPlaneIcp(src, {}, tgt, I, params);
+        const auto warmCpu = Registration::AlignPointToPlaneIcp(src, {}, tgt, I, params);
         ASSERT_TRUE(warmGpu.valid) << "GPU warmup failed to converge at N=" << tgt.points.size();
         ASSERT_TRUE(warmCpu.valid) << "CPU warmup failed to converge at N=" << tgt.points.size();
 
         double gpuTotalMs = 0.0, cpuTotalMs = 0.0;
-        Engine::Registration::RegistrationResult lastGpu, lastCpu;
+        Registration::RegistrationResult lastGpu, lastCpu;
         for (int k = 0; k < kRepeats; ++k) {
             const auto g0 = std::chrono::steady_clock::now();
             lastGpu = gpu.Solve(src, {}, tgt, I, params);
@@ -318,7 +318,7 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
             gpuTotalMs += std::chrono::duration<double, std::milli>(g1 - g0).count();
 
             const auto c0 = std::chrono::steady_clock::now();
-            lastCpu = Engine::Registration::AlignPointToPlaneIcp(src, {}, tgt, I, params);
+            lastCpu = Registration::AlignPointToPlaneIcp(src, {}, tgt, I, params);
             const auto c1 = std::chrono::steady_clock::now();
             cpuTotalMs += std::chrono::duration<double, std::milli>(c1 - c0).count();
         }
@@ -548,7 +548,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessNoisyRobustness) {
 
     // Same target construction the real trackers use (uncropped -- the model here is small enough
     // that cropping is unnecessary): sub-voxel surface point per entry.
-    Engine::Registration::PointCloud tgt;
+    Registration::PointCloud tgt;
     tgt.points.reserve(model.entries.size());
     tgt.normals.reserve(model.entries.size());
     for (const auto &entry: model.entries) {
@@ -561,7 +561,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessNoisyRobustness) {
     // Tier 1 baseline: Huber weighting + normal rejection both effectively OFF (huge huberScale =>
     // robustWeight == 1 always; empty sourceNormals => rejection skipped entirely), everything else
     // identical -- reproduces the pre-Tier-2 (Task 1-3) behaviour this task must beat.
-    Engine::Registration::RegistrationParam nonRobustParams;
+    Registration::RegistrationParam nonRobustParams;
     nonRobustParams.maxCorrDist = 2.0f * voxel;
     nonRobustParams.huberScale = 1e6f;
     const auto nonRobust =
@@ -569,7 +569,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessNoisyRobustness) {
 
     // Tier 2: robust weighting + normal rejection at the values the real trackers set (huberScale =
     // model voxel; default normalCompatibilityCosine, ~60deg).
-    Engine::Registration::RegistrationParam robustParams;
+    Registration::RegistrationParam robustParams;
     robustParams.maxCorrDist = 2.0f * voxel;
     robustParams.huberScale = voxel;
     const auto robust =
@@ -578,7 +578,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessNoisyRobustness) {
     ASSERT_TRUE(nonRobust.valid);
     ASSERT_TRUE(robust.valid);
 
-    auto measure = [&](const Engine::Registration::RegistrationResult &r, float &transErr, float &reconRmse) {
+    auto measure = [&](const Registration::RegistrationResult &r, float &transErr, float &reconRmse) {
         const Eigen::Isometry3f pose(r.T);
         const Eigen::Isometry3f error = pose * knownPerturbation; // should be ~identity
         transErr = error.translation().norm();
@@ -658,7 +658,7 @@ TEST(GpuIcp, RobustPathMatchesCpuOnNoisyFixture) {
 
     // Same target construction the real trackers use (GpuIcpTracker.cpp / PointToPlaneIcpTracker.cpp):
     // sub-voxel surface point per entry.
-    Engine::Registration::PointCloud tgt;
+    Registration::PointCloud tgt;
     tgt.points.reserve(model.entries.size());
     tgt.normals.reserve(model.entries.size());
     for (const auto &entry: model.entries) {
@@ -669,11 +669,11 @@ TEST(GpuIcp, RobustPathMatchesCpuOnNoisyFixture) {
     // Robust params matching the real trackers: maxCorrDist = 2*voxel, huberScale = voxel;
     // normalCompatibilityCosine left at its default so normal-rejection is active identically on
     // both paths. Source normals are passed on both solves, so normal rejection is exercised.
-    Engine::Registration::RegistrationParam params;
+    Registration::RegistrationParam params;
     params.maxCorrDist = 2.0f * voxel;
     params.huberScale = voxel;
 
-    const auto cpu = Engine::Registration::AlignPointToPlaneIcp(frame.pts, frame.nrm, tgt,
+    const auto cpu = Registration::AlignPointToPlaneIcp(frame.pts, frame.nrm, tgt,
                                                                  Eigen::Matrix4f::Identity(), params);
     ASSERT_TRUE(cpu.valid);
 
@@ -730,7 +730,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessAnnealing) {
     }
 
     // Same target construction the real trackers use: sub-voxel surface point per entry.
-    Engine::Registration::PointCloud tgt;
+    Registration::PointCloud tgt;
     tgt.points.reserve(model.entries.size());
     tgt.normals.reserve(model.entries.size());
     for (const auto &entry: model.entries) {
@@ -743,7 +743,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessAnnealing) {
     // Fixed-gate baseline: a single maxCorrDist for every iteration (minCorrespondenceDistance left at
     // its default 0 -> annealing OFF), at the value the real trackers use (2*voxel) -- the CURRENT
     // (pre-Task-5) behaviour this task must beat.
-    Engine::Registration::RegistrationParam fixedParams;
+    Registration::RegistrationParam fixedParams;
     fixedParams.maxCorrDist = 2.0f * voxel;
     fixedParams.maxIters = 30;
     const auto fixedResult =
@@ -753,7 +753,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessAnnealing) {
     // every point, including the worst-case lever-arm ones -- displacement up to ~0.29m, so 10*voxel=
     // 0.5m keeps a comfortable margin), then the per-iteration filter shrinks geometrically to
     // minCorrespondenceDistance (sub-voxel precision).
-    Engine::Registration::RegistrationParam annealedParams;
+    Registration::RegistrationParam annealedParams;
     annealedParams.maxCorrDist = 10.0f * voxel;
     annealedParams.minCorrespondenceDistance = 0.5f * voxel;
     annealedParams.maxIters = 30;
@@ -764,7 +764,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessAnnealing) {
     // covers): the CPU AlignPointToPlaneIcp reference, given the SAME annealedParams, must reach the
     // same pose -- proves both trackers share the identical schedule (AnnealIcpIteration), not just
     // identical fixed-gate behaviour.
-    const auto annealedResultCpu = Engine::Registration::AlignPointToPlaneIcp(
+    const auto annealedResultCpu = Registration::AlignPointToPlaneIcp(
             frame.pts, frame.nrm, tgt, Eigen::Isometry3f::Identity().matrix(), annealedParams);
 
     ASSERT_TRUE(annealedResultGpu.valid);

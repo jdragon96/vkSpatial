@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace Engine::Registration {
+namespace Registration {
 
     // Pipeline configuration. mm-scale; caller overrides voxelSize per data.
     //
@@ -145,4 +145,4 @@ namespace Engine::Registration {
         }
     }
 
-} // namespace Engine::Registration
+} // namespace Registration

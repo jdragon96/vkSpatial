@@ -103,7 +103,7 @@ namespace Pipeline {
     }
 
     GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::Accumulate(
-            const std::vector<Eigen::Vector3f> &src, const Engine::Registration::PointCloud &tgt,
+            const std::vector<Eigen::Vector3f> &src, const Registration::PointCloud &tgt,
             const Eigen::Matrix4f &T, float maxCorrDist) {
         if (tgt.points.empty()) return AccumulateCentred(src, tgt, Eigen::Vector3f::Zero(), T, maxCorrDist);
         Eigen::Vector3f c = Eigen::Vector3f::Zero();
@@ -113,7 +113,7 @@ namespace Pipeline {
     }
 
     GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::AccumulateCentred(
-            const std::vector<Eigen::Vector3f> &src, const Engine::Registration::PointCloud &tgt,
+            const std::vector<Eigen::Vector3f> &src, const Registration::PointCloud &tgt,
             const Eigen::Vector3f &c, const Eigen::Matrix4f &T, float maxCorrDist) {
         IterOut out;
         out.H.setZero();
@@ -125,7 +125,7 @@ namespace Pipeline {
 
     bool GpuPointToPlaneIcp::prepareCentred(const std::vector<Eigen::Vector3f> &src,
                                             const std::vector<Eigen::Vector3f> &sourceNormals,
-                                            const Engine::Registration::PointCloud &tgt,
+                                            const Registration::PointCloud &tgt,
                                             const Eigen::Vector3f &surfaceCenter,
                                             float maxCorrDist) {
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return false;
@@ -244,13 +244,13 @@ namespace Pipeline {
         return out;
     }
 
-    Engine::Registration::RegistrationResult GpuPointToPlaneIcp::Solve(
+    Registration::RegistrationResult GpuPointToPlaneIcp::Solve(
             const std::vector<Eigen::Vector3f> &src,
             const std::vector<Eigen::Vector3f> &sourceNormals,
-            const Engine::Registration::PointCloud &tgt,
+            const Registration::PointCloud &tgt,
             const Eigen::Matrix4f &priorT,
-            const Engine::Registration::RegistrationParam &params) {
-        Engine::Registration::RegistrationResult res;
+            const Registration::RegistrationParam &params) {
+        Registration::RegistrationResult res;
         res.T = priorT;
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return res;
         if (!sourceNormals.empty() && sourceNormals.size() != src.size()) return res;
@@ -276,7 +276,7 @@ namespace Pipeline {
         double lastSumOfSquaredResiduals = 0.0;
 
         for (int iter = 0; iter < params.maxIters; ++iter) {
-            const Engine::Registration::AnnealedIcpIterationParams annealed = Engine::Registration::AnnealIcpIteration(params, iter);
+            const Registration::AnnealedIcpIterationParams annealed = Registration::AnnealIcpIteration(params, iter);
             const IterOut a = dispatchCentred(T,
                                               annealed.huberScale,
                                               normalCompatibilityCosine,

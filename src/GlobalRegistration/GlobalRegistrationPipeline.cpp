@@ -12,9 +12,9 @@
 #include <Eigen/Geometry>
 #include <random>
 
-using namespace Engine::Features;
+using namespace Features;
 
-namespace Engine::Registration {
+namespace Registration {
 
     namespace {
 
@@ -221,4 +221,4 @@ namespace Engine::Registration {
         return refined;
     }
 
-} // namespace Engine::Registration
+} // namespace Registration

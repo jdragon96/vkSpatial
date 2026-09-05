@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <vector>
 
-namespace Engine::Registration {
+namespace Registration {
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
     // Umeyama's closed-form rigid fit: the SE(3) transform that best maps one ordered point set
@@ -33,4 +33,4 @@ namespace Engine::Registration {
         return Eigen::umeyama(S, D, false);
     }
 
-} // namespace Engine::Registration
+} // namespace Registration

@@ -12,7 +12,7 @@ GlobalRegistrationPipeline.h / .cpp
   SolveRigidUmeyama() 대응 세 쌍에서 닫힌 형식 강체 해
 ```
 
-특징 계산(FPFH)과 매칭은 `Engine::Features`에 있다 — 정합만의 것이 아니라 기술자 일반이라서다.
+특징 계산(FPFH)과 매칭은 `Features`에 있다 — 정합만의 것이 아니라 기술자 일반이라서다.
 이 모듈은 그것을 **조합**한다.
 
 ## 왜 RANSAC 뒤에 refine이 붙나

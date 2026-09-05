@@ -48,16 +48,16 @@ namespace Pipeline {
         explicit GpuPointToPlaneIcp(Engine::Core::Context &ctx);
 
         IterOut Accumulate(const std::vector<Eigen::Vector3f> &src,
-                           const Engine::Registration::PointCloud &tgt,
+                           const Registration::PointCloud &tgt,
                            const Eigen::Matrix4f &T, float maxCorrDist);
 
         // `sourceNormals` (sensor/source-frame, pre-pose) may be empty to skip the normal-compatibility
         // rejection entirely, matching AlignPointToPlaneIcp's CPU semantics; when non-empty it MUST be
         // index-aligned with `src`.
-        Engine::Registration::RegistrationResult Solve(
+        Registration::RegistrationResult Solve(
                 const std::vector<Eigen::Vector3f> &src, const std::vector<Eigen::Vector3f> &sourceNormals,
-                const Engine::Registration::PointCloud &tgt,
-                const Eigen::Matrix4f &priorT, const Engine::Registration::RegistrationParam &params);
+                const Registration::PointCloud &tgt,
+                const Eigen::Matrix4f &priorT, const Registration::RegistrationParam &params);
 
     private:
         static constexpr uint32_t kLocal = 256;
@@ -81,12 +81,12 @@ namespace Pipeline {
         std::unique_ptr<Engine::Core::Buffer> m_sourceNormals;
 
         IterOut AccumulateCentred(const std::vector<Eigen::Vector3f> &src,
-                                  const Engine::Registration::PointCloud &tgt, const Eigen::Vector3f &c,
+                                  const Registration::PointCloud &tgt, const Eigen::Vector3f &c,
                                   const Eigen::Matrix4f &T, float maxCorrDist);
 
         bool prepareCentred(const std::vector<Eigen::Vector3f> &src,
                             const std::vector<Eigen::Vector3f> &sourceNormals,
-                            const Engine::Registration::PointCloud &tgt, const Eigen::Vector3f &c,
+                            const Registration::PointCloud &tgt, const Eigen::Vector3f &c,
                             float maxCorrDist);
 
         // `currentMaxCorrespondenceDistance` is the per-ITERATION distance filter (pc.maxCorr); it may

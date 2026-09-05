@@ -6,7 +6,7 @@
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>
 #include <random>
-using namespace Engine::Registration;
+using namespace Registration;
 
 TEST(Registration, VoxelDownsampleReducesAndKeepsExtent) {
     PointCloud in;
@@ -15,7 +15,7 @@ TEST(Registration, VoxelDownsampleReducesAndKeepsExtent) {
             in.points.emplace_back(i * 0.25f, j * 0.25f, 0.0f); // dense 10x10mm plane, 0.25mm spacing
             in.normals.emplace_back(0, 0, 1);
         }
-    PointCloud out = Engine::Features::DownsampleVoxel(in, 1.0f); // 1mm cells → ~10x10 = ~100 pts
+    PointCloud out = Features::DownsampleVoxel(in, 1.0f); // 1mm cells → ~10x10 = ~100 pts
     EXPECT_LT(out.points.size(), in.points.size());
     EXPECT_GT(out.points.size(), 50u);
     EXPECT_EQ(out.normals.size(), out.points.size());
@@ -23,8 +23,8 @@ TEST(Registration, VoxelDownsampleReducesAndKeepsExtent) {
     for (auto &n: out.normals) EXPECT_NEAR(n.z(), 1.0f, 1e-3f);
 }
 
-static Engine::Registration::PointCloud makeSphere(int n, float r) {
-    Engine::Registration::PointCloud c;
+static Registration::PointCloud makeSphere(int n, float r) {
+    Registration::PointCloud c;
     for (int i = 0; i < n; ++i) {
         float a = 2.399963f * i, z = 1.0f - 2.0f * (i + 0.5f) / n;
         float rr = std::sqrt(std::max(0.0f, 1 - z * z));
@@ -38,11 +38,11 @@ static Engine::Registration::PointCloud makeSphere(int n, float r) {
 TEST(Registration, FpfhIsApproximatelyRotationInvariant) {
     auto s = makeSphere(600, 20.0f);
     Eigen::Matrix3f R = Eigen::AngleAxisf(0.7f, Eigen::Vector3f(0.3f, 0.8f, 0.5f).normalized()).toRotationMatrix();
-    Engine::Registration::PointCloud sr = s;
+    Registration::PointCloud sr = s;
     for (auto &p: sr.points) p = R * p;
     for (auto &nrm: sr.normals) nrm = R * nrm;
-    auto f0 = Engine::Features::ComputeFpfh(s, 60.0f, 100.0f);
-    auto f1 = Engine::Features::ComputeFpfh(sr, 60.0f, 100.0f);
+    auto f0 = Features::ComputeFpfh(s, 60.0f, 100.0f);
+    auto f1 = Features::ComputeFpfh(sr, 60.0f, 100.0f);
     // point i maps to point i under R (same ordering), so descriptors should be close
     double maxdiff = 0;
     for (size_t i = 0; i < f0.size(); ++i) maxdiff = std::max<double>(maxdiff, (f0[i] - f1[i]).norm());
@@ -58,12 +58,12 @@ TEST(Registration, FpfhIsApproximatelyRotationInvariant) {
 TEST(Registration, MatchRecoversIdentityCorrespondencesUnderRotation) {
     auto s = makeSphere(500, 20.0f);
     Eigen::Matrix3f R = Eigen::AngleAxisf(0.5f, Eigen::Vector3f::UnitZ()).toRotationMatrix();
-    Engine::Registration::PointCloud sr = s;
+    Registration::PointCloud sr = s;
     for (auto &p: sr.points) p = R * p;
     for (auto &n: sr.normals) n = R * n;
-    auto fs = Engine::Features::ComputeFpfh(s, 60.0f, 100.0f);
-    auto ft = Engine::Features::ComputeFpfh(sr, 60.0f, 100.0f);
-    auto corr = Engine::Features::MatchFeatures(fs, ft);
+    auto fs = Features::ComputeFpfh(s, 60.0f, 100.0f);
+    auto ft = Features::ComputeFpfh(sr, 60.0f, 100.0f);
+    auto corr = Features::MatchFeatures(fs, ft);
     // most correspondences should be i→i (descriptor space is symmetric under R)
     int selfMatches = 0;
     for (auto &c: corr)
@@ -78,14 +78,14 @@ TEST(Registration, RansacRecoversKnownTransform) {
     for (size_t i = 0; i < tgt.points.size(); ++i) tgt.points[i] *= (1.0f + 0.15f * std::sin(0.7f * i));
     Eigen::Matrix3f Rgt = Eigen::AngleAxisf(0.6f, Eigen::Vector3f(0.2f, 0.7f, 0.6f).normalized()).toRotationMatrix();
     Eigen::Vector3f tgt_t(8.0f, -5.0f, 3.0f);
-    Engine::Registration::PointCloud src = tgt; // src = model moved by Tgt
+    Registration::PointCloud src = tgt; // src = model moved by Tgt
     for (size_t i = 0; i < src.points.size(); ++i) {
         src.points[i] = Rgt * tgt.points[i] + tgt_t;
         src.normals[i] = Rgt * tgt.normals[i];
     }
-    Engine::Registration::RegistrationConfig cfg;
+    Registration::RegistrationConfig cfg;
     cfg.voxelSize = 2.0f;
-    auto res = Engine::Registration::EstimateRansac(src, tgt, cfg); // aligns src→tgt ⇒ T ≈ [Rgt|tgt_t]^-1
+    auto res = Registration::EstimateRansac(src, tgt, cfg); // aligns src→tgt ⇒ T ≈ [Rgt|tgt_t]^-1
     ASSERT_TRUE(res.valid);
     Eigen::Matrix4f Tgt = Eigen::Matrix4f::Identity();
     Tgt.block<3, 3>(0, 0) = Rgt;
@@ -103,7 +103,7 @@ namespace {
     // (factored out per Task 5's brief; that existing test is left untouched/unmodified).
     // tgt = "model" (bumpy sphere); src = tgt moved by (Rgt, tgt_t). Registering src->tgt
     // should recover T ≈ [Rgt|tgt_t]^-1, i.e. res.T * Tgt ≈ Identity.
-    void MakeKnownTransformFixture(Engine::Registration::PointCloud &src, Engine::Registration::PointCloud &tgt,
+    void MakeKnownTransformFixture(Registration::PointCloud &src, Registration::PointCloud &tgt,
                                    Eigen::Matrix4f &Tgt) {
         tgt = makeSphere(600, 20.0f);
         for (size_t i = 0; i < tgt.points.size(); ++i) tgt.points[i] *= (1.0f + 0.15f * std::sin(0.7f * i));
@@ -122,13 +122,13 @@ namespace {
 } // namespace
 
 TEST(Registration, CeresRefineTightensRecovery) {
-    Engine::Registration::PointCloud src, tgt;
+    Registration::PointCloud src, tgt;
     Eigen::Matrix4f Tgt;
     MakeKnownTransformFixture(src, tgt, Tgt);
-    Engine::Registration::RegistrationConfig cfg;
+    Registration::RegistrationConfig cfg;
     cfg.voxelSize = 2.0f;
-    auto coarse = Engine::Registration::EstimateRansac(src, tgt, cfg);
-    auto refined = Engine::Registration::Estimate(src, tgt, cfg);
+    auto coarse = Registration::EstimateRansac(src, tgt, cfg);
+    auto refined = Registration::Estimate(src, tgt, cfg);
     ASSERT_TRUE(refined.valid);
     Eigen::Matrix4f errC = coarse.T * Tgt, errR = refined.T * Tgt;
     float rotC = Eigen::AngleAxisf(Eigen::Matrix3f(errC.block<3, 3>(0, 0))).angle();
@@ -142,13 +142,13 @@ TEST(Registration, CeresRefineTightensRecovery) {
 // never actually exercised (fitness=1.0). This test corrupts a fraction of src *points*
 // (gross random position + random normal, before registering) so a chunk of the resulting
 // FPFH matches are wrong, then checks two things:
-//   1. Engine::Registration::Estimate (RANSAC + Ceres) still recovers the known transform.
+//   1. Registration::Estimate (RANSAC + Ceres) still recovers the known transform.
 //   2. A "no-RANSAC" baseline -- SolveRigidUmeyama over ALL matched correspondences from the
 //      SAME corrupted cloud pair, with no outlier rejection at all -- does NOT recover it.
 // (2) is the discriminating half: it proves RANSAC's max-inlier search (not just Ceres's
 // Cauchy loss) is doing real work, by showing what happens without it.
 TEST(Registration, EstimateRecoversUnderOutlierCorruptionButNaiveBaselineFails) {
-    Engine::Registration::PointCloud src, tgt;
+    Registration::PointCloud src, tgt;
     Eigen::Matrix4f Tgt;
     MakeKnownTransformFixture(src, tgt, Tgt);
 
@@ -171,11 +171,11 @@ TEST(Registration, EstimateRecoversUnderOutlierCorruptionButNaiveBaselineFails) 
     }
     ASSERT_GT(numCorrupted, 0);
 
-    Engine::Registration::RegistrationConfig cfg;
+    Registration::RegistrationConfig cfg;
     cfg.voxelSize = 2.0f;
 
     // (1) RANSAC + Ceres should still recover the transform.
-    auto refined = Engine::Registration::Estimate(src, tgt, cfg);
+    auto refined = Registration::Estimate(src, tgt, cfg);
     ASSERT_TRUE(refined.valid) << numCorrupted << "/" << src.points.size() << " src points corrupted";
     Eigen::Matrix4f errR = refined.T * Tgt;
     float rotR = Eigen::AngleAxisf(Eigen::Matrix3f(errR.block<3, 3>(0, 0))).angle();
@@ -186,13 +186,13 @@ TEST(Registration, EstimateRecoversUnderOutlierCorruptionButNaiveBaselineFails) 
 
     // (2) No-RANSAC baseline: re-run downsample/FPFH/match on the SAME corrupted clouds, but
     // Umeyama-fit ALL matched correspondences directly (no RANSAC outlier rejection).
-    const auto srcDs = Engine::Features::DownsampleVoxel(src, cfg.voxelSize);
-    const auto tgtDs = Engine::Features::DownsampleVoxel(tgt, cfg.voxelSize);
+    const auto srcDs = Features::DownsampleVoxel(src, cfg.voxelSize);
+    const auto tgtDs = Features::DownsampleVoxel(tgt, cfg.voxelSize);
     const float normalRadius = cfg.normalRadiusGain * cfg.voxelSize;
     const float fpfhRadius = cfg.fpfhRadiusGain * cfg.voxelSize;
-    auto srcF = Engine::Features::ComputeFpfh(srcDs, normalRadius, fpfhRadius);
-    auto tgtF = Engine::Features::ComputeFpfh(tgtDs, normalRadius, fpfhRadius);
-    auto corr = Engine::Features::MatchFeatures(srcF, tgtF, 0.95f, cfg.numMaxCorr);
+    auto srcF = Features::ComputeFpfh(srcDs, normalRadius, fpfhRadius);
+    auto tgtF = Features::ComputeFpfh(tgtDs, normalRadius, fpfhRadius);
+    auto corr = Features::MatchFeatures(srcF, tgtF, 0.95f, cfg.numMaxCorr);
     ASSERT_GE(corr.size(), 3u);
 
     std::vector<Eigen::Vector3f> allSrc, allDst;
@@ -202,7 +202,7 @@ TEST(Registration, EstimateRecoversUnderOutlierCorruptionButNaiveBaselineFails) 
         allSrc.push_back(srcDs.points[c.srcIdx]);
         allDst.push_back(tgtDs.points[c.tgtIdx]);
     }
-    Eigen::Matrix4f baselineT = Engine::Registration::SolveRigidUmeyama(allSrc, allDst);
+    Eigen::Matrix4f baselineT = Registration::SolveRigidUmeyama(allSrc, allDst);
     Eigen::Matrix4f errB = baselineT * Tgt;
     float rotB = Eigen::AngleAxisf(Eigen::Matrix3f(errB.block<3, 3>(0, 0))).angle();
     float trB = errB.block<3, 1>(0, 3).norm();

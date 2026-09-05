@@ -63,10 +63,21 @@ Engine::Core      Vulkan 디바이스/버퍼/이미지/디스크립터/ComputePi
 Engine::Compute   커널 실행 배치, 스테이징
 Engine::Render    GLFW 창, 렌더 그래프, 카메라  (헤드리스 경로는 이걸 안 쓴다)
 Engine::Backend   포즈 그래프·루프 클로저·Lie — 순수 Eigen, Vulkan 의존 없음
-Engine::Features  FPFH 등 기술자
+Features          점군 어휘(PointCloud, RegistrationResult)와 그 위의 기술자(FPFH) — Eigen만 의존
 BVH / TSDF / Mesh 도메인 알고리즘
-Pipeline          위를 조립하는 재구성 스레드들
+GlobalRegistration  초기 추정 없는 정합 (FPFH → RANSAC → refine)
+LocalRegistration   point-to-plane ICP, CPU/GPU
+Realsense           D400 깊이 프론트엔드
+Pipeline          위를 조립하는 재구성 스레드들 — 알고리즘은 두지 않는다
 ```
+
+**`Features`와 정합 모듈 둘은 `Engine` 밑이 아니라 옆이다.** `Features`는 Eigen 외에 의존이 없고
+GlobalRegistration·LocalRegistration·Pipeline이 모두 소비한다 — Engine 아래 층으로 두면 바닥 레이어가
+정합 타입의 소유자가 된다. `PointCloud`·`RegistrationResult`는 네 모듈이 다 쓰므로 어느 정합 모듈도
+소유할 수 없고, `Features`가 그들 모두가 닿는 가장 낮은 지점이라 `RegistrationTypes.h`가 거기 산다.
+
+**`src/Pipeline`에는 알고리즘을 두지 않는다.** 스레드와, 알고리즘을 `Tracker` 같은 인터페이스로 감싸는
+어댑터만 둔다. 정합 알고리즘이 거기 있다가 나온 것이 위 두 모듈이다.
 
 방향이 고정된 곳이 둘 있다:
 

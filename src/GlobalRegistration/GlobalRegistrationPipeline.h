@@ -9,7 +9,7 @@
 
 #include <vector>
 
-namespace Engine::Registration {
+namespace Registration {
 
     // Full coarse global-registration pipeline, src -> tgt:
     //   1. DownsampleVoxel both clouds at cfg.voxelSize.
@@ -41,4 +41,4 @@ namespace Engine::Registration {
     // correspondence set the coarse pipeline matched.
     RegistrationResult Estimate(const PointCloud &src, const PointCloud &tgt, const RegistrationConfig &cfg);
 
-} // namespace Engine::Registration
+} // namespace Registration

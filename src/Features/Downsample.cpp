@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <unordered_map>
 
-namespace Engine::Features {
+namespace Features {
 
     namespace {
 
@@ -75,4 +75,4 @@ namespace Engine::Features {
         return out;
     }
 
-} // namespace Engine::Features
+} // namespace Features

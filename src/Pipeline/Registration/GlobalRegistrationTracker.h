@@ -10,7 +10,7 @@ namespace Pipeline {
     // Prior-free global registration (FPFH + RANSAC + Ceres) — (re)localisation / A/B baseline.
     class GlobalRegistrationTracker : public Tracker {
     public:
-        explicit GlobalRegistrationTracker(Engine::Registration::RegistrationConfig cfg = {})
+        explicit GlobalRegistrationTracker(Registration::RegistrationConfig cfg = {})
             : m_cfg(cfg) {}
         const char *Name() const override { return "global"; }
 
@@ -18,7 +18,7 @@ namespace Pipeline {
                              const Eigen::Isometry3f &priorPose) override;
 
     private:
-        Engine::Registration::RegistrationConfig m_cfg;
+        Registration::RegistrationConfig m_cfg;
     };
 
 } // namespace Pipeline

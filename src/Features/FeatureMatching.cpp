@@ -4,7 +4,7 @@
 #include <cmath>
 #include <limits>
 
-namespace Engine::Features {
+namespace Features {
 
     namespace {
 
@@ -66,4 +66,4 @@ namespace Engine::Features {
         return result;
     }
 
-} // namespace Engine::Features
+} // namespace Features

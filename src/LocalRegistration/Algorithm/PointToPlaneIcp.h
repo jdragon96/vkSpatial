@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace Engine::Registration {
+namespace Registration {
 
     namespace detail {
 
@@ -157,4 +157,4 @@ namespace Engine::Registration {
         return res;
     }
 
-} // namespace Engine::Registration
+} // namespace Registration

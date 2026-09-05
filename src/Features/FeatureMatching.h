@@ -2,11 +2,11 @@
 
 #include "Features/RegistrationTypes.h"
 
-namespace Engine::Features {
+namespace Features {
 
-    using Engine::Registration::Correspondence;
-    using Engine::Registration::Fpfh33;
-    using Engine::Registration::PointCloud;
+    using Registration::Correspondence;
+    using Registration::Fpfh33;
+    using Registration::PointCloud;
 
     // Nearest-neighbour feature matching in 33-D FPFH descriptor space with Lowe's ratio
     // test, src -> tgt.
@@ -30,4 +30,4 @@ namespace Engine::Features {
     std::vector<Correspondence> MatchFeatures(const std::vector<Fpfh33> &srcF, const std::vector<Fpfh33> &tgtF,
                                               float ratioThr = 0.95f, int numMaxCorr = 5000);
 
-} // namespace Engine::Features
+} // namespace Features

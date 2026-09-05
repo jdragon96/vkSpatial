@@ -9,9 +9,9 @@
 #include <vector>
 
 using Eigen::Vector3f;
-using Engine::Registration::AlignPointToPlaneIcp;
-using Engine::Registration::PointCloud;
-using Engine::Registration::RegistrationParam;
+using Registration::AlignPointToPlaneIcp;
+using Registration::PointCloud;
+using Registration::RegistrationParam;
 
 namespace {
 

@@ -1,12 +1,14 @@
-#include "Pipeline/Registration/Tracker.h" // Pipeline::TrackerRegistry
-#include "Pipeline/Pipeline.h"  // Pipeline::Pipeline / Config / EAcquisitionType
-#include "Pipeline/CommunicationModule.h"       // Pipeline::CommunicationModule
-#include "Pipeline/Registration/GpuIcpTracker.h"
-#include "Pipeline/Registration/GpuPointToPlaneIcp.h"
-#include "Pipeline/Registration/RegistrationThread.h"
-#include "Pipeline/Reconstruction/ReconstructionThread.h" // MakeAcquisitionSource
+#include "Pipeline/CommunicationModule.h" // Pipeline::CommunicationModule
+#include "Pipeline/Pipeline.h"            // Pipeline::Pipeline / Config / EAcquisitionType
 #include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
 #include "Pipeline/Reconstruction/DepthRecording.h"
+#include "Pipeline/Reconstruction/ReconstructionThread.h" // MakeAcquisitionSource
+#include "Pipeline/Registration/GpuIcpTracker.h"
+#include "LocalRegistration/Algorithm/GpuPointToPlaneIcp.h"
+#include "Pipeline/Registration/PointToPlaneIcpTracker.h"
+#include "Pipeline/Registration/RegistrationThread.h"
+#include "Pipeline/Registration/RelocalizingIcpTracker.h"
+#include "Pipeline/Registration/Tracker.h" // Pipeline::TrackerRegistry
 
 #include "utilities/PointCloudIO.h"
 
@@ -167,7 +169,7 @@ TEST(Pipeline, ReconfigureRebuildsCleanly) {
         cfg.map.submap = (i % 2 == 0); // flip an option, as a UI toggle would
         pipe.Reconfigure(std::move(cfg), identity());
         ASSERT_TRUE(waitProcessed(pipe, 1)) << "no model after Reconfigure #" << i;
-        pipe.CheckErrors();                 // rethrow any worker exception from the rebuild
+        pipe.CheckErrors(); // rethrow any worker exception from the rebuild
         EXPECT_NE(pipe.LatestModel(), nullptr);
     }
     pipe.Stop();
@@ -232,7 +234,9 @@ TEST(Pipeline, GpuIcpTrackerRecoversPerturbation) {
     // r.pose should recover ~perturb^-1 (aligns the perturbed frame back onto the model). Same
     // T*known - I convergence check as Icp.RecoversKnownTransform (test_icp.cpp), same tolerance.
     const Eigen::Matrix4f err = r.pose.matrix() * perturb.matrix() - Eigen::Matrix4f::Identity();
-    EXPECT_LT(err.norm(), 5e-3f) << "pose:\n" << r.pose.matrix() << "\nperturb:\n" << perturb.matrix();
+    EXPECT_LT(err.norm(), 5e-3f) << "pose:\n"
+                                 << r.pose.matrix() << "\nperturb:\n"
+                                 << perturb.matrix();
 }
 
 // The model-crop's exclusion branch: entries all sit far outside the frame's AABB + maxCorrDist
@@ -264,7 +268,9 @@ TEST(Pipeline, GpuIcpTrackerCropExcludesFarModel) {
 
     EXPECT_FALSE(r.valid);
     EXPECT_TRUE(r.pose.matrix().isApprox(prior.matrix(), 1e-6f))
-            << "pose:\n" << r.pose.matrix() << "\nprior:\n" << prior.matrix();
+            << "pose:\n"
+            << r.pose.matrix() << "\nprior:\n"
+            << prior.matrix();
 }
 
 // Moving-camera regression: unlike GpuIcpTrackerRecoversPerturbation (which keeps `priorPose` at
@@ -320,13 +326,15 @@ TEST(Pipeline, GpuIcpTrackerRecoversMovingCameraPose) {
     const ep::TrackingResult r = tracker->Track(frame, &model, priorPose);
 
     ASSERT_TRUE(r.valid) << "GPU ICP tracker did not converge for a moving camera (world-frame model, "
-                             "non-identity priorPose) -- likely the sensor-frame-vs-world-frame crop bug";
+                            "non-identity priorPose) -- likely the sensor-frame-vs-world-frame crop bug";
     EXPECT_GT(r.inliers, 0u);
 
     // r.pose should recover ~truePose (the transform that exactly aligns frame.pts back onto the
     // world-frame model).
     const Eigen::Matrix4f err = r.pose.matrix() - truePose.matrix();
-    EXPECT_LT(err.norm(), 5e-3f) << "pose:\n" << r.pose.matrix() << "\ntruePose:\n" << truePose.matrix();
+    EXPECT_LT(err.norm(), 5e-3f) << "pose:\n"
+                                 << r.pose.matrix() << "\ntruePose:\n"
+                                 << truePose.matrix();
 }
 
 // Stop() before the source is exhausted must not hang or crash (interruptible shutdown).
@@ -341,16 +349,8 @@ TEST(Pipeline, StopIsCleanMidStream) {
     SUCCEED();
 }
 
-// ---------------------------------------------------------------------------------------------
-// Registration-quality plan, Task 5 (Tier 3): constant-velocity motion model in
-// RegistrationThread::Run.
 namespace {
 
-    // A Tracker that ALWAYS reports success on a known, pre-scripted pose sequence -- ignoring
-    // whatever prior it's given. This test is about what prior RegistrationThread::Run COMPUTES and
-    // hands to Track (the motion model), not about whether ICP itself converges, so the tracker just
-    // needs to behave like a perfect one: it records every priorPose it receives, in call order, into
-    // a shared vector the test inspects after the thread has been Stop()'d (joined).
     class RecordingStraightLineTracker : public ep::Tracker {
     public:
         RecordingStraightLineTracker(std::vector<Eigen::Isometry3f> truePoses,
@@ -359,7 +359,8 @@ namespace {
 
         const char *Name() const override { return "recording-straight-line"; }
 
-        ep::TrackingResult Track(const ep::Frame &, const ep::ModelSnapshot *,
+        ep::TrackingResult Track(const ep::Frame &,
+                                 const ep::ModelSnapshot *,
                                  const Eigen::Isometry3f &priorPose) override {
             m_recordedPriors->push_back(priorPose);
             ep::TrackingResult r;
@@ -869,7 +870,7 @@ TEST(Pipeline, OfflineSourceProcessesEveryFrame) {
 // as good, and -- through the constant-velocity prior, which doubles whatever the last frame did --
 // run away: 10.78 m of claimed motion in a single frame at 30 fps.
 TEST(Registration, FitnessGateRejectsASolveBackedByAlmostNoOverlap) {
-    Engine::Registration::PointCloud target;
+    Registration::PointCloud target;
     for (int i = -20; i <= 20; ++i)
         for (int j = -20; j <= 20; ++j) {
             target.points.emplace_back(float(i) * 0.01f, float(j) * 0.01f, 0.0f);
@@ -893,20 +894,20 @@ TEST(Registration, FitnessGateRejectsASolveBackedByAlmostNoOverlap) {
 
     Engine::Core::Context context;
     ep::GpuPointToPlaneIcp icp(context);
-    Engine::Registration::RegistrationParam params;
+    Registration::RegistrationParam params;
     params.maxCorrDist = 0.1f;
     params.huberScale = 0.05f;
 
     // The historical gate: an absolute inlier floor the overlapping patch clears on its own.
     params.minFitness = 0.0f;
-    const Engine::Registration::RegistrationResult ungated =
+    const Registration::RegistrationResult ungated =
             icp.Solve(source, sourceNormals, target, Eigen::Matrix4f::Identity(), params);
     EXPECT_TRUE(ungated.valid) << "fixture is wrong: the patch must produce enough inliers to pass "
                                   "the bare minInliers floor, or this proves nothing";
     EXPECT_LT(ungated.fitness, 0.2f);
 
     params.minFitness = 0.4f;
-    const Engine::Registration::RegistrationResult gated =
+    const Registration::RegistrationResult gated =
             icp.Solve(source, sourceNormals, target, Eigen::Matrix4f::Identity(), params);
     EXPECT_FALSE(gated.valid) << "a solve backed by " << gated.fitness * 100.0f
                               << "% of the source must not be reported as a good track";
@@ -991,7 +992,7 @@ TEST(Pipeline, AFrameWhoseOverlapGateFailedIsNotFusedIntoTheMap) {
     const ep::PipelineStats stats = pipe.GetStats();
     EXPECT_EQ(stats.skippedFusions, std::uint64_t(kFrames - 1));
     EXPECT_EQ(stats.processedFrame, kFrames - 1) << "a skipped fusion must still advance the frame "
-                                                   "index -- callers wait on it";
+                                                    "index -- callers wait on it";
     pipe.Stop();
 }
 
@@ -1239,4 +1240,464 @@ TEST(RegistrationThread, SlowMotionUsesThePreviousPosePrior) {
                 << "call " << k << " got a velocity-extrapolated prior at 5 mm/frame motion (x="
                 << (*priors)[std::size_t(k)].translation().x() << ", previous pose x="
                 << poseAt(k).translation().x() << ")";
+}
+
+namespace {
+
+    // Meter-scale bumpy sphere — the same shape test_registration.cpp proves FPFH+RANSAC on (mm
+    // scale there). The radius perturbation breaks both the FPFH degeneracy of a smooth surface and
+    // the sphere's rotational symmetry, so global registration and point-to-plane ICP are each
+    // well-posed on it. Model entries carry tsdf=0 and the snapshot truncationDistance=0, so the
+    // sub-voxel surface point IS the entry center — the fixture needs no TSDF band model.
+    struct SphereFixture {
+        ep::ModelSnapshot model;
+        ep::Frame frame; // the model surface expressed in an identity sensor pose
+    };
+
+    SphereFixture makeBumpySphereFixture(int n = 600, float radius = 0.2f, float voxel = 0.02f) {
+        SphereFixture f;
+        f.model.voxel = voxel;
+        f.model.entries.reserve(std::size_t(n));
+        f.frame.pts.reserve(std::size_t(n));
+        f.frame.nrm.reserve(std::size_t(n));
+        for (int i = 0; i < n; ++i) {
+            const float a = 2.399963f * float(i), z = 1.0f - 2.0f * (float(i) + 0.5f) / float(n);
+            const float rr = std::sqrt(std::max(0.0f, 1.0f - z * z));
+            const Vector3f direction(rr * std::cos(a), rr * std::sin(a), z);
+            const Vector3f point = radius * (1.0f + 0.15f * std::sin(0.7f * float(i))) * direction;
+            TSDFVoxel e{};
+            e.center = point;
+            e.normal = direction;
+            f.model.entries.push_back(e);
+            f.frame.pts.push_back(point);
+            f.frame.nrm.push_back(direction);
+        }
+        return f;
+    }
+
+    // A prior far enough from the truth (identity) that local ICP cannot adopt a solve — the sphere
+    // surfaces barely graze, so the solve either finds too few correspondences, keeps too small a
+    // share, or would have to claim a step no hand-held camera makes. All three are the
+    // "healthy map, failed solve" causes a relocalizer must react to (never NoLocalTarget, which
+    // would mean the fixture parked the frame entirely off the map and armed nothing).
+    Eigen::Isometry3f lostPrior() {
+        Eigen::Isometry3f prior = Eigen::Isometry3f::Identity();
+        prior.translate(Vector3f(0.25f, 0.25f, 0.25f));
+        return prior;
+    }
+
+} // namespace
+
+// The composite relocalizing tracker is a registered strategy like every other tracker.
+TEST(Pipeline, TrackerRegistryHasIcpPlusGlobal) {
+    const std::unique_ptr<ep::Tracker> tracker = ep::TrackerRegistry::Default().Create("icp+global");
+    ASSERT_NE(tracker, nullptr);
+    EXPECT_STREQ(tracker->Name(), "icp+global");
+}
+
+// The standalone "global" tracker must scale its pipeline to the MAP resolution (model->voxel),
+// exactly as GpuIcpTracker scales maxCorrDist. The default RegistrationConfig is mm-scale
+// (voxelSize 5.0); on a metre-scale scene that collapses each cloud to a handful of octant blobs,
+// which cannot express a real sensor transform. The frame is therefore the model surface expressed
+// in a NON-trivial sensor pose (an identical frame would let even blob-level matching recover
+// identity, hiding the mis-scale), and the prior is far off: global registration is prior-free and
+// must recover the true pose regardless.
+TEST(Pipeline, GlobalTrackerScalesToModelVoxelAndRecovers) {
+    const SphereFixture f = makeBumpySphereFixture();
+    Eigen::Isometry3f truePose = Eigen::Isometry3f::Identity();
+    truePose.translate(Vector3f(0.15f, -0.1f, 0.1f));
+    truePose.rotate(Eigen::AngleAxisf(0.5f, Vector3f(0.2f, 0.7f, 0.6f).normalized()));
+    ep::Frame frame;
+    frame.pts.reserve(f.frame.pts.size());
+    frame.nrm.reserve(f.frame.nrm.size());
+    const Eigen::Isometry3f sensorFromWorld = truePose.inverse();
+    for (std::size_t i = 0; i < f.frame.pts.size(); ++i) {
+        frame.pts.push_back(sensorFromWorld * f.frame.pts[i]);
+        frame.nrm.push_back(sensorFromWorld.rotation() * f.frame.nrm[i]);
+    }
+    const std::unique_ptr<ep::Tracker> tracker = ep::TrackerRegistry::Default().Create("global");
+    ASSERT_NE(tracker, nullptr);
+
+    const ep::TrackingResult r = tracker->Track(frame, &f.model, lostPrior());
+
+    ASSERT_TRUE(r.valid) << "global registration failed on a metre-scale scene (voxelSize not "
+                            "scaled to model->voxel?)";
+    const Eigen::Isometry3f err = r.pose * truePose.inverse();
+    EXPECT_LT(err.translation().norm(), 0.03f);
+    EXPECT_LT(Eigen::AngleAxisf(err.rotation()).angle(), 0.05f);
+}
+
+// When global registration fails against an EXISTING map, the failure must be classified as a
+// solve failure (TooFewInliers/LowOverlap — not fusible), never left at the default NoModel:
+// ShouldFuse(NoModel) is true, so the misclassification would fuse the failed solve's garbage pose
+// into the map. Fixture: a frame whose points all collapse into one downsample cell, so feature
+// matching cannot produce the 3 correspondences RANSAC needs — guaranteed invalid.
+TEST(Pipeline, GlobalTrackerFailureIsNotFusible) {
+    const SphereFixture f = makeBumpySphereFixture();
+    ep::Frame degenerate;
+    for (int i = 0; i < 5; ++i) {
+        degenerate.pts.emplace_back(0.1f + 0.002f * float(i), 0.1f, 0.1f);
+        degenerate.nrm.emplace_back(0.0f, 0.0f, 1.0f);
+    }
+    const std::unique_ptr<ep::Tracker> tracker = ep::TrackerRegistry::Default().Create("global");
+    ASSERT_NE(tracker, nullptr);
+
+    const ep::TrackingResult r = tracker->Track(degenerate, &f.model, Eigen::Isometry3f::Identity());
+
+    ASSERT_FALSE(r.valid);
+    EXPECT_EQ(r.failure, ep::ETrackFailure::TooFewInliers);
+    EXPECT_FALSE(ep::ShouldFuse(r.valid, r.failure))
+            << "a failed global solve against an existing map must never be fused";
+}
+
+// The composite: local ICP fails N consecutive times against a healthy map -> ONE global
+// relocalization attempt fires, recovers the identity truth from a prior 0.43 m off, and the
+// result passes the local refine gates (the refine is seeded AT the global pose, so the
+// maxStepMeters gate never sees the recovery jump). Afterwards plain local tracking resumes
+// without further attempts.
+TEST(Pipeline, RelocalizingTrackerRecoversAfterConsecutiveFailures) {
+    const SphereFixture f = makeBumpySphereFixture();
+    ep::RelocalizingIcpTracker tracker;
+
+    for (int i = 0; i < ep::RelocalizingIcpTracker::kDefaultFailuresBeforeGlobal - 1; ++i) {
+        const ep::TrackingResult r = tracker.Track(f.frame, &f.model, lostPrior());
+        EXPECT_FALSE(r.valid) << "call " << i << " should fail against the displaced prior";
+        EXPECT_NE(r.failure, ep::ETrackFailure::NoModel) << "call " << i;
+        EXPECT_NE(r.failure, ep::ETrackFailure::NoLocalTarget)
+                << "call " << i << ": fixture parked the frame off the map — arms nothing";
+        EXPECT_EQ(tracker.Stats().relocalizationAttempts, 0u) << "fired before N failures";
+    }
+
+    const ep::TrackingResult r = tracker.Track(f.frame, &f.model, lostPrior());
+    ASSERT_TRUE(r.valid) << "relocalization did not recover a trackable pose";
+    EXPECT_LT(r.pose.translation().norm(), 0.01f);
+    EXPECT_LT(Eigen::AngleAxisf(r.pose.rotation()).angle(), 0.02f);
+    EXPECT_EQ(tracker.Stats().relocalizationAttempts, 1u);
+    EXPECT_EQ(tracker.Stats().relocalizationSuccesses, 1u);
+
+    // Recovered -> plain local tracking, no further global attempts.
+    const ep::TrackingResult next = tracker.Track(f.frame, &f.model, r.pose);
+    EXPECT_TRUE(next.valid);
+    EXPECT_EQ(tracker.Stats().relocalizationAttempts, 1u);
+}
+
+// A failed relocalization must (1) return the LOCAL failure cause — never a fusible one — and
+// (2) reset the failure counter, so the expensive global pipeline is throttled to once per N
+// failures instead of running every frame while lost. Fixture: a flat plane frame against the
+// sphere map — local ICP always fails (plane normals are ~orthogonal to the equator-band normals,
+// so the compatibility gate starves the solve), and no rigid pose can put a plane on a sphere, so
+// any coarse global hit is rejected by the local refine gates.
+TEST(Pipeline, RelocalizingTrackerThrottlesFailedGlobalAttempts) {
+    const SphereFixture f = makeBumpySphereFixture();
+    ep::Frame plane;
+    for (int i = -20; i <= 20; ++i)
+        for (int j = -20; j <= 20; ++j) {
+            plane.pts.emplace_back(float(i) * 0.02f, float(j) * 0.02f, 0.0f);
+            plane.nrm.emplace_back(0.0f, 0.0f, 1.0f);
+        }
+    ep::RelocalizingIcpTracker tracker;
+    constexpr int kN = ep::RelocalizingIcpTracker::kDefaultFailuresBeforeGlobal;
+
+    for (int call = 1; call <= 2 * kN; ++call) {
+        const ep::TrackingResult r = tracker.Track(plane, &f.model, Eigen::Isometry3f::Identity());
+        EXPECT_FALSE(r.valid) << "call " << call;
+        EXPECT_FALSE(ep::ShouldFuse(r.valid, r.failure))
+                << "call " << call << ": a failed relocalization leaked a fusible failure cause";
+        // One attempt per N consecutive failures — the counter must reset after a failed attempt.
+        EXPECT_EQ(tracker.Stats().relocalizationAttempts, std::uint64_t(call / kN)) << "call " << call;
+    }
+    EXPECT_EQ(tracker.Stats().relocalizationSuccesses, 0u);
+}
+
+// Bootstrap guard: NoModel failures (no map yet) must never arm the global fallback — there is
+// nothing to relocalize against, and the first frames of every run pass through this state.
+TEST(Pipeline, RelocalizingTrackerDoesNotFireGlobalWhileBootstrapping) {
+    ep::RelocalizingIcpTracker tracker;
+    for (int i = 0; i <= ep::RelocalizingIcpTracker::kDefaultFailuresBeforeGlobal; ++i) {
+        const ep::TrackingResult r = tracker.Track(ep::Frame{}, nullptr, Eigen::Isometry3f::Identity());
+        EXPECT_FALSE(r.valid);
+        EXPECT_EQ(r.failure, ep::ETrackFailure::NoModel);
+    }
+    EXPECT_EQ(tracker.Stats().relocalizationAttempts, 0u);
+}
+
+// The DEFAULT step gate must scale with the map resolution, like maxCorrDist/huberScale already
+// do. kDefaultTrackerMaxStepMeters (0.08) encodes "hand-held 30 fps, metres" — on a map whose
+// units make the voxel comparable to or larger than 0.08 (scanData ~mm units: voxel 5.7;
+// scan_out: voxel 0.5), solve jitter alone exceeds it and the gate rejects nearly every frame
+// (measured: scanData 59/60, scan_out 76/90 ImplausibleMotion). The tuned capture/ behaviour is
+// the ratio 0.08/0.05 = 1.6 voxels, so the default becomes max(0.08, 1.6*voxel) — bit-identical
+// at voxel 0.05. An EXPLICIT SetMaxStepMeters stays absolute: the caller knows their units.
+TEST(Pipeline, GpuIcpTrackerScalesDefaultStepGateToMapVoxel) {
+    const Corner corner = makeCorner();
+    ep::ModelSnapshot model;
+    model.voxel = 0.5f; // coarse map: 1.6*voxel = 0.8 world units
+    model.entries.reserve(corner.pts.size());
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        TSDFVoxel e{};
+        e.center = corner.pts[i];
+        e.normal = corner.nrm[i];
+        model.entries.push_back(e);
+    }
+    Eigen::Isometry3f perturb = Eigen::Isometry3f::Identity();
+    perturb.translate(Vector3f(0.2f, -0.15f, 0.1f)); // recovery step ~0.27: > 0.08, < 1.6*voxel
+    perturb.rotate(Eigen::AngleAxisf(0.03f, Vector3f::UnitZ()));
+    ep::Frame frame;
+    frame.pts.reserve(corner.pts.size());
+    frame.nrm.reserve(corner.pts.size());
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        frame.pts.push_back(perturb * corner.pts[i]);
+        frame.nrm.push_back(perturb.rotation() * corner.nrm[i]);
+    }
+
+    // Default gate: the ~0.27-unit recovery is well under 1.6 voxels — must be adopted.
+    {
+        auto tracker = std::make_unique<ep::GpuIcpTracker>();
+        const ep::TrackingResult r = tracker->Track(frame, &model, Eigen::Isometry3f::Identity());
+        ASSERT_TRUE(r.valid) << "default step gate did not scale with model->voxel (failure "
+                             << int(r.failure) << ")";
+        const Eigen::Matrix4f err = r.pose.matrix() * perturb.matrix() - Eigen::Matrix4f::Identity();
+        EXPECT_LT(err.norm(), 5e-3f);
+    }
+
+    // Explicit bound: absolute, never voxel-scaled — the same solve must be rejected.
+    {
+        auto tracker = std::make_unique<ep::GpuIcpTracker>();
+        tracker->SetMaxStepMeters(0.05f);
+        const ep::TrackingResult r = tracker->Track(frame, &model, Eigen::Isometry3f::Identity());
+        EXPECT_FALSE(r.valid);
+        EXPECT_EQ(r.failure, ep::ETrackFailure::ImplausibleMotion);
+    }
+}
+
+// The CPU tracker ("icp-cpu") must classify a failed solve exactly as GpuIcpTracker would — the two
+// trackers must judge a solve alike, and the fusion policy depends on the cause: leaving the failure
+// at the default NoModel makes ShouldFuse() true, so the failed solve's garbage pose would be fused
+// into the map that is the next frame's alignment target. Fixture: a flat +Z plane frame against the
+// sphere map — the normal-compatibility gate starves the solve (equator-band normals are orthogonal
+// to the plane normal), so it ends with fewer correspondences than minInliers.
+TEST(Pipeline, CpuIcpTrackerClassifiesAStarvedSolveAsTooFewInliers) {
+    const SphereFixture f = makeBumpySphereFixture();
+    ep::Frame plane;
+    for (int i = -20; i <= 20; ++i)
+        for (int j = -20; j <= 20; ++j) {
+            plane.pts.emplace_back(float(i) * 0.02f, float(j) * 0.02f, 0.0f);
+            plane.nrm.emplace_back(0.0f, 0.0f, 1.0f);
+        }
+    ep::PointToPlaneIcpTracker tracker;
+
+    const ep::TrackingResult r = tracker.Track(plane, &f.model, Eigen::Isometry3f::Identity());
+
+    ASSERT_FALSE(r.valid);
+    EXPECT_EQ(r.failure, ep::ETrackFailure::TooFewInliers);
+    EXPECT_FALSE(ep::ShouldFuse(r.valid, r.failure))
+            << "a failed CPU solve against an existing map must never be fused";
+}
+
+// Same-judgement parity, fitness side: GpuIcpTracker defaults minFitness to 0.4 when the caller set
+// none, and the CPU align itself has no fitness gate at all — so without the tracker enforcing the
+// same default, a solve keeping only a sliver of the frame (here 1/3: the rest of the points are far
+// off the map and find no correspondence) is adopted by icp-cpu and rejected by icp. Enough inliers,
+// too small a share -> LowOverlap, not fusible.
+TEST(Pipeline, CpuIcpTrackerDefaultsTheFitnessGateLikeTheGpuTracker) {
+    const SphereFixture f = makeBumpySphereFixture();
+    ep::Frame frame = f.frame; // 600 on-map points...
+    for (int i = 0; i < 1200; ++i) { // ...plus twice as many far off the map: fitness ~0.33 < 0.4
+        frame.pts.emplace_back(10.0f + 0.001f * float(i), 10.0f, 10.0f);
+        frame.nrm.emplace_back(0.0f, 0.0f, 1.0f);
+    }
+    ep::PointToPlaneIcpTracker tracker;
+
+    const ep::TrackingResult r = tracker.Track(frame, &f.model, Eigen::Isometry3f::Identity());
+
+    ASSERT_FALSE(r.valid) << "a fitness-0.33 solve passed: the CPU tracker is not defaulting the "
+                             "0.4 fitness gate the GPU tracker enforces";
+    EXPECT_EQ(r.failure, ep::ETrackFailure::LowOverlap);
+    EXPECT_FALSE(ep::ShouldFuse(r.valid, r.failure));
+}
+
+// Same-judgement parity, step-gate side: the CPU tracker's DEFAULT maxStepMeters must scale with
+// the map resolution exactly like GpuIcpTracker's (max(0.08, 1.6*voxel) — see
+// Pipeline.GpuIcpTrackerScalesDefaultStepGateToMapVoxel for the measured rationale). An explicit
+// caller-set bound stays absolute.
+TEST(Pipeline, CpuIcpTrackerScalesDefaultStepGateToMapVoxel) {
+    const Corner corner = makeCorner();
+    ep::ModelSnapshot model;
+    model.voxel = 0.5f; // coarse map: 1.6*voxel = 0.8 world units
+    model.entries.reserve(corner.pts.size());
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        TSDFVoxel e{};
+        e.center = corner.pts[i];
+        e.normal = corner.nrm[i];
+        model.entries.push_back(e);
+    }
+    Eigen::Isometry3f perturb = Eigen::Isometry3f::Identity();
+    perturb.translate(Vector3f(0.2f, -0.15f, 0.1f)); // recovery step ~0.27: > 0.08, < 1.6*voxel
+    perturb.rotate(Eigen::AngleAxisf(0.03f, Vector3f::UnitZ()));
+    ep::Frame frame;
+    frame.pts.reserve(corner.pts.size());
+    frame.nrm.reserve(corner.pts.size());
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        frame.pts.push_back(perturb * corner.pts[i]);
+        frame.nrm.push_back(perturb.rotation() * corner.nrm[i]);
+    }
+
+    // Default gate: the ~0.27-unit recovery is well under 1.6 voxels — must be adopted.
+    {
+        ep::PointToPlaneIcpTracker tracker;
+        const ep::TrackingResult r = tracker.Track(frame, &model, Eigen::Isometry3f::Identity());
+        ASSERT_TRUE(r.valid) << "default step gate did not scale with model->voxel (failure "
+                             << int(r.failure) << ")";
+        const Eigen::Matrix4f err = r.pose.matrix() * perturb.matrix() - Eigen::Matrix4f::Identity();
+        EXPECT_LT(err.norm(), 5e-3f);
+    }
+
+    // Explicit bound: absolute, never voxel-scaled — the same solve must be rejected.
+    {
+        Registration::RegistrationParam params;
+        params.maxStepMeters = 0.05f;
+        ep::PointToPlaneIcpTracker tracker(params);
+        const ep::TrackingResult r = tracker.Track(frame, &model, Eigen::Isometry3f::Identity());
+        EXPECT_FALSE(r.valid);
+        EXPECT_EQ(r.failure, ep::ETrackFailure::ImplausibleMotion);
+    }
+}
+
+namespace {
+
+    // A tracker whose only job is to report fixed relocalization counters -- proves the
+    // Tracker::Stats() -> RegistrationThread -> Pipeline::GetStats() plumbing without needing an
+    // actual lost-and-recovered run.
+    struct FixedStatsTracker final : ep::Tracker {
+        const char *Name() const override { return "fixed-stats"; }
+        ep::TrackingResult Track(const ep::Frame &, const ep::ModelSnapshot *, const Eigen::Isometry3f &) override {
+            return {};
+        }
+        ep::TrackerStats Stats() const override {
+            ep::TrackerStats stats;
+            stats.relocalizationAttempts = 7;
+            stats.relocalizationSuccesses = 3;
+            return stats;
+        }
+    };
+
+} // namespace
+
+// The relocalization fallback is expensive and fires inside the registration thread; if its
+// counters never reach PipelineStats, a live run cannot tell "tracking is fine" from "the global
+// fallback is silently firing every N frames". The pipeline must surface whatever the tracker's
+// Stats() reports.
+TEST(Pipeline, StatsSurfaceTheTrackersRelocalizationCounters) {
+    const FrameDir frames(1);
+    ep::Pipeline pipe(makeConfig(frames.files, 0.0), std::make_unique<FixedStatsTracker>());
+
+    const ep::PipelineStats stats = pipe.GetStats();
+
+    EXPECT_EQ(stats.relocalizationAttempts, 7u);
+    EXPECT_EQ(stats.relocalizationSuccesses, 3u);
+}
+
+
+namespace {
+
+    // Collect the centers ForEachEntryInBox visits, sorted for comparison.
+    std::vector<Vector3f> collectEntriesInBox(const ep::ModelSnapshot &snap,
+                                              const Vector3f &minimum,
+                                              const Vector3f &maximum) {
+        std::vector<Vector3f> centers;
+        ep::ForEachEntryInBox(snap, minimum, maximum,
+                              [&](const TSDFVoxel &entry) { centers.push_back(entry.center); });
+        std::sort(centers.begin(), centers.end(), [](const Vector3f &a, const Vector3f &b) {
+            if (a.x() != b.x()) return a.x() < b.x();
+            if (a.y() != b.y()) return a.y() < b.y();
+            return a.z() < b.z();
+        });
+        return centers;
+    }
+
+} // namespace
+
+// The snapshot entry index must return EXACTLY what the linear AABB filter returns -- including
+// entries sitting on bucket boundaries, and entries outside the box that share a bucket with ones
+// inside (the per-entry re-check).
+TEST(Pipeline, SnapshotEntryIndexQueryMatchesTheLinearFilter) {
+    ep::ModelSnapshot indexed;
+    indexed.voxel = 0.02f;
+    for (int x = 0; x < 20; ++x)
+        for (int y = 0; y < 20; ++y) {
+            TSDFVoxel e{};
+            e.center = Vector3f(float(x) * 0.1f, float(y) * 0.1f, 0.5f);
+            e.normal = Vector3f(0, 0, 1);
+            indexed.entries.push_back(e);
+        }
+    ep::BuildSnapshotEntryIndex(indexed);
+    ASSERT_GT(indexed.entryBucketSize, 0.0f);
+
+    ep::ModelSnapshot linear = indexed; // same entries, then drop the index -> linear fallback
+    linear.entryBucketSize = 0.0f;
+    linear.entryBuckets.clear();
+
+    const Vector3f minimum(0.35f, 0.35f, 0.0f), maximum(1.25f, 1.25f, 1.0f);
+    const std::vector<Vector3f> viaIndex = collectEntriesInBox(indexed, minimum, maximum);
+    const std::vector<Vector3f> viaLinear = collectEntriesInBox(linear, minimum, maximum);
+
+    ASSERT_FALSE(viaLinear.empty());
+    ASSERT_EQ(viaIndex.size(), viaLinear.size());
+    for (std::size_t i = 0; i < viaIndex.size(); ++i)
+        EXPECT_EQ(viaIndex[i], viaLinear[i]) << "entry " << i;
+
+    // A box past the map must stay empty through the index too.
+    EXPECT_TRUE(collectEntriesInBox(indexed, Vector3f(50, 50, 50), Vector3f(60, 60, 60)).empty());
+}
+
+// A hand-built snapshot (every direct-tracker test, and any caller predating the index) has no
+// buckets; queries must fall back to the linear scan instead of silently returning nothing.
+TEST(Pipeline, SnapshotWithoutAnIndexFallsBackToTheLinearScan) {
+    ep::ModelSnapshot snap;
+    snap.voxel = 0.02f; // voxel set but index never built
+    TSDFVoxel e{};
+    e.center = Vector3f(0.1f, 0.2f, 0.3f);
+    snap.entries.push_back(e);
+
+    const std::vector<Vector3f> hits =
+            collectEntriesInBox(snap, Vector3f(0, 0, 0), Vector3f(1, 1, 1));
+    ASSERT_EQ(hits.size(), 1u);
+    EXPECT_EQ(hits[0], e.center);
+}
+
+// The GPU tracker must CONSULT the index when one exists: a lying index (bucketSize set, buckets
+// empty) must starve the crop into NoLocalTarget even though a linear scan of `entries` would have
+// found the whole map. This is the seam proof -- without it the tracker could keep its linear scan
+// and every other test would still pass.
+TEST(Pipeline, GpuIcpTrackerConsultsTheSnapshotEntryIndex) {
+    SphereFixture f = makeBumpySphereFixture();
+    ep::BuildSnapshotEntryIndex(f.model);
+    ASSERT_GT(f.model.entryBucketSize, 0.0f);
+    f.model.entryBuckets.clear(); // the lie: an index that says "nothing anywhere"
+
+    ep::GpuIcpTracker tracker;
+    const ep::TrackingResult r = tracker.Track(f.frame, &f.model, Eigen::Isometry3f::Identity());
+
+    EXPECT_FALSE(r.valid);
+    EXPECT_EQ(r.failure, ep::ETrackFailure::NoLocalTarget)
+            << "the tracker ignored the entry index and scanned entries linearly";
+}
+
+// The pipeline's published snapshots must carry the index (built on the integration thread), and
+// it must cover every entry exactly once -- a partial index would silently shrink every crop.
+TEST(Pipeline, PublishedSnapshotsCarryAFullEntryIndex) {
+    const FrameDir frames(3);
+    ep::Pipeline pipe(makeConfig(frames.files, 0.0), identity());
+    pipe.Start();
+    ASSERT_TRUE(waitProcessed(pipe, 2));
+    pipe.CheckErrors();
+    const auto snap = pipe.LatestModel();
+    ASSERT_NE(snap, nullptr);
+    ASSERT_FALSE(snap->entries.empty());
+
+    EXPECT_GT(snap->entryBucketSize, 0.0f);
+    std::size_t indexedEntries = 0;
+    for (const auto &bucket: snap->entryBuckets) indexedEntries += bucket.second.size();
+    EXPECT_EQ(indexedEntries, snap->entries.size());
+    pipe.Stop();
 }

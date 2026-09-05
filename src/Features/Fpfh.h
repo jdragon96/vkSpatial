@@ -2,10 +2,10 @@
 
 #include "Features/RegistrationTypes.h"
 
-namespace Engine::Features {
+namespace Features {
 
-    using Engine::Registration::Fpfh33;
-    using Engine::Registration::PointCloud;
+    using Registration::Fpfh33;
+    using Registration::PointCloud;
 
     // Fast Point Feature Histogram (FPFH) descriptor, Rusu et al. 2009.
     //
@@ -21,4 +21,4 @@ namespace Engine::Features {
     // documented large-N correctness bug, see docs/KNOWN_ISSUES).
     std::vector<Fpfh33> ComputeFpfh(const PointCloud &cloud, float normalRadius, float fpfhRadius);
 
-} // namespace Engine::Features
+} // namespace Features

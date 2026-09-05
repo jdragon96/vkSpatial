@@ -22,7 +22,7 @@ namespace Pipeline {
                              const Eigen::Isometry3f &priorPose) override;
 
     private:
-        Engine::Registration::RegistrationParam m_params;
+        Registration::RegistrationParam m_params;
         std::unique_ptr<Engine::Core::Context> m_ctx;
         std::unique_ptr<GpuPointToPlaneIcp> m_gpu;
     };

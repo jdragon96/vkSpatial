@@ -1,7 +1,7 @@
 #include "Pipeline/Reconstruction/ReconstructionThread.h"
 
 #include "Pipeline/CommunicationModule.h"
-#include "Engine/Features/Downsample.h"
+#include "Features/Downsample.h"
 #include "Pipeline/Reconstruction/FileFrameSource.h"
 
 #include <stdexcept>
@@ -59,15 +59,15 @@ namespace Pipeline {
     }
 
 
-    // Engine::Features::DownsampleVoxel takes the cell centroid and the renormalized mean normal,
+    // Features::DownsampleVoxel takes the cell centroid and the renormalized mean normal,
     // so this is not merely a decimation: averaging inside a cell also cancels part of the stereo
     // sensor's per-pixel depth noise. Vectors move both ways, so no point is copied.
     void ReconstructionThread::reduceFrame(Frame &frame) const {
-        Engine::Registration::PointCloud cloud;
+        Registration::PointCloud cloud;
         cloud.points = std::move(frame.pts);
         cloud.normals = std::move(frame.nrm);
-        Engine::Registration::PointCloud reduced =
-                Engine::Features::DownsampleVoxel(cloud, m_downsampleVoxel);
+        Registration::PointCloud reduced =
+                Features::DownsampleVoxel(cloud, m_downsampleVoxel);
         frame.pts = std::move(reduced.points);
         frame.nrm = std::move(reduced.normals);
     }

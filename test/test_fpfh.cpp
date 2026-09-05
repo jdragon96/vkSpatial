@@ -13,7 +13,7 @@
 #include <set>
 #include <vector>
 
-using namespace Engine::Features;
+using namespace Features;
 using namespace Engine::Spatial; // FPFH stayed behind in Engine::Spatial
 
 namespace {
