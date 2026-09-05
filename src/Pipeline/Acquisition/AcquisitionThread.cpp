@@ -18,15 +18,6 @@
 
 namespace Pipeline {
 
-    ///////////////////////////////////////////////////////////////////////////////////////////////
-    // The GPU depth front end
-    ///////////////////////////////////////////////////////////////////////////////////////////////
-
-    // Depth image in, oriented point cloud out: confidence score, threshold, back-project, normals,
-    // voxel thinning and compaction, all on the device, with only the survivors read back.
-    //
-    // Sized on the first frame rather than in the constructor: the width and height come from the
-    // device, and a camera does not know them until it is streaming.
     class DepthFrontEnd {
     public:
         DepthFrontEnd(Realsense::ValidationScoreOptions score,
@@ -37,9 +28,6 @@ namespace Pipeline {
             : m_score(score), m_normal(normal), m_downSample(downSample),
               m_scoreThreshold(scoreThreshold), m_stats(std::move(stats)) {}
 
-        // focalLengthPixels defaults to 0 precisely so a frame cannot be scored without it: a frame
-        // scored with the wrong sigma_z looks entirely plausible. So it is filled from whatever is
-        // being read, and the caller never has to know the number.
         void Configure(const CameraIntrinsics &intrinsics, float depthScale,
                        const Realsense::D435Calibration *calibration) {
             if (intrinsics.width <= 0 || intrinsics.height <= 0)
@@ -47,18 +35,17 @@ namespace Pipeline {
                                          std::to_string(intrinsics.width) + "x" +
                                          std::to_string(intrinsics.height) + " frame");
 
-            m_intrinsics = Realsense::PinholeIntrinsics{intrinsics.fx, intrinsics.fy, intrinsics.cx,
+            m_intrinsics = Realsense::PinholeIntrinsics{intrinsics.fx,
+                                                        intrinsics.fy,
+                                                        intrinsics.cx,
                                                         intrinsics.cy};
             if (!(m_score.focalLengthPixels > 0.0f)) m_score.focalLengthPixels = intrinsics.fx;
             if (depthScale > 0.0f) m_score.depthScale = depthScale;
-            // A recording carries intrinsics but no baseline -- it predates the module that needs
-            // one -- so ValidationScoreOptions' D435 default stands there. Every comparison over a
-            // recording is relative, so a baseline off by a few percent shifts the whole run rather
-            // than its shape.
             if (calibration && calibration->baselineMeters > 0.0f)
                 m_score.baselineMeters = calibration->baselineMeters;
 
-            m_pipeline = std::make_unique<Realsense::RealSensePipeline>(m_context, intrinsics.width,
+            m_pipeline = std::make_unique<Realsense::RealSensePipeline>(m_context,
+                                                                        intrinsics.width,
                                                                         intrinsics.height);
             m_pixels = std::size_t(intrinsics.width) * std::size_t(intrinsics.height);
         }
@@ -72,44 +59,40 @@ namespace Pipeline {
 
             {
                 Engine::Compute::CommandBatch batch(m_context);
-                m_pipeline->Execute(batch, depthZ16, m_score, m_intrinsics, m_scoreThreshold,
-                                    m_normal, m_downSample);
+                m_pipeline->Execute(batch,
+                                    depthZ16,
+                                    m_score,
+                                    m_intrinsics,
+                                    m_scoreThreshold,
+                                    m_normal,
+                                    m_downSample);
                 batch.Submit();
             }
 
             out.pts = m_pipeline->DownloadValidPoints();
             out.nrm = m_pipeline->DownloadValidNormals();
-            // The sensor is the origin of the frame it produced; the tracker places it in the world.
             out.cam = Eigen::Vector3f::Zero();
             publishStats(std::uint32_t(out.pts.size()));
         }
 
     private:
-        // Only what the frame actually ran: the counter buffers are cleared per dispatch, so a
-        // disabled stage's would report the previous frame's numbers as if they were this frame's.
         void publishStats(std::uint32_t emitted) {
             if (!m_stats) return;
             m_stats->lastFramePoints.store(emitted, std::memory_order_relaxed);
             m_stats->emittedPoints.fetch_add(emitted, std::memory_order_relaxed);
 
             if (m_normal.enabled) {
-                const Realsense::NormalEstimationCounters normal =
-                        m_pipeline->DownloadNormalCounters();
+                const Realsense::NormalEstimationCounters normal = m_pipeline->DownloadNormalCounters();
                 m_stats->normalOutOfDomain.fetch_add(normal.outOfDomain, std::memory_order_relaxed);
                 m_stats->normalNoSupport.fetch_add(normal.noSupport, std::memory_order_relaxed);
             }
             if (m_downSample.enabled) {
                 const Realsense::DownSampleCounters down = m_pipeline->DownloadDownSampleCounters();
-                m_stats->downSampleInsertFailures.fetch_add(down.insertFailures,
-                                                            std::memory_order_relaxed);
-                m_stats->downSampleOutOfRange.fetch_add(down.outOfPackableRange,
-                                                        std::memory_order_relaxed);
+                m_stats->downSampleInsertFailures.fetch_add(down.insertFailures, std::memory_order_relaxed);
+                m_stats->downSampleOutOfRange.fetch_add(down.outOfPackableRange, std::memory_order_relaxed);
             }
         }
 
-        // A provider that holds metres and no device buffer -- a recording, or a scripted test
-        // image. The round trip is exact for a recording, because those floats came FROM Z16 at
-        // this same scale.
         void requantise(const std::vector<float> &metres) {
             m_requantised.assign(m_pixels, 0);
             const float inverseScale = 1.0f / m_score.depthScale;
@@ -117,8 +100,6 @@ namespace Pipeline {
             for (std::size_t i = 0; i < count; ++i) {
                 if (!(metres[i] > 0.0f)) continue;
                 const float units = std::round(metres[i] * inverseScale);
-                // Past 65535 the sensor could not have reported it either. Clamping would invent a
-                // surface at the far limit, so the pixel becomes "no measurement" instead.
                 m_requantised[i] = units <= 65535.0f ? std::uint16_t(units) : std::uint16_t(0);
             }
         }
@@ -169,16 +150,17 @@ namespace Pipeline {
     ///////////////////////////////////////////////////////////////////////////////////////////////
     // The stage
     ///////////////////////////////////////////////////////////////////////////////////////////////
-
     AcquisitionThread::AcquisitionThread(CommunicationModule &comm, AcquisitionConfig config)
         : PipelineStage(comm), m_config(std::move(config)) {
-        // Here, not on the thread: a missing camera or an unreadable recording then reports from
-        // the constructor its caller is already inside, instead of surfacing later as a worker
-        // exception with the window already up.
         m_provider = MakeDepthProvider(m_config);
     }
 
     AcquisitionThread::~AcquisitionThread() { Stop(); }
+
+    std::string AcquisitionThread::VisualPresetRefusal() const {
+        const auto *camera = dynamic_cast<const D435DepthProvider *>(m_provider.get());
+        return camera ? camera->VisualPresetRefusal() : std::string();
+    }
 
     void AcquisitionThread::SetPaused(bool paused) {
         {
@@ -192,7 +174,7 @@ namespace Pipeline {
         m_paused.store(false);
         {
             std::lock_guard<std::mutex> lock(m_pauseMutex);
-            m_closed = true; // wake a PLY replay waiting out its interval
+            m_closed = true;
         }
         m_pauseCv.notify_all();
         if (m_provider) m_provider->Close(); // wake a Grab() blocked on a device
@@ -214,8 +196,6 @@ namespace Pipeline {
         return !StopRequested();
     }
 
-    // The front end is built HERE and not in the constructor: its size comes from the device, and a
-    // camera does not know its own frame size until it is streaming.
     void AcquisitionThread::open() {
         m_plyCursor = 0;
         m_hasLastPlyEmit = false;
@@ -229,8 +209,6 @@ namespace Pipeline {
                                                      m_config.downSample, m_config.scoreThreshold,
                                                      m_config.gpuStats);
 
-        // A D400 knows its own depth scale and stereo baseline; anything else answers with what it
-        // recorded, and the front end falls back to the D4xx defaults for the rest.
         const auto *camera = dynamic_cast<const D435DepthProvider *>(m_provider.get());
         m_frontEnd->Configure(m_provider->Intrinsics(),
                               camera ? camera->Calibration().depthScale : 0.0f,
@@ -289,8 +267,6 @@ namespace Pipeline {
             {
                 util::ScopedMean t(m_acquireMs);
                 ok = next(f);
-                // Timed with the acquire, because from every later stage's point of view this IS
-                // what acquisition produced.
                 if (ok && m_config.downsampleVoxel > 0.0f) reduceFrame(f);
             }
             if (!ok) break;

@@ -49,6 +49,8 @@ namespace Pipeline {
 
     float Pipeline::DownsampleVoxel() const { return m_acquisition->DownsampleVoxel(); }
 
+    std::string Pipeline::VisualPresetRefusal() const { return m_acquisition->VisualPresetRefusal(); }
+
     void Pipeline::SetPaused(bool paused) { m_acquisition->SetPaused(paused); }
     bool Pipeline::IsPaused() const { return m_acquisition->IsPaused(); }
 

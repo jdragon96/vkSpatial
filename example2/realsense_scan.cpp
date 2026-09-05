@@ -368,6 +368,9 @@ int main(int argc, char **argv) {
 
         ep::Pipeline pipeline(config, std::move(tracker));
 
+        if (!pipeline.VisualPresetRefusal().empty())
+            std::printf("preset    : NOT applied -- %s\n", pipeline.VisualPresetRefusal().c_str());
+
         Engine::Render::ApplicationDescriptor descriptor;
         descriptor.window = {1400, 900, "RealSense Scan Pipeline"};
         Engine::Render::Application app(descriptor);

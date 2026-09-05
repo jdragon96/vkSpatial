@@ -66,9 +66,14 @@ namespace {
     // above is the path that must work everywhere.
     int RunRecord(const std::string &directory, int frameCount, int width, int height, int fps) {
 #ifdef VKBVH_HAS_REALSENSE
-        Pipeline::DepthRecorder recorder(
-                std::make_unique<Pipeline::D435DepthProvider>(
-                        Realsense::D435StreamOptions{width, height, fps, false, "high-accuracy"}), directory);
+        auto device = std::make_unique<Pipeline::D435DepthProvider>(
+                Realsense::D435StreamOptions{width, height, fps, false, "high-accuracy"});
+        // The preset is a quality request the device may refuse while still streaming correctly, so
+        // it is said out loud rather than assumed -- a recording made without it is not the one the
+        // caller asked for.
+        if (!device->VisualPresetRefusal().empty())
+            std::printf("  visual preset NOT applied: %s\n", device->VisualPresetRefusal().c_str());
+        Pipeline::DepthRecorder recorder(std::move(device), directory);
         Pipeline::DepthFrame frame;
         for (int i = 0; i < frameCount && recorder.Grab(frame); ++i)
             std::printf("  captured frame %d/%d\n", i + 1, frameCount);

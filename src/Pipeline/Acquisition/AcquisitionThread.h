@@ -127,6 +127,10 @@ namespace Pipeline {
 
         EAcquisitionSource Source() const { return m_config.source; }
 
+        // Empty when the device is streaming on the visual preset that was asked for. Readable as
+        // soon as the stage is constructed, because that is where the device is opened.
+        std::string VisualPresetRefusal() const;
+
         void SetPaused(bool paused);
         bool IsPaused() const { return m_paused.load(); }
 

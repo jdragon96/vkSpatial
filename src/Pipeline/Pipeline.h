@@ -42,6 +42,7 @@ namespace Pipeline {
         int ProcessedFrame() const;
         EAcquisitionSource Source() const;
         float DownsampleVoxel() const; // acquisition-stage voxel reduction actually in effect
+        std::string VisualPresetRefusal() const; // empty when the requested D400 preset took
         PipelineStats GetStats() const;
         void CheckErrors() const; // rethrow the first worker-stage exception, if any
 

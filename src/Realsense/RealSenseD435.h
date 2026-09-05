@@ -91,6 +91,11 @@ namespace Realsense {
 
         NormalEstimationOptions MakeNormalOptions() const;
 
+        // Empty when the requested visual preset is in effect. Non-empty when the device refused
+        // to take it and is streaming on whatever it was already set to -- the stream is correct,
+        // it is only untuned, so this is reported rather than thrown. See Open for the macOS cause.
+        const std::string &VisualPresetRefusal() const { return m_visualPresetRefusal; }
+
         // The back-projection half of the calibration, in the shape the pipeline takes it.
         PinholeIntrinsics MakeIntrinsics() const {
             return PinholeIntrinsics{m_calibration.fx, m_calibration.fy, m_calibration.cx,
@@ -101,6 +106,7 @@ namespace Realsense {
         struct Impl;
         std::unique_ptr<Impl> m_impl;
         D435Calibration m_calibration;
+        std::string m_visualPresetRefusal;
         bool m_infraredEnabled = false;
     };
 

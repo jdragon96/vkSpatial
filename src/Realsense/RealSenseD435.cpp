@@ -61,13 +61,51 @@ namespace Realsense {
 
 #ifdef VKBVH_HAS_REALSENSE
 
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    // The stereo module is opened DIRECTLY, not through rs2::pipeline.
+    //
+    // Measured on macOS 15 with a D435 (FW 5.15.1.55) over USB 2.1: rs2::pipeline::start resolves
+    // its config against EVERY sensor on the device, so asking for depth alone still powers the RGB
+    // camera -- and the RGB camera is a standard UVC device, which macOS's own driver has already
+    // claimed. libusb cannot detach a kernel driver on macOS, so the claim fails with
+    // RS2_USB_STATUS_ACCESS, surfacing as "failed to set power state", and sudo does not help.
+    // The stereo module has a vendor-specific class the macOS driver ignores, so it opens fine.
+    //
+    // rs2::syncer, not a bare frame_queue: with infrared enabled two streams arrive from one sensor
+    // as separate frames, and the syncer is what pairs them into the frameset Grab reads.
+    ///////////////////////////////////////////////////////////////////////////////////////////////
     struct RealSenseD435::Impl {
-        rs2::pipeline pipeline;
+        rs2::context context;
+        rs2::device device;
+        std::unique_ptr<rs2::depth_sensor> sensor;
+        rs2::syncer syncer{1};
         rs2::frameset frames; // holds the driver's buffers alive between Grab() calls
         rs2::frame depth;
         rs2::frame infrared;
         bool streaming = false;
     };
+
+    namespace {
+
+        // The profile the caller asked for, from the ones the sensor actually offers. A near miss
+        // is refused rather than silently substituted: a run configured for 640x480 that quietly
+        // got 480x270 reports every measurement at the wrong scale.
+        rs2::stream_profile FindProfile(const std::vector<rs2::stream_profile> &profiles,
+                                        rs2_stream stream, int index, rs2_format format,
+                                        const D435StreamOptions &options) {
+            for (const rs2::stream_profile &profile: profiles) {
+                if (profile.stream_type() != stream || profile.format() != format) continue;
+                if (index >= 0 && profile.stream_index() != index) continue;
+                const rs2::video_stream_profile video = profile.as<rs2::video_stream_profile>();
+                if (!video) continue;
+                if (video.width() == options.width && video.height() == options.height &&
+                    video.fps() == options.fps)
+                    return profile;
+            }
+            return rs2::stream_profile();
+        }
+
+    } // namespace
 
     RealSenseD435::RealSenseD435() : m_impl(std::make_unique<Impl>()) {}
 
@@ -85,70 +123,124 @@ namespace Realsense {
         if (IsOpen()) throw std::runtime_error("Realsense::RealSenseD435::Open: already streaming");
         const VisualPresetEntry &preset = FindVisualPreset(options.visualPreset);
 
-        rs2::config config;
-        config.enable_stream(RS2_STREAM_DEPTH, options.width, options.height, RS2_FORMAT_Z16,
-                             options.fps);
+        const rs2::device_list devices = m_impl->context.query_devices();
+        if (devices.size() == 0)
+            throw std::runtime_error("Realsense::RealSenseD435::Open: no RealSense device connected");
+        m_impl->device = devices.front();
+
+        try {
+            m_impl->sensor = std::make_unique<rs2::depth_sensor>(
+                    m_impl->device.first<rs2::depth_sensor>());
+        } catch (const rs2::error &error) {
+            throw std::runtime_error(std::string("Realsense::RealSenseD435::Open: this device has "
+                                                 "no stereo module: ") + error.what());
+        }
+
+        // Read BEFORE open(): the profile list is what the sensor offers, and the intrinsics and
+        // extrinsics on it are calibration data, not stream state.
+        const std::vector<rs2::stream_profile> available = m_impl->sensor->get_stream_profiles();
+        const rs2::stream_profile depthProfile =
+                FindProfile(available, RS2_STREAM_DEPTH, -1, RS2_FORMAT_Z16, options);
+        if (!depthProfile)
+            throw std::runtime_error("Realsense::RealSenseD435::Open: this device offers no " +
+                                     std::to_string(options.width) + "x" +
+                                     std::to_string(options.height) + " Z16 depth at " +
+                                     std::to_string(options.fps) + " Hz");
+
+        std::vector<rs2::stream_profile> opened{depthProfile};
         if (options.enableInfrared) {
             // Stream index 1 is the LEFT imager, which is the one depth is rectified against, so
             // its pixels line up with depth without any alignment step. Index 2 would not.
-            config.enable_stream(RS2_STREAM_INFRARED, 1, options.width, options.height, RS2_FORMAT_Y8,
-                                 options.fps);
+            const rs2::stream_profile infraredProfile =
+                    FindProfile(available, RS2_STREAM_INFRARED, 1, RS2_FORMAT_Y8, options);
+            if (!infraredProfile)
+                throw std::runtime_error("Realsense::RealSenseD435::Open: infrared was requested "
+                                         "but this device offers no matching Y8 profile");
+            opened.push_back(infraredProfile);
         }
 
-        rs2::pipeline_profile profile;
         try {
-            profile = m_impl->pipeline.start(config);
+            m_impl->sensor->open(opened);
+            m_impl->sensor->start(m_impl->syncer);
         } catch (const rs2::error &error) {
+            m_impl->sensor.reset();
             throw std::runtime_error(std::string("Realsense::RealSenseD435::Open: ") + error.what());
         }
         m_impl->streaming = true;
         m_infraredEnabled = options.enableInfrared;
 
-        rs2::depth_sensor depthSensor = profile.get_device().first<rs2::depth_sensor>();
+        // The preset is applied AFTER the stream starts: a D400 rejects the option while the stream
+        // is being configured, and applying it silently does nothing on some firmware revisions.
+        //
+        // It is also the one thing here that can be REFUSED without the stream being wrong.
+        // Applying a preset is a write through advanced mode, which configures the colour controls
+        // alongside the depth ones -- so it reaches for the RGB sensor, whose UVC interface macOS's
+        // own driver holds and libusb cannot detach. Measured on a D435 (FW 5.15.1.55, macOS 15):
+        // every preset write throws "failed to set power state", including a write of the value the
+        // device is ALREADY set to.
+        //
+        // Hence: read first and skip a write that would change nothing, which is what makes the
+        // default preset work on that machine at all. A write that is genuinely needed and refused
+        // leaves a stream that is entirely correct, only not tuned -- so it is recorded rather than
+        // thrown, and VisualPresetRefusal() is how a caller sees that the knob did not take.
+        m_visualPresetRefusal.clear();
+        if (!m_impl->sensor->supports(RS2_OPTION_VISUAL_PRESET)) {
+            m_visualPresetRefusal = "this device does not expose RS2_OPTION_VISUAL_PRESET";
+        } else {
+            try {
+                if (int(m_impl->sensor->get_option(RS2_OPTION_VISUAL_PRESET)) != preset.value)
+                    m_impl->sensor->set_option(RS2_OPTION_VISUAL_PRESET, float(preset.value));
+            } catch (const rs2::error &error) {
+                m_visualPresetRefusal = "'" + options.visualPreset + "' was refused by the device: " +
+                                        error.what();
+            }
+        }
 
-        // The preset is applied AFTER start(): a D400 rejects the option while the stream is being
-        // configured, and applying it silently does nothing on some firmware revisions.
-        if (depthSensor.supports(RS2_OPTION_VISUAL_PRESET))
-            depthSensor.set_option(RS2_OPTION_VISUAL_PRESET, float(preset.value));
-
-        const rs2::video_stream_profile depthProfile =
-                profile.get_stream(RS2_STREAM_DEPTH).as<rs2::video_stream_profile>();
-        const rs2_intrinsics intrinsics = depthProfile.get_intrinsics();
-
+        const rs2_intrinsics intrinsics =
+                depthProfile.as<rs2::video_stream_profile>().get_intrinsics();
         m_calibration.width = intrinsics.width;
         m_calibration.height = intrinsics.height;
         m_calibration.fx = intrinsics.fx;
         m_calibration.fy = intrinsics.fy;
         m_calibration.cx = intrinsics.ppx;
         m_calibration.cy = intrinsics.ppy;
-        m_calibration.depthScale = depthSensor.get_depth_scale();
+        m_calibration.depthScale = m_impl->sensor->get_depth_scale();
 
         // Baseline from the extrinsics between the two imagers rather than from a datasheet: it is
         // per-unit calibration data, it differs between D435 and D455, and it is the denominator of
         // sigma_z -- an error here scales every same-surface decision in the frame.
+        //
+        // Left as zero when it cannot be read: ValidationMask::ValidateOptions refuses that, which
+        // is the loud failure. A plausible default here would score every frame quietly wrong.
+        m_calibration.baselineMeters = 0.0f;
         try {
-            const rs2::stream_profile left = profile.get_stream(RS2_STREAM_INFRARED, 1);
-            const rs2::stream_profile right = profile.get_stream(RS2_STREAM_INFRARED, 2);
-            const rs2_extrinsics extrinsics = left.get_extrinsics_to(right);
-            m_calibration.baselineMeters =
-                    std::sqrt(extrinsics.translation[0] * extrinsics.translation[0] +
-                              extrinsics.translation[1] * extrinsics.translation[1] +
-                              extrinsics.translation[2] * extrinsics.translation[2]);
+            rs2::stream_profile left, right;
+            for (const rs2::stream_profile &profile: available) {
+                if (profile.stream_type() != RS2_STREAM_INFRARED) continue;
+                if (profile.stream_index() == 1 && !left) left = profile;
+                if (profile.stream_index() == 2 && !right) right = profile;
+            }
+            if (left && right) {
+                const rs2_extrinsics extrinsics = left.get_extrinsics_to(right);
+                m_calibration.baselineMeters =
+                        std::sqrt(extrinsics.translation[0] * extrinsics.translation[0] +
+                                  extrinsics.translation[1] * extrinsics.translation[1] +
+                                  extrinsics.translation[2] * extrinsics.translation[2]);
+            }
         } catch (const rs2::error &) {
-            // Only the left imager was enabled, so there is no second stream to measure against.
-            m_calibration.baselineMeters = 0.0f;
-        }
-
-        if (m_calibration.baselineMeters <= 0.0f) {
-            // Left as zero rather than filled with 0.05: ValidationMask::Validate refuses it, which
-            // is the loud failure. A plausible default here would score every frame quietly wrong.
-            m_calibration.baselineMeters = 0.0f;
+            // Leave it at zero; the gate above is what reports it.
         }
     }
 
     void RealSenseD435::Close() {
         if (!m_impl || !m_impl->streaming) return;
-        m_impl->pipeline.stop();
+        // Both, and in this order: stop() ends delivery, close() releases the USB interface. Only
+        // stopping leaves the device claimed and the next Open on this machine fails.
+        m_impl->sensor->stop();
+        m_impl->sensor->close();
+        m_impl->frames = rs2::frameset();
+        m_impl->depth = rs2::frame();
+        m_impl->infrared = rs2::frame();
         m_impl->streaming = false;
     }
 
@@ -157,7 +249,7 @@ namespace Realsense {
         if (!IsOpen()) throw std::runtime_error("Realsense::RealSenseD435::Grab: not streaming");
 
         rs2::frameset frames;
-        if (!m_impl->pipeline.try_wait_for_frames(&frames)) return false;
+        if (!m_impl->syncer.try_wait_for_frames(&frames)) return false;
 
         // Held on the object, not on the stack: the returned pointers are the driver's buffers and
         // stay valid exactly as long as these frame handles do.
@@ -202,22 +294,14 @@ namespace Realsense {
         options.focalLengthPixels = m_calibration.fx;
         options.baselineMeters = m_calibration.baselineMeters;
         options.useInfrared = m_infraredEnabled;
-        // subpixelRms is left at its default on purpose: it is a property of the SCENE's texture,
-        // not of the camera, and no device query reports it.
         return options;
     }
 
     NormalEstimationOptions RealSenseD435::MakeNormalOptions() const {
         NormalEstimationOptions options;
 
-        // The reference the default radius was measured at: a D435 at its native 848x480, whose
-        // focal length is about 425 px. Radius 2 there is a 5x5 window, matching the configuration
-        // docs/DEPTH_NOISE_FILTERING.md reports 12.5 degrees of ground-truth error for.
         constexpr float referenceFocalPixels = 425.0f;
 
-        // Not open, or a device that never reported a focal length: keep the default rather than
-        // scale by a zero. A radius of 0 would fail NormalEstimation::ValidateOptions, which is a
-        // worse failure than a window sized for the wrong camera.
         if (!(m_calibration.fx > 0.0f)) return options;
 
         const float scaled = float(options.planeFitRadius) * m_calibration.fx / referenceFocalPixels;

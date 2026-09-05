@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -44,6 +45,9 @@ namespace Pipeline {
 
         // What the device answered, for a caller that has to fill sigma_z's constants.
         const Realsense::D435Calibration &Calibration() const { return m_camera.Calibration(); }
+
+        // Empty when the requested visual preset took. See Realsense::RealSenseD435::Open.
+        const std::string &VisualPresetRefusal() const { return m_camera.VisualPresetRefusal(); }
 
     private:
         Realsense::RealSenseD435 m_camera;
