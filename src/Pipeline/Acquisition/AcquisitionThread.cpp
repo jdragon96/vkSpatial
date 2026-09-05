@@ -3,8 +3,7 @@
 #include "Pipeline/Acquisition/DepthRecording.h" // RecordedDepthProvider
 #include "Pipeline/Acquisition/FileFrameSource.h"
 #include "Pipeline/CommunicationModule.h"
-#include "Pipeline/Realsense/GpuDepthFrameSource.h"
-#include "Pipeline/Realsense/RealSenseDepthProvider.h"
+#include "Pipeline/Acquisition/RealsenseFrameSource.h"
 
 #include "Features/Downsample.h"
 
@@ -22,15 +21,6 @@ namespace Pipeline {
             return source;
         }
 
-        // Only focalLengthPixels has to come from the stream -- it defaults to 0 precisely so a
-        // frame cannot be scored without it. depthScale and baselineMeters carry D4xx defaults an
-        // explicit config still overrides.
-        const auto withFocal = [&config](float focalLengthPixels) {
-            Realsense::ValidationScoreOptions score = config.score;
-            if (!(score.focalLengthPixels > 0.0f)) score.focalLengthPixels = focalLengthPixels;
-            return score;
-        };
-
         switch (config.source) {
             case EAcquisitionSource::PlyFolder: {
                 FileSourceConfig files;
@@ -40,33 +30,18 @@ namespace Pipeline {
                 return std::make_unique<FileFrameSource>(std::move(files));
             }
 
-            case EAcquisitionSource::Realsense: {
-#ifdef VKBVH_HAS_REALSENSE
-                RealSenseOptions device;
-                device.highAccuracyPreset = config.stream.visualPreset == "high-accuracy";
-                auto camera = std::make_unique<RealSenseDepthProvider>(
-                        config.stream.width, config.stream.height, config.stream.fps, device);
-                const float focal = camera->Intrinsics().fx;
-                return std::make_unique<GpuDepthFrameSource>(std::move(camera), withFocal(focal),
-                                                             config.normal, config.downSample,
-                                                             config.scoreThreshold);
-#else
-                throw std::invalid_argument("MakeAcquisitionSource: this build has no "
-                                            "librealsense2, so the live camera cannot be opened; "
-                                            "use RealsenseFile over a recording instead");
-#endif
-            }
+            case EAcquisitionSource::Realsense:
+                return std::make_unique<RealsenseFrameSource>(config.stream, config.score,
+                                                              config.normal, config.downSample,
+                                                              config.scoreThreshold);
 
-            case EAcquisitionSource::RealsenseFile: {
+            case EAcquisitionSource::RealsenseFile:
                 if (config.recordingDirectory.empty())
                     throw std::invalid_argument("MakeAcquisitionSource: RealsenseFile needs "
                                                 "AcquisitionConfig::recordingDirectory");
-                auto recording = std::make_unique<RecordedDepthProvider>(config.recordingDirectory);
-                const float focal = recording->Intrinsics().fx;
-                return std::make_unique<GpuDepthFrameSource>(std::move(recording), withFocal(focal),
-                                                             config.normal, config.downSample,
-                                                             config.scoreThreshold);
-            }
+                return std::make_unique<RealsenseFrameSource>(
+                        std::make_unique<RecordedDepthProvider>(config.recordingDirectory),
+                        config.score, config.normal, config.downSample, config.scoreThreshold);
         }
         throw std::invalid_argument("MakeAcquisitionSource: unknown source");
     }

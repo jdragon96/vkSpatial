@@ -26,7 +26,7 @@
 #include "Engine/Render/Scene.h"
 #include "Pipeline/Acquisition/DepthCameraFrameSource.h"
 #include "Pipeline/Acquisition/DepthRecording.h"
-#include "Pipeline/Realsense/RealSenseDepthProvider.h"
+#include "Pipeline/Acquisition/D435DepthProvider.h"
 #include "utilities/ArgParser.h"
 
 #include "imgui.h"
@@ -201,7 +201,8 @@ namespace {
 
     std::unique_ptr<IDepthProvider> OpenDevice(int width, int height, int fps) {
 #ifdef VKBVH_HAS_REALSENSE
-        return std::make_unique<Pipeline::RealSenseDepthProvider>(width, height, fps);
+        return std::make_unique<Pipeline::D435DepthProvider>(
+                Realsense::D435StreamOptions{width, height, fps, false, "high-accuracy"});
 #else
         (void) width;
         (void) height;

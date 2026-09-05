@@ -13,7 +13,7 @@ cmake --build build-rel --target vkspatial_tests -j8
 
 - **`src/` 밑에 파일을 추가·삭제했으면 `cmake -S . -B build-rel`을 반드시 다시 돌린다.** 모든 라이브러리 타깃이 `GLOB_RECURSE`로 소스 목록을 configure 시점에 확정하므로, 재실행하지 않으면 새 `.cpp`가 빌드에 안 들어가거나 지운 `.cpp`를 계속 컴파일하려 한다. 헤더만 고쳤으면 불필요하다.
 - 요구 사항: Vulkan SDK(`$VULKAN_SDK`, shaderc/glslc 포함), Eigen3, Ceres, glfw3, GTest. vk-bootstrap은 FetchContent로 받고, SPIRV-Reflect는 서브모듈이다.
-- `librealsense2`는 **선택적**이다. 없으면 `RealSenseDepthProvider`가 빠지고 `VKBVH_HAS_REALSENSE`가 정의되지 않는다 — 카메라 없는 머신에서도 빌드는 그대로 된다.
+- `librealsense2`는 **선택적**이다. 없으면 `VKBVH_HAS_REALSENSE`가 정의되지 않고 `Realsense::RealSenseD435::Open`이 그 사실을 말하며 던진다 — 타입과 어댑터는 그대로 빌드되므로 카메라 없는 머신에서도 녹화 재생 경로는 전부 돈다.
 - `glslc`가 없으면 창을 띄우는 example만 조용히 스킵된다(래스터 셰이더를 빌드 시점에 `.spv`로 굽기 때문). 컴퓨트 커널은 영향받지 않는다 — 아래 참조.
 - 릴리스 구성만 쓴다(`-O3 -DNDEBUG`). 그래서 **`assert`는 쓰지 않는다** — 실제로 배포되는 구성에서 no-op이 된다.
 
@@ -138,13 +138,13 @@ src/<도메인>/                    예: GlobalRegistration/
 `Pipeline::Pipeline`이 세 개의 `PipelineStage` 워커를 소유하고, `CommunicationModule` 하나가 그 사이를 잇는다:
 
 ```
-ReconstructionThread --Channel<Frame>-->  RegistrationThread
-                     --Channel<TrackedFrame>--> IntegrationThread
-                     --Mailbox<ModelSnapshot>--> 호출자/렌더 스레드
+AcquisitionThread --Channel<Frame>-->  RegistrationThread
+                  --Channel<TrackedFrame>--> IntegrationThread
+                  --Mailbox<ModelSnapshot>--> 호출자/렌더 스레드
 ```
 
-- 취득 전략은 `EAcquisitionType`(File / DepthCamera / StructuredLight)으로 갈리고, 정합은 `Tracker` 인터페이스로, 융합은 TSDF 백엔드로 갈린다 — 세 축이 각각 독립적으로 교체된다.
-- **취득 쪽 폴더는 소스별로 나뉜다.** `Acquisition/`이 공용 기계(`IFrameSource`, `AcquisitionConfig`, `ReconstructionThread`, depth 장치 추상화 `IDepthProvider`)를 갖고, `Realsense/`와 `StructuredLight/`가 그 인터페이스를 구현한다. 두 소스가 `IDepthProvider`를 공유하므로 그것은 `Acquisition/`에 남는다.
+- 취득 전략은 `EAcquisitionSource`(PlyFolder / Realsense / RealsenseFile)로 갈리고, 정합은 `Tracker` 인터페이스로, 융합은 TSDF 백엔드로 갈린다 — 세 축이 각각 독립적으로 교체된다.
+- **취득은 `Acquisition/` 하나에 모인다.** `AcquisitionThread`가 공용 기계(`IFrameSource`, `AcquisitionConfig`, depth 장치 추상화 `IDepthProvider`)를 갖고, `AcquisitionConfig::source` 하나로 구현을 고른다 — `RealsenseFrameSource`(라이브 D435와 녹화, 둘 다 `src/Realsense`의 GPU 프론트엔드) 또는 `FileFrameSource`(PLY 폴더). 알고리즘은 `src/Realsense`에 있고 여기 있는 것은 어댑터뿐이다. `StructuredLight/`는 별도 소스로 남는다.
 - `CommunicationModule(dropWhenBehind)`가 두 링크의 오버플로 정책을 함께 정한다. **라이브 센서는 `true`(오래된 프레임을 버려 지연을 묶음), 녹화 재생은 `false`(블로킹 = 무손실).** 녹화를 드롭 모드로 돌리면 느린 설정이 조용히 더 적은 프레임을 처리해서, 설정 간 비교 측정이 전부 오염된다.
 - **무손실은 재현성이 아니다.** 블로킹 채널은 프레임 *개수*만 맞춘다. 맵은 latest-wins `Mailbox`로 트래커에 전달되고 정합은 `trackedFrames` 용량만큼 융합보다 앞서 달릴 수 있으므로, 프레임 N이 *어느 버전의 맵*에 정합하는지가 쓰레드 스케줄링에 달렸다. 그 맵이 정합 타깃이므로 포즈가 달라지고, 다음 맵이 달라진다 — 실행마다 발산한다. 그래서 `CommunicationModule`은 녹화 모드에서 `FrameHandshake`도 켠다(정합이 매 프레임 융합 완료를 기다림 = lock-step). **파이프라인을 통과하는 A/B 측정은 이것 없이는 무의미하다.**
 - **정합에 실패한 프레임을 융합할지는 `ETrackFailure`별로 갈린다**(`ShouldFuse()`, `Pipeline/Types.h`). `TooFewInliers`/`LowOverlap`은 융합하지 않는다 — 로컬 맵이 있는데도 solve가 게이트를 못 넘긴 경우이고, 그 틀린 포즈로 오염된 맵이 다음 프레임의 정합 타깃이 된다. `NoModel`/`NoLocalTarget`은 **융합한다**: 오염시킬 맵이 애초에 없고, 거부하면 맵이 부트스트랩되지 않거나(프레임 0이 `NoModel`) 새 영역으로 자라지 못한다. 건너뛴 수는 `PipelineStats::skippedFusions`로 관측한다.

@@ -1,5 +1,5 @@
 // RealSense capture / replay tool for the depth-camera front end (DepthCameraFrameSource +
-// RealSenseDepthProvider, see src/Pipeline/Reconstruction). --record drives a live D435 through
+// D435DepthProvider, see src/Pipeline/Acquisition). --record drives a live D435 through
 // DepthRecorder to a directory; --replay reads a recording back through RecordedDepthProvider and
 // the same BackprojectDepth front end the live path uses, printing per-frame point/normal counts.
 // --replay needs neither a camera nor the librealsense2 SDK -- it is the only way this front end
@@ -14,7 +14,7 @@
 #include "utilities/ArgParser.h"
 
 #ifdef VKBVH_HAS_REALSENSE
-#include "Pipeline/Realsense/RealSenseDepthProvider.h"
+#include "Pipeline/Acquisition/D435DepthProvider.h"
 #endif
 
 #include <cstddef>
@@ -55,7 +55,8 @@ namespace {
     int RunRecord(const std::string &directory, int frameCount, int width, int height, int fps) {
 #ifdef VKBVH_HAS_REALSENSE
         Pipeline::DepthRecorder recorder(
-                std::make_unique<Pipeline::RealSenseDepthProvider>(width, height, fps), directory);
+                std::make_unique<Pipeline::D435DepthProvider>(
+                        Realsense::D435StreamOptions{width, height, fps, false, "high-accuracy"}), directory);
         Pipeline::DepthFrame frame;
         for (int i = 0; i < frameCount && recorder.Grab(frame); ++i)
             std::printf("  captured frame %d/%d\n", i + 1, frameCount);

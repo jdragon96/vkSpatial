@@ -20,7 +20,6 @@
 #include "Pipeline/Registration/GpuIcpTracker.h"
 #include "Pipeline/Registration/Tracker.h"       // TrackerRegistry
 #include "Pipeline/Acquisition/DepthCameraFrameSource.h"
-#include "Pipeline/Realsense/GpuDepthFrameSource.h"
 #include "Pipeline/Acquisition/DepthRecording.h"
 #include "Pipeline/Acquisition/FrameLoader.h" // LoadFrames / ComputeBounds
 #include "Engine/Eval/RmseMetrics.h"                     // NearestNeighbourRMSE

@@ -1,5 +1,4 @@
-#include "Engine/Core/Context.h"
-#include "Pipeline/Realsense/GpuDepthFrameSource.h"
+#include "Pipeline/Acquisition/RealsenseFrameSource.h"
 
 #include <gtest/gtest.h>
 
@@ -9,7 +8,7 @@
 #include <memory>
 #include <vector>
 
-using Pipeline::GpuDepthFrameSource;
+using Pipeline::RealsenseFrameSource;
 
 namespace {
 
@@ -98,12 +97,10 @@ namespace {
 // with the surface the provider described. Pins that the GPU front end is actually driven and that
 // the camera convention survives the hand-off -- Realsense works in the sensor frame and so does
 // Pipeline, so nothing should be flipped on the way through.
-TEST(GpuDepthFrameSource, ProducesAFrameWithPointsAndNormals) {
-    Engine::Core::Context context;
+TEST(RealsenseFrameSource, ProducesAFrameWithPointsAndNormals) {
     const Eigen::Vector3f truth = Eigen::Vector3f(0.3f, 0.2f, -1.0f).normalized();
 
-    GpuDepthFrameSource source(context,
-                               std::make_unique<ScriptedDepthProvider>(
+    RealsenseFrameSource source(std::make_unique<ScriptedDepthProvider>(
                                        std::vector<std::vector<float>>{RenderPlane(truth, 1.5f)}),
                                TestScoreOptions());
     source.Open();
@@ -120,14 +117,12 @@ TEST(GpuDepthFrameSource, ProducesAFrameWithPointsAndNormals) {
 // The one lossy step this path adds. The pipeline's providers hand out float metres while the GPU
 // front end samples Z16, so the source re-quantises -- and the loss has to stay at the quantum
 // rather than drifting, which a wrong scale or a rounding-to-truncation slip would do.
-TEST(GpuDepthFrameSource, RequantisingCostsAtMostOneDepthQuantum) {
-    Engine::Core::Context context;
+TEST(RealsenseFrameSource, RequantisingCostsAtMostOneDepthQuantum) {
     const Eigen::Vector3f truth(0.0f, 0.0f, -1.0f);
     const float distance = 1.2345f; // deliberately not a whole number of millimetres
 
     const Realsense::ValidationScoreOptions options = TestScoreOptions();
-    GpuDepthFrameSource source(context,
-                               std::make_unique<ScriptedDepthProvider>(
+    RealsenseFrameSource source(std::make_unique<ScriptedDepthProvider>(
                                        std::vector<std::vector<float>>{RenderPlane(truth, distance)}),
                                options);
     source.Open();
@@ -143,13 +138,11 @@ TEST(GpuDepthFrameSource, RequantisingCostsAtMostOneDepthQuantum) {
 // The GPU downsample replaces AcquisitionThread's CPU voxel reduce, and it runs BEFORE the
 // readback rather than after -- so the saving is in the transfer too, not only in what the pipeline
 // then carries.
-TEST(GpuDepthFrameSource, TheDownsampleThinsTheFrameAndKeepsNormals) {
-    Engine::Core::Context context;
+TEST(RealsenseFrameSource, TheDownsampleThinsTheFrameAndKeepsNormals) {
     const Eigen::Vector3f truth(0.0f, 0.0f, -1.0f);
 
     const auto run = [&](const Realsense::DownSampleOptions &downSample) {
-        GpuDepthFrameSource source(context,
-                                   std::make_unique<ScriptedDepthProvider>(
+        RealsenseFrameSource source(std::make_unique<ScriptedDepthProvider>(
                                            std::vector<std::vector<float>>{RenderPlane(truth, 1.0f)}),
                                    TestScoreOptions(), {}, downSample);
         source.Open();
@@ -174,12 +167,10 @@ TEST(GpuDepthFrameSource, TheDownsampleThinsTheFrameAndKeepsNormals) {
 
 // An exhausted provider has to end the stream rather than hand back the last frame again, or the
 // pipeline never stops.
-TEST(GpuDepthFrameSource, ReportsTheEndOfTheStream) {
-    Engine::Core::Context context;
+TEST(RealsenseFrameSource, ReportsTheEndOfTheStream) {
     const Eigen::Vector3f truth(0.0f, 0.0f, -1.0f);
 
-    GpuDepthFrameSource source(context,
-                               std::make_unique<ScriptedDepthProvider>(
+    RealsenseFrameSource source(std::make_unique<ScriptedDepthProvider>(
                                        std::vector<std::vector<float>>{RenderPlane(truth, 1.0f)}),
                                TestScoreOptions());
     source.Open();
@@ -189,21 +180,40 @@ TEST(GpuDepthFrameSource, ReportsTheEndOfTheStream) {
     EXPECT_FALSE(source.Next(frame));
 }
 
-// focalLengthPixels and depthScale are what sigma_z is built from, and a frame scored with the
-// wrong sigma_z looks entirely plausible. Refusing beats scoring quietly wrong.
-TEST(GpuDepthFrameSource, AnUnsetSensorConstantIsRefused) {
-    Engine::Core::Context context;
+// focalLengthPixels is what sigma_z is built from, and a frame scored with the wrong one looks
+// entirely plausible -- which is why ValidationScoreOptions defaults it to 0 and the score kernel
+// refuses that. The source fills it from whatever it is reading, so a caller no longer has to know
+// the number, and no longer has a way to get it silently wrong.
+TEST(RealsenseFrameSource, TheFocalLengthIsTakenFromTheSource) {
     const Eigen::Vector3f truth(0.0f, 0.0f, -1.0f);
 
     Realsense::ValidationScoreOptions options = TestScoreOptions();
-    options.focalLengthPixels = 0.0f;
+    options.focalLengthPixels = 0.0f; // the caller does not know it
 
-    GpuDepthFrameSource source(context,
-                               std::make_unique<ScriptedDepthProvider>(
-                                       std::vector<std::vector<float>>{RenderPlane(truth, 1.0f)}),
-                               options);
+    RealsenseFrameSource source(std::make_unique<ScriptedDepthProvider>(
+                                        std::vector<std::vector<float>>{RenderPlane(truth, 1.0f)}),
+                                options);
     source.Open();
 
     Pipeline::Frame frame;
-    EXPECT_THROW(source.Next(frame), std::runtime_error);
+    ASSERT_NO_THROW(source.Next(frame));
+    EXPECT_GT(frame.pts.size(), 0u);
+}
+
+// What is still refused: a source that cannot say how big its frames are. The front end is sized
+// from that, and a zero-sized one would allocate nothing and then read past it.
+TEST(RealsenseFrameSource, ASourceWithNoFrameSizeIsRefused) {
+    Pipeline::CameraIntrinsics empty; // width and height left at 0
+    class SizelessProvider : public Pipeline::IDepthProvider {
+    public:
+        explicit SizelessProvider(Pipeline::CameraIntrinsics k) : m_intrinsics(k) {}
+        const Pipeline::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
+        bool Grab(Pipeline::DepthFrame &) override { return true; }
+
+    private:
+        Pipeline::CameraIntrinsics m_intrinsics;
+    };
+
+    RealsenseFrameSource source(std::make_unique<SizelessProvider>(empty), TestScoreOptions());
+    EXPECT_THROW(source.Open(), std::runtime_error);
 }

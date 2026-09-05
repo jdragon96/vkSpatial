@@ -146,8 +146,10 @@ $$ slot = rowOffset[row] + \left| \{\, c < column : emitted(row, c) \,\} \right|
 
 # Pipeline 통합 (2026-09-05)
 
-`Pipeline::GpuDepthFrameSource`(`src/Pipeline/Realsense/GpuDepthFrameSource.h`)가 이 프론트엔드를
-재구성 파이프라인의 `IFrameSource`로 감싼다. **opt-in**이고 기존 CPU 경로는 그대로 남는다.
+`Pipeline::RealsenseFrameSource`(`src/Pipeline/Acquisition/RealsenseFrameSource.h`)가 이 프론트엔드를
+취득 스레드의 `IFrameSource`로 감싼다. **opt-in**이고 기존 CPU 경로는 그대로 남는다 —
+`AcquisitionConfig::source`가 `Realsense`(라이브 D435) / `RealsenseFile`(녹화) / `PlyFolder` 중 하나를
+고른다.
 
 ## 무엇을 대체하나
 
@@ -159,9 +161,15 @@ $$ slot = rowOffset[row] + \left| \{\, c < column : emitted(row, c) \,\} \right|
 그래서 `AcquisitionConfig::downsampleVoxel`은 0으로 둔다. 그건 readback **후**에 도는 CPU 축소이고,
 여기 `DownSampleOptions`는 readback **전**에 솎으므로 전송량까지 준다.
 
-한 가지 손실이 붙는다: `IDepthProvider`가 float 미터를 주므로 소스가 Z16으로 재양자화한다. RealSense
-계열에서는 그 float이 애초에 같은 스케일의 Z16에서 나왔으므로 왕복이 정확하고, 테스트가 한 양자 이내임을
-고정한다.
+입력은 두 갈래이고 손실이 붙는 것은 한쪽뿐이다.
+
+- **라이브(`Realsense`)** — `Realsense::RealSenseD435`를 직접 잡고 드라이버의 Z16 버퍼를 **그대로**
+  넘긴다. float을 거치지 않으므로 왕복 손실이 없고, `focalLengthPixels`/`baselineMeters`/`depthScale`도
+  장치의 실제 캘리브레이션에서 온다(`MakeScoreOptions`) — 호출자가 그 숫자를 알 필요도, 조용히 틀릴
+  방법도 없다.
+- **녹화·테스트(`RealsenseFile`)** — `IDepthProvider`가 float 미터를 주므로 소스가 Z16으로
+  재양자화한다. RealSense 녹화에서는 그 float이 애초에 같은 스케일의 Z16에서 나왔으므로 왕복이
+  정확하고, 테스트가 한 양자 이내임을 고정한다.
 
 ## A/B — 같은 녹화, 같은 하류 (`capture/` 476프레임, `--trackers icp`)
 

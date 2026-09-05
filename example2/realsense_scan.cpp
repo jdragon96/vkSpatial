@@ -3,7 +3,7 @@
 //
 //   depth frames -> BackprojectDepth -> ICP against the model -> TSDF integrate -> extracted surface
 //   \___________________________________/  \_______________/     \____________/
-//        ReconstructionThread                RegistrationThread    IntegrationThread
+//          AcquisitionThread                 RegistrationThread    IntegrationThread
 //
 // This is the first source in the repo for which tracking is a real problem. The synthetic
 // scan_out frames each cover the whole scene from every side, so there is no viewpoint to
@@ -39,7 +39,7 @@
 #include "Pipeline/Pipeline.h"
 #include "Pipeline/Acquisition/DepthCameraFrameSource.h"
 #include "Pipeline/Acquisition/DepthRecording.h"
-#include "Pipeline/Realsense/RealSenseDepthProvider.h"
+#include "Pipeline/Acquisition/D435DepthProvider.h"
 #include "Pipeline/Registration/Tracker.h"
 #include "utilities/ArgParser.h"
 
@@ -196,18 +196,17 @@ namespace {
         }
     }
 
+    // No VKBVH_HAS_REALSENSE guard: D435DepthProvider builds either way, and without the SDK the
+    // camera underneath throws with its own message when this is actually called.
     std::unique_ptr<ep::IDepthProvider> OpenDevice(int width, int height, int fps,
-                                                   const ep::RealSenseOptions &options) {
-#ifdef VKBVH_HAS_REALSENSE
-        return std::make_unique<ep::RealSenseDepthProvider>(width, height, fps, options);
-#else
-        (void) width;
-        (void) height;
-        (void) fps;
-        (void) options;
-        throw std::runtime_error("realsense_scan: built without librealsense2. Install it and "
-                                 "reconfigure, or scan a recording with --replay <dir>.");
-#endif
+                                                   bool highAccuracyPreset) {
+        Realsense::D435StreamOptions stream;
+        stream.width = width;
+        stream.height = height;
+        stream.fps = fps;
+        stream.enableInfrared = false; // this tool scores depth only
+        stream.visualPreset = highAccuracyPreset ? "high-accuracy" : "default";
+        return std::make_unique<ep::D435DepthProvider>(stream);
     }
 
 } // namespace
@@ -339,11 +338,10 @@ int main(int argc, char **argv) {
         // it survives every Reconfigure that rebuilds the source.
         const auto depthGateStats = std::make_shared<ep::DepthFilterStats>();
 
-        ep::RealSenseOptions deviceOptions;
-        deviceOptions.highAccuracyPreset = arg.Has("--high-accuracy");
+        const bool highAccuracyPreset = arg.Has("--high-accuracy");
         config.acquisition.makeSource = [=]() -> std::unique_ptr<ep::IFrameSource> {
             std::unique_ptr<ep::IDepthProvider> device =
-                    live ? OpenDevice(width, height, fps, deviceOptions)
+                    live ? OpenDevice(width, height, fps, highAccuracyPreset)
                          : std::make_unique<ep::RecordedDepthProvider>(replayDirectory);
             if (!recordDirectory.empty())
                 device = std::make_unique<ep::DepthRecorder>(std::move(device), recordDirectory);
@@ -366,7 +364,7 @@ int main(int argc, char **argv) {
                     depthFilter.prefilterWindow, depthFilter.minimumDepthMeters,
                     depthFilter.maximumDepthMeters, depthFilter.minimumValidNeighbours,
                     depthFilter.maximumIncidenceDegrees,
-                    deviceOptions.highAccuracyPreset ? ", high-accuracy preset" : "");
+                    highAccuracyPreset ? ", high-accuracy preset" : "");
         std::printf("denoise   : symmetric guard %s, behind-dropoff %s, band %.1f sigma\n",
                     depthFilter.symmetricDepthJumpGuard ? "on" : "off",
                     arg.Has("--behind-dropoff") ? "on" : "off", arg.ValueFloat("--band-sigma"));
