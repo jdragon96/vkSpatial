@@ -17,9 +17,13 @@ struct PointVertex {
     uint8_t rgba[4];
 };
 
-// Renders up to kMaxSets independently-visible named point sets (e.g. TSDF input samples,
-// extracted surface points, ...) as VK_PRIMITIVE_TOPOLOGY_POINT_LIST. Mirrors CubePass's
-// pass/pipeline structure; see CubePass.{h,cpp}.
+// Renders up to kMaxSets independently-visible named vertex sets (e.g. TSDF input samples,
+// extracted surface points, normal segments, ...). Mirrors CubePass's pass/pipeline structure;
+// see CubePass.{h,cpp}.
+//
+// Each set carries its own topology and the pass owns one pipeline per topology, rather than there
+// being a separate line pass: Execute() opens the rendering scope with a CLEAR, so a second pass
+// appended to the graph would wipe whatever the first one drew.
 class PointCloudPass : public Engine::Render::RenderPass {
 public:
     static constexpr int kMaxSets = 8;
@@ -29,31 +33,40 @@ public:
     const char *Name() const override { return "PointCloudPass"; }
     void Execute(Engine::Render::RenderContext &ctx) override;
 
-    // (Re)uploads `vertices` as the contents of named point set `id` (0..kMaxSets-1).
+    // (Re)uploads `vertices` as the contents of named set `id` (0..kMaxSets-1), drawn as points.
     // Passing an empty vector hides the set (draw count becomes 0) without deallocating.
     void SetPointSet(int id, const std::vector<PointVertex> &vertices);
+
+    // The same, drawn as a line list: vertices are consumed in PAIRS, so the caller supplies two
+    // per segment. Line width is always one pixel -- MoltenVK does not implement wideLines.
+    void SetLineSet(int id, const std::vector<PointVertex> &vertices);
 
     // Toggles whether point set `id` is drawn. All sets are visible by default.
     void SetVisible(int id, bool visible);
 
-    // Point size in pixels, shared by all sets, applied via push constant each frame.
+    // Point size in pixels, shared by all sets, applied via push constant each frame. Ignored by
+    // line sets, where the rasteriser has no equivalent knob.
     void SetPointSize(float pixels) { m_pointSize = pixels; }
 
 private:
-    struct PointSet {
-        explicit PointSet(Engine::Core::Context &context)
+    struct VertexSet {
+        explicit VertexSet(Engine::Core::Context &context)
             : buffer(context, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) {}
 
         Engine::Core::Buffer buffer;
         uint32_t count = 0;
         bool visible = true;
+        VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
     };
 
-    // Engine::Core::Buffer is move/copy-disabled, so PointSet can't live in a std::vector
+    void upload(int id, const std::vector<PointVertex> &vertices, VkPrimitiveTopology topology);
+
+    // Engine::Core::Buffer is move/copy-disabled, so VertexSet can't live in a std::vector
     // (libc++'s vector::reserve requires Cpp17MoveInsertable even when no reallocation
     // ever actually happens). unique_ptr sidesteps that: each slot is heap-allocated once
     // in the constructor and never relocated.
-    std::array<std::unique_ptr<PointSet>, kMaxSets> m_sets;
-    Engine::Render::GraphicsPipeline m_pipeline;
+    std::array<std::unique_ptr<VertexSet>, kMaxSets> m_sets;
+    Engine::Render::GraphicsPipeline m_pointPipeline;
+    Engine::Render::GraphicsPipeline m_linePipeline;
     float m_pointSize = 4.0f;
 };

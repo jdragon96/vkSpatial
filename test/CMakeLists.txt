@@ -16,6 +16,7 @@ target_link_libraries(vkspatial_tests
         Engine::Render
         Engine::Backend
         Pipeline
+        Realsense
         TSDF::TSDF
         GTest::gtest
         GTest::gtest_main)

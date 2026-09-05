@@ -22,10 +22,12 @@ namespace {
 
 PointCloudPass::PointCloudPass(Engine::Core::Context &context, VkFormat colorFormat,
                                const std::string &shaderDir)
-    : m_pipeline(context) {
+    : m_pointPipeline(context), m_linePipeline(context) {
     for (int i = 0; i < kMaxSets; ++i)
-        m_sets[static_cast<size_t>(i)] = std::make_unique<PointSet>(context);
+        m_sets[static_cast<size_t>(i)] = std::make_unique<VertexSet>(context);
 
+    // Both topologies share the vertex format, the shaders and the push constants -- only the
+    // input assembly differs, so the descriptor is built once and rebuilt with one field changed.
     Engine::Render::GraphicsPipelineDescriptor descriptor;
     descriptor.VertexShader(shaderDir + "/pointcloud.vert.spv")
             .FragmentShader(shaderDir + "/pointcloud.frag.spv")
@@ -35,15 +37,32 @@ PointCloudPass::PointCloudPass(Engine::Core::Context &context, VkFormat colorFor
             .ColorTarget(colorFormat)
             .DepthTarget(VK_FORMAT_D32_SFLOAT)
             .PushConstant<PushConstants>(VK_SHADER_STAGE_VERTEX_BIT);
+
     descriptor.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
-    m_pipeline.Build(descriptor);
+    m_pointPipeline.Build(descriptor);
+
+    descriptor.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    m_linePipeline.Build(descriptor);
 }
 
 void PointCloudPass::SetPointSet(int id, const std::vector<PointVertex> &vertices) {
-    if (id < 0 || id >= kMaxSets)
-        throw std::out_of_range("PointCloudPass::SetPointSet: id out of range");
+    upload(id, vertices, VK_PRIMITIVE_TOPOLOGY_POINT_LIST);
+}
 
-    PointSet &set = *m_sets[static_cast<size_t>(id)];
+void PointCloudPass::SetLineSet(int id, const std::vector<PointVertex> &vertices) {
+    if (vertices.size() % 2 != 0)
+        throw std::invalid_argument("PointCloudPass::SetLineSet: a line list needs an even vertex "
+                                    "count; the last segment has no end point");
+    upload(id, vertices, VK_PRIMITIVE_TOPOLOGY_LINE_LIST);
+}
+
+void PointCloudPass::upload(int id, const std::vector<PointVertex> &vertices,
+                            VkPrimitiveTopology topology) {
+    if (id < 0 || id >= kMaxSets)
+        throw std::out_of_range("PointCloudPass::upload: id out of range");
+
+    VertexSet &set = *m_sets[static_cast<size_t>(id)];
+    set.topology = topology;
     if (vertices.empty()) {
         set.count = 0;
         return;
@@ -77,16 +96,26 @@ void PointCloudPass::Execute(Engine::Render::RenderContext &ctx) {
 
     Engine::Render::RenderingScope scope(ctx.commandBuffer, renderingDescriptor);
 
-    m_pipeline.Bind(ctx.commandBuffer);
-
     Engine::Render::Camera *camera = ctx.view->GetCamera();
-    PushConstants push{camera->GetProjectionMatrix() * camera->GetViewMatrix(), m_pointSize};
-    m_pipeline.PushConstants(ctx.commandBuffer, VK_SHADER_STAGE_VERTEX_BIT, push);
+    const PushConstants push{camera->GetProjectionMatrix() * camera->GetViewMatrix(), m_pointSize};
 
-    for (const std::unique_ptr<PointSet> &setPtr : m_sets) {
-        const PointSet &set = *setPtr;
+    // Bound lazily and only when the topology actually changes: the sets are usually grouped, so
+    // the common case is one pipeline bind for the whole pass rather than one per set.
+    Engine::Render::GraphicsPipeline *bound = nullptr;
+
+    for (const std::unique_ptr<VertexSet> &setPtr : m_sets) {
+        const VertexSet &set = *setPtr;
         if (!set.visible || set.count == 0)
             continue;
+
+        Engine::Render::GraphicsPipeline *wanted =
+                set.topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST ? &m_linePipeline : &m_pointPipeline;
+        if (wanted != bound) {
+            wanted->Bind(ctx.commandBuffer);
+            wanted->PushConstants(ctx.commandBuffer, VK_SHADER_STAGE_VERTEX_BIT, push);
+            bound = wanted;
+        }
+
         VkBuffer handle = set.buffer.Handle();
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(ctx.commandBuffer, 0, 1, &handle, &offset);

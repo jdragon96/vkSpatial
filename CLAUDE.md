@@ -48,7 +48,7 @@ cmake --build build-rel --target tsdf_folder_eval icp_quality_diag -j8
 | 경로 | 내용 |
 |---|---|
 | `scan_out/` | 합성 스캔 프레임 PLY. **이미 정합되어 있음** → 트래커는 `identity`가 기준선이고, 여기에 `icp`를 걸면 없는 문제를 푼다 |
-| `scanData/` | 실제 chair 스캔 프레임 PLY (~827mm 스케일) |
+| `scanData/` | 실제 chair 스캔 프레임 PLY (~827mm 스케일). **이것도 이미 정합되어 있음**(프레임 간 NN 중앙값 0.00mm) → 트래커 기준선은 `identity` |
 | `capture/` | 실제 RealSense depth 녹화(`depth_*.bin`). `--replay`로 하드웨어 없이 재생 |
 | `data/`, `scans/` | ground-truth 메시(`chair.ply`, `Dragon.obj`) |
 
@@ -83,13 +83,16 @@ Pipeline          위를 조립하는 재구성 스레드들
 
 이름 → 구현 레지스트리는 이 저장소 전반의 패턴이다: 트래커(`identity`/`icp`/`icp-cpu`/`global`, `TrackerRegistry`), 등가면 추출기(`mc`/`mc33`/`mtet`/`emc`/`dc`/`dmc`/`cms`, `ExtractorRegistry`+GPU 레지스트리), TSDF 백엔드, 데이터 스플리터. **새 알고리즘은 새 클래스가 아니라 새 등록 이름으로 들어간다.**
 
-새 모듈을 만들거나 기존 구현을 스위칭 가능하게 빼는 작업은 `.claude/skills/algorithm-module` 스킬을 먼저 읽는다 — 실제로 사람을 여러 번 막았던 함정들이 거기 있다.
+새 모듈을 만들거나 기존 구현을 스위칭 가능하게 빼는 작업은 `.claude/skills/algorithm-module` 스킬을 먼저 읽는다 — 실제로 사람을 여러 번 막았던 함정들이 거기 있다. 그 **구조 안에서 알고리즘 자체를 어떻게 설계할지**(TSDF 자료구조에 맞추기, GPU 우선, 벤치마크 가능한 전략, 용어)는 `docs/rule/Algorithm.md`에 있다.
 
 ### 컴퓨트 셰이더는 런타임에 컴파일된다
 
 `ComputePipeline::Build("경로")`가 shaderc로 그 자리에서 GLSL을 컴파일한다. **커널을 추가·이동해도 CMake는 건드릴 필요가 없다.**
 
-- 커널은 그것을 로드하는 `.cpp`와 **같은 폴더**에, `kernel_` 접두사 + `.comp.glsl`. `main()`이 없는 공용 include는 접두사를 붙이지 않는다(`voxel_common.glsl`).
+- 커널은 그것을 로드하는 `.cpp`(또는 헤더)와 **같은 폴더**에 둔다. `main()`이 없는 공용 include는 어느 규칙에서도 접두사·접미사를 붙이지 않는다(`voxel_common.glsl`, `Realsense/Algorithm/Common.glsl`).
+- 파일명 규칙이 **두 가지 공존한다**. 새 코드는 아래쪽을 쓴다.
+  - `kernel_<역할>.comp.glsl` — Pipeline·TSDF·BVH·Mesh의 기존 45개가 이 규칙이다. 옮기지 않았을 뿐이므로 그 폴더 안에서는 이 규칙을 지킨다.
+  - `<클래스명>.<역할>.glsl` — `src/Realsense/`가 쓴다(`ValidationMask.ScanRows.glsl`, `NormalEstimation.EstimateNormal.glsl`). 커널을 소유한 클래스가 파일명에 드러나므로, 한 폴더에 여러 클래스의 커널이 섞여도 누가 로드하는지가 이름만으로 잡힌다.
 - include 해석 순서: `셰이더 자기 폴더 → VKBVH_SHADER_DIR → VKBVH_SRC_DIR`. 커널을 옮겨도 공용 include는 그대로 잡힌다.
 - **셰이더 경로 오류는 컴파일이 아니라 런타임에 터진다.** 이름을 바꿀 땐 `Build("x")` 직접 호출뿐 아니라 `mk("x")` 같은 래퍼도 전부 찾을 것.
 - 전략 축이 셰이더 안에 있으면(예: 해시 주소법) C++ 가상 함수가 아니라 **디스패처 `.glsl` + `-D` 매크로**로 가른다(`src/TSDF/Hash/HashStrategy.glsl`). glslang은 `#include MACRO`를 지원하지 않는다. 그리고 컴파일 캐시는 **경로 + 정렬된 매크로 정의**로 키를 잡아야 한다 — 경로만으로 키를 잡으면 두 번째 전략이 첫 번째의 SPIR-V를 조용히 받는다.
@@ -138,4 +141,4 @@ ReconstructionThread --Channel<Frame>-->  RegistrationThread
 
 ## 문서
 
-`docs/`에 알고리즘 해설과 비교 실험 결과가 있다(`TSDF_*`, `ICP_*`, `ISOSURFACE_EXTRACTION.md`, `MARCHING_CUBES_SURVEY.md`, `BVH.md`, `ENGINE_CORE_RENDER.md`, `KNOWN_ISSUES_*`). **일부는 코드보다 오래됐다** — 예컨대 `ISOSURFACE_EXTRACTION.md`는 추출기가 `Engine::Spatial::Extraction`에 있다고 하지만 실제로는 `src/Mesh/`의 `namespace Mesh`로 옮겨졌다. 문서의 경로·시그니처를 근거로 삼기 전에 실제 파일을 연다.
+`docs/`에 알고리즘 해설과 비교 실험 결과가 있다(`TSDF_*`, `ICP_*`, `ISOSURFACE_EXTRACTION.md`, `MARCHING_CUBES_SURVEY.md`, `BVH.md`, `ENGINE_CORE_RENDER.md`, `KNOWN_ISSUES_*`). 경로·네임스페이스는 2026-08-31에 코드와 맞췄지만 **측정값과 서술은 코드보다 오래됐을 수 있다** — 문서의 시그니처를 근거로 삼기 전에 실제 파일을 연다. `docs/superpowers/plans`·`specs`는 당시 기록이라 일부러 갱신하지 않는다.

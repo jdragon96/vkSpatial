@@ -13,5 +13,6 @@ add_subdirectory(BVH)
 add_subdirectory(Mesh)
 add_subdirectory(Engine)
 add_subdirectory(TSDF)
+add_subdirectory(Realsense)
 add_subdirectory(Pipeline)
 
