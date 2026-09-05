@@ -101,6 +101,7 @@ namespace Realsense {
         float focalLengthPixels;
         float baselineMeters;
         float sameSurfaceSigmaMultiplier;
+        float depthScale;
         std::int32_t planeFitRadius;
         std::int32_t minimumPlaneFitSamples;
     };

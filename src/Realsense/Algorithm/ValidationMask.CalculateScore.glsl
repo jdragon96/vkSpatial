@@ -232,7 +232,8 @@ void main()
 		// The tolerance is derived from the sensor, not tuned. Shared with every normal estimator
 		// through Common.glsl so "same surface" has one meaning in this module.
 		float tolerance     = SameSurfaceTolerance(depth, g_subpixelRms, g_focalLengthPixels,
-		                                           g_baselineMeters, g_sameSurfaceSigmaMultiplier);
+		                                           g_baselineMeters, g_sameSurfaceSigmaMultiplier,
+		                                           g_depthScale);
 		neighbourConfidence = NeighbourConfidence(local, depth, tolerance);
 
 		// Product, not sum: the terms are vetoes, not votes. Every term is

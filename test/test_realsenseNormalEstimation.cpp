@@ -312,3 +312,43 @@ TEST(RealsenseNormalEstimation, AnUnopenedCameraStillYieldsValidOptions) {
     EXPECT_NO_THROW(Realsense::NormalEstimation::ValidateOptions(options));
     EXPECT_EQ(options.planeFitRadius, Realsense::NormalEstimationOptions{}.planeFitRadius);
 }
+
+// The same-surface tolerance is floored at one depth quantum, and that floor is what makes the
+// predicate mean anything rather than a safety margin: two samples of the SAME true depth land one
+// quantum apart whenever rounding splits them, so a tolerance below one quantum calls that rounding
+// a discontinuity.
+//
+// Measured on capture/ before the floor existed, at k = 0.25 where tau came to 0.70 mm against a
+// 1 mm quantum: the front end kept 86,805 points where k = 3 keeps 262,291, and the survivors
+// skewed fronto-parallel (median incidence 29 deg against 38) because only patches whose neighbours
+// quantise to the identical depth could pass. Two thirds of the surface, refused by arithmetic.
+TEST(RealsenseNormalEstimation, ATinySigmaMultiplierDoesNotFallBelowTheDepthQuantum) {
+    Engine::Core::Context context;
+    const Eigen::Vector3f truth = Eigen::Vector3f(0.3f, 0.2f, -1.0f).normalized();
+    // The SENSOR quantum, not the fine one: this is about the floor, and a fine quantum would put
+    // the tolerance above it again and test nothing.
+    const std::vector<std::uint16_t> depth = RenderPlane(truth, 1.5f, kSensorDepthScale);
+
+    // k = 0.25 at 1.5 m gives 0.25 * 8.47 mm = 2.1 mm, still above the quantum, so push it lower.
+    ValidationScoreOptions options = TestOptions(kSensorDepthScale);
+    options.sameSurfaceSigmaMultiplier = 0.05f; // 0.42 mm -- less than half a quantum
+
+    NormalEstimationOptions normalOptions;
+    normalOptions.estimator = "planefit";
+
+    Realsense::RealSensePipeline pipeline(context, kWidth, kHeight);
+    const Realsense::PinholeIntrinsics intrinsics{kFocal, kFocal, float(kWidth) * 0.5f,
+                                                  float(kHeight) * 0.5f};
+    {
+        Engine::Compute::CommandBatch batch(context);
+        pipeline.Execute(batch, depth.data(), options, intrinsics, 0.0f, normalOptions);
+        batch.Submit();
+    }
+    const std::vector<Eigen::Vector3f> normals = pipeline.DownloadValidNormals();
+    const Realsense::NormalEstimationCounters counters = pipeline.DownloadNormalCounters();
+
+    // Without the floor a tilted plane's neighbours differ by a quantum and every fit is refused.
+    EXPECT_GT(normals.size(), 0u) << "the whole plane was refused; the tolerance went sub-quantum";
+    EXPECT_LT(counters.noSupport, std::uint32_t(kWidth * kHeight) / 2)
+            << "more than half the frame found no same-surface support at a sub-quantum tolerance";
+}

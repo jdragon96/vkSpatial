@@ -102,6 +102,7 @@ namespace Realsense {
                                                     scoreOptions.focalLengthPixels,
                                                     scoreOptions.baselineMeters,
                                                     scoreOptions.sameSurfaceSigmaMultiplier,
+                                                    scoreOptions.depthScale,
                                                     normalOptions.planeFitRadius,
                                                     normalOptions.minimumPlaneFitSamples};
 

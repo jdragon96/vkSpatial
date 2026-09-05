@@ -13,6 +13,7 @@ layout(push_constant) uniform PC
 	float g_focalLengthPixels;
 	float g_baselineMeters;
 	float g_sameSurfaceSigmaMultiplier;
+	float g_depthScale;
 
 	int   g_planeFitRadius;
 	int   g_minimumPlaneFitSamples;
@@ -47,7 +48,8 @@ void main()
 
 	float depth     = g_vertices[centre].z;
 	float tolerance = SameSurfaceTolerance(depth, g_subpixelRms, g_focalLengthPixels,
-	                                       g_baselineMeters, g_sameSurfaceSigmaMultiplier);
+	                                       g_baselineMeters, g_sameSurfaceSigmaMultiplier,
+	                                       g_depthScale);
 
 	// 2. Estimate. The fragment compiled in decides HOW; the two failure causes are charged here
 	//    so the attribution does not depend on which fragment it was.

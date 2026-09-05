@@ -588,8 +588,15 @@ namespace {
                 const float sigma = denominator > 0.0f
                                             ? state.options.subpixelRms * z * z / denominator
                                             : 0.0f;
+                const float tau = sigma * state.options.sameSurfaceSigmaMultiplier;
                 ImGui::TextDisabled("at 1.5 m: sigma_z %.2f mm, tau %.2f mm", 1000.0 * double(sigma),
-                                    1000.0 * double(sigma * state.options.sameSurfaceSigmaMultiplier));
+                                    1000.0 * double(std::max(tau, state.options.depthScale)));
+                // Below one depth quantum "same surface" degenerates into "same quantised depth",
+                // which refuses every slanted surface. The kernel floors it; saying so here is what
+                // stops the knob from looking broken when it has simply run out of meaning.
+                if (tau < state.options.depthScale)
+                    ImGui::TextColored(ImVec4(1, 0.7f, 0.2f, 1),
+                                       "tau is below one depth quantum -- floored");
             }
 
             ImGui::SeparatorText("c_nb: tau = k * sigma_z");

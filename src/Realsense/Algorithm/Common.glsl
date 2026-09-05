@@ -59,13 +59,24 @@ float AxialNoiseSigma(float depth, float subpixelRms, float focalLengthPixels, f
 	return subpixelRms * depth * depth / denominator;
 }
 
-/// tau = k * sigma_z(z)
+/// tau = max(k * sigma_z(z), depthScale)
 ///
 /// The ONE definition of "same surface" in this module. The score kernel's c_nb term and every
 /// normal estimator go through it, so a neighbour counted as support and a sample admitted to a
 /// plane fit cannot come to mean two different things.
+///
+/// The floor is one Z16 quantum and it is not a safety margin -- it is what makes the predicate
+/// mean anything. Two samples of the SAME true depth land one quantum apart whenever rounding
+/// splits them, so a tolerance below one quantum calls that rounding a discontinuity. Measured on
+/// capture/ at k = 0.25, where tau came to 0.70 mm against a 1 mm quantum: the front end kept
+/// 86,805 points where k = 3 keeps 262,291, and the survivors skewed fronto-parallel (median
+/// incidence 29 deg against 38) because those are the only patches whose neighbours quantise to the
+/// identical depth. Two thirds of the surface, refused by arithmetic rather than by the scene.
+///
+/// The floor never binds at a sane k: at 0.82 m and k = 3 tau is 8.4 mm.
 float SameSurfaceTolerance(float depth, float subpixelRms, float focalLengthPixels,
-                           float baselineMeters, float sigmaMultiplier)
+                           float baselineMeters, float sigmaMultiplier, float depthScale)
 {
-	return sigmaMultiplier * AxialNoiseSigma(depth, subpixelRms, focalLengthPixels, baselineMeters);
+	float sigma = AxialNoiseSigma(depth, subpixelRms, focalLengthPixels, baselineMeters);
+	return max(sigmaMultiplier * sigma, depthScale);
 }
