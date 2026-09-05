@@ -8,9 +8,9 @@ file(GLOB_RECURSE LOCAL_REGISTRATION_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
 add_library(EngineLocalRegistration STATIC ${LOCAL_REGISTRATION_SOURCES})
 add_library(LocalRegistration ALIAS EngineLocalRegistration)
 
-# Engine::Core and Compute for the GPU solver's kernel; Engine::Features carries the shared
+# Engine::Core and Compute for the GPU solver's kernel; Features carries the shared
 # Engine::Registration types both solvers speak.
-target_link_libraries(EngineLocalRegistration PUBLIC Engine::Features Engine::Core Engine::Compute)
+target_link_libraries(EngineLocalRegistration PUBLIC Features Engine::Core Engine::Compute)
 
 target_include_directories(EngineLocalRegistration PUBLIC
         $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>

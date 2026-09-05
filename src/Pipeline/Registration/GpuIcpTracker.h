@@ -2,7 +2,7 @@
 
 #include "Engine/Core/Context.h"
 #include "LocalRegistration/Algorithm/GpuPointToPlaneIcp.h"
-#include "Engine/Registration/RegistrationTypes.h"
+#include "Features/RegistrationTypes.h"
 #include "Pipeline/Registration/Tracker.h"
 #include "TSDF/Backends/TSDFBackend.h" // TSDFVoxel
 

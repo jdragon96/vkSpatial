@@ -11,6 +11,7 @@ set(VKBVH_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shader"
 
 add_subdirectory(BVH)
 add_subdirectory(Mesh)
+add_subdirectory(Features)
 add_subdirectory(Engine)
 add_subdirectory(TSDF)
 add_subdirectory(GlobalRegistration)

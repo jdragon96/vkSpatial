@@ -68,13 +68,7 @@ target_include_directories(EngineBackend
             $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
             /opt/homebrew/opt/eigen/include/eigen3)
 
-file(GLOB_RECURSE ENGINE_FEATURES_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Features/*.cpp")
-add_library(EngineFeatures STATIC ${ENGINE_FEATURES_SOURCES})
-add_library(Engine::Features ALIAS EngineFeatures)
-target_link_libraries(EngineFeatures PUBLIC Eigen3::Eigen)
-target_include_directories(EngineFeatures
-        PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
-            /opt/homebrew/opt/eigen/include/eigen3)
+# Features moved to src/Features -- a sibling of Engine, not a layer under it. It depends on
+# nothing but Eigen, and both registration modules and Pipeline consume it.
 
 

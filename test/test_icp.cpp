@@ -1,5 +1,5 @@
 #include "LocalRegistration/Algorithm/PointToPlaneIcp.h"
-#include "Engine/Registration/RegistrationTypes.h"
+#include "Features/RegistrationTypes.h"
 
 #include <gtest/gtest.h>
 

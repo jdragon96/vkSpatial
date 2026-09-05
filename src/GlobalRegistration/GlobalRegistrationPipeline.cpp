@@ -2,9 +2,9 @@
 
 #include "GlobalRegistration/Algorithm/RigidTransform.h"
 
-#include "Engine/Features/Downsample.h"
-#include "Engine/Features/FeatureMatching.h"
-#include "Engine/Features/Fpfh.h"
+#include "Features/Downsample.h"
+#include "Features/FeatureMatching.h"
+#include "Features/Fpfh.h"
 
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>

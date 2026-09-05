@@ -1,8 +1,8 @@
-#include "Engine/Features/Downsample.h"
-#include "Engine/Features/FeatureMatching.h"
-#include "Engine/Features/Fpfh.h"
+#include "Features/Downsample.h"
+#include "Features/FeatureMatching.h"
+#include "Features/Fpfh.h"
 #include "GlobalRegistration/GlobalRegistrationPipeline.h"
-#include "Engine/Registration/RegistrationTypes.h"
+#include "Features/RegistrationTypes.h"
 #include <Eigen/Geometry>
 #include <gtest/gtest.h>
 #include <random>

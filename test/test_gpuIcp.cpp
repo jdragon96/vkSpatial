@@ -43,7 +43,7 @@ TEST(LocalGrid, NearestMatchesBruteForce) {
 
 #include "Engine/Core/Context.h"
 #include "LocalRegistration/Algorithm/GpuPointToPlaneIcp.h"
-#include "Engine/Registration/RegistrationTypes.h"
+#include "Features/RegistrationTypes.h"
 
 // CPU reference: point-to-plane H,b in T's frame, over grid-NN correspondences, CENTRED on tgt centroid.
 static void cpuAccumulate(const std::vector<Vector3f> &src, const Engine::Registration::PointCloud &tgt,

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Engine/Registration/RegistrationTypes.h"
+#include "Features/RegistrationTypes.h"
 
 // SolveRigidUmeyama, which the RANSAC loop below calls once per hypothesis. Re-exported here
 // rather than only used internally: it is a useful closed-form fit on its own, and callers of this
