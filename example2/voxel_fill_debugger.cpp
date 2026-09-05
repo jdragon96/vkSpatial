@@ -3,7 +3,7 @@
 
 #include "Engine/Core/Context.h"
 #include "Pipeline/Pipeline.h"                   // Pipeline / Config / MapConfig / Frame
-#include "Pipeline/Reconstruction/FrameLoader.h" // LoadFrames / ComputeBounds
+#include "Pipeline/Acquisition/FrameLoader.h" // LoadFrames / ComputeBounds
 #include "Pipeline/Registration/Tracker.h"       // TrackerRegistry / Tracker
 #include "Pipeline/Render/RenderThread.h"        // RenderThread
 #include "Mesh/ExtractorRegistry.h"

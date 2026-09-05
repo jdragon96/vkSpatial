@@ -3,7 +3,7 @@
 // must still compile (to nothing) on a machine without the SDK.
 #ifdef VKBVH_HAS_REALSENSE
 
-#include "Pipeline/Reconstruction/RealSenseDepthProvider.h"
+#include "Pipeline/Realsense/RealSenseDepthProvider.h"
 
 #include <librealsense2/rs_advanced_mode.hpp>
 

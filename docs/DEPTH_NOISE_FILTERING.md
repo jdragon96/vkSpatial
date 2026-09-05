@@ -1,8 +1,18 @@
 # Depth 센서 필터링
 
+> **상태 (2026-09-05).** 이 문서의 GPU 경로 서술 — `ValidationMask`의 `[H1]`..`[H6]` 게이트와
+> `NormalEstimator`의 세 추정기 — 는 **삭제된 코드**를 설명한다. `src/Pipeline/Reconstruction/Algorithm/`은
+> 파이프라인에 연결된 적이 없었고 `src/Realsense`가 그 역할을 대체했다. 링크가 걸린 파일은 더 이상 없다.
+>
+> **측정값은 여전히 유효하다.** 추정기 정확도 표(참값 대비 12.5°/32.8°/50.6°, `capture/` 477프레임의
+> 인접 불일치 3.28°)는 새 구현이 재현했고, 그 검토는
+> [`src/Realsense/Algorithm/NormalEstimation.md`](../src/Realsense/Algorithm/NormalEstimation.md)에 있다.
+>
+> CPU 경로(`PrefilterDepth`, `BackprojectDepth`)는 그대로 있고 여전히 파이프라인의 기본값이다.
+
 depth 프레임 → 점 → 복셀 경로의 전체 필터.
 
-기준: [`DepthCameraFrameSource.h`](../src/Pipeline/Reconstruction/DepthCameraFrameSource.h), [`RealSenseDepthProvider.cpp`](../src/Pipeline/Reconstruction/RealSenseDepthProvider.cpp), [`kernel_AdvancedTSDF.integrate.comp.glsl`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl).
+기준: [`DepthCameraFrameSource.h`](../src/Pipeline/Acquisition/DepthCameraFrameSource.h), [`RealSenseDepthProvider.cpp`](../src/Pipeline/Realsense/RealSenseDepthProvider.cpp), [`kernel_AdvancedTSDF.integrate.comp.glsl`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl).
 
 ## 1. 의사코드
 
@@ -18,11 +28,11 @@ DepthCameraFrameSource::Next(out Frame)
    ├─ BuildVertexGrid                                     per pixel
    │  └─ RangeGate                                        [H2] opt-in
    └─ EmitPoints                                          per pixel
-      ├─ ForwardJumpGuard                                 [H3] always
+      ├─ EstimateSurfaceNormal                            [H3] always
+      │  └─ forward | central | planefit                  전략, -D 매크로
       ├─ StraddlesADepthStep                              [H4] opt-in
       ├─ CountSameSurfaceNeighbours                       [H5] opt-in
-      ├─ EstimateNormal
-      │  └─ OrientTowardCamera
+      ├─ OrientTowardCamera
       └─ IncidenceGate                                    [H6] opt-in
 
 TSDF::Integrate → kernel_AdvancedTSDF.integrate           per point
@@ -42,6 +52,7 @@ TSDF::Integrate → kernel_AdvancedTSDF.integrate           per point
 - on: `[H3]` `[F1]` `[F3]`=symmetric
 - off: `[D1]` `[H2]` `[H4]` `[H5]` `[H6]` `[F2]`
 - `[H1]`: `realsense_scan` 3, 그 외 0
+- `[H3]` 추정기: `forward`(기존 동작)
 
 ## 2. 세부
 
@@ -70,16 +81,19 @@ $$tolerance = \tau(z)=\max\bigl(\text{minimumDepthJump},\ \text{relativeDepthJum
 | 4m  |                 835mm                 |
 
 - 위 값에 따라
-  - minimumDepthJump: 0.05(m)
-  - relativeDepthJump: 0.2(m)
+  - minimumDepthJump: 0.005(m)
+  - relativeDepthJump: 0.02(m)
 - 스테레오 오차 $\varepsilon_z = \frac{z^2}{f B}\varepsilon_d$ (Keselman et al. eq. 2).
-  - $\varepsilon_d$ 상수 가정은 active 시스템의 원거리에서 깨진다. 프로젝터 밝기 $1/z^2$ 감쇠 → SNR 저하 → 실제 오차는 $z^2$보다 빠르게 증가 (Keselman et al. §2.1 각주).
   - $z=\frac{fB}{d}$의 $d$ 미분.
     - $f$ 초점거리(px)
     - $B$ baseline(m)
-    - $\varepsilon_d$ 매칭 불확실도(px)
+    - $\varepsilon_d$ 매칭 불확실도, 거리가 멀면 커짐(px)
 
 ### [H1] PrefilterDepth
+
+- 윈도우 내 이웃 점들의 깊이값을 평균낸다.
+- 점프 허용치를 벗어나는 경우, 노이즈로 판단한다.
+- 깊이 정보가 0 이하는 SNR이 깨진 경우로 간주한다.
 
 $$\tilde z(u,v)=\frac{\sum_{W} z'\,\mathbb 1[\,z'>0 \wedge |z'-z|\le\tau(z)\,]}{\sum_{W}\mathbb 1[\cdots]}$$
 
@@ -89,14 +103,15 @@ if (neighbour <= 0.0f || std::abs(neighbour - z) > tolerance) {
 }
 sum += neighbour;
 ++count;
+// 유효 이웃 없으면, 중심 깊이값 유지
 out[centre] = count > 0 ? sum / float(count) : z;
 ```
 
-- $W$ = 한 변 `prefilterWindow` 정사각. 유효 이웃 0개면 $z$ 유지.
-- $\tau$ 조건 제거 시 스텝 가로질러 평균 → `[H3]` 무효화.
-- 측정: 인접 법선 불일치 중앙값 raw 24° → 3×3 4.7° → 5×5 2.9°.
-
 ### [H2] RangeGate + 백프로젝션
+
+- 센서가 측정할 수 있는 거리를 이용해 필터링 한다.
+  - minimumDepthMeters: 최소 거리
+  - maximumDepthMeters: 최대 거리
 
 $$\text{valid} \iff z>0 \wedge (z_{\min}=0 \vee z\ge z_{\min}) \wedge (z_{\max}=0 \vee z\le z_{\max})$$
 
@@ -104,25 +119,28 @@ $$P(u,v)=\Bigl(\tfrac{u-c_x}{f_x}z,\ \tfrac{v-c_y}{f_y}z,\ z\Bigr)$$
 
 ```cpp
 if ((filter.minimumDepthMeters > 0.0f && z < filter.minimumDepthMeters) ||
-    (filter.maximumDepthMeters > 0.0f && z > filter.maximumDepthMeters)) {
-    if (stats) stats->rejectedByRange.fetch_add(1, std::memory_order_relaxed);
+    (filter.maximumDepthMeters > 0.0f && z > filter.maximumDepthMeters))
+{
+    if (stats) {
+        stats->rejectedByRange.fetch_add(1, std::memory_order_relaxed);
+    }
     continue;
 }
 ```
 
-- `continue` → `valid[i]=0`. 방출만 막고 `valid` 유지 시 이웃 자격 잔존 → 옆 픽셀 법선 결정.
+### [H3] 스텐실 게이트
 
-### [H3] ForwardJumpGuard
+추정기가 **읽는 이웃**이 곧 **같은 표면이어야 하는 이웃**이다. 그래서 게이트와 계산은 한 함수(`EstimateSurfaceNormal`)에 있다 — 둘을 나누면 서로 어긋날 수 있다. `forward`의 경우:
 
 $$|z(u{+}1,v)-z|\le\tau \ \wedge\ |z(u,v{+}1)-z|\le\tau$$
 
-```cpp
-if (std::abs(grid[i + 1].z() - z) > maxJump) continue;
-if (std::abs(grid[i + W].z() - z) > maxJump) continue;
-```
+- 보장 범위: 법선 유효성. 점 신뢰도는 비보장(`[H4]`가 그 질문).
+- `central`은 네 이웃 전부, `planefit`은 창 안 같은표면 표본 수 $\ge$ `minimumPlaneFitSamples`.
+- **폴백 없음.** 스텐실이 모자라면 좁은 스텐실로 내려가지 않고 거부한다. 한 프레임 안에 두 추정기가 섞이면 "이 추정기가 나은가"를 측정할 수 없다.
 
-- 검사 대상 = 법선 전방차분의 두 이웃.
-- 보장 범위: 법선 유효성. 점 신뢰도는 비보장.
+거부는 `rejectedByNormalStencil`로 관측한다. 이전에는 이 경로가 **아무 카운터 없이 조용히** 버려졌다 — 프레임이 점 대부분을 깊이 스텝에 잃어도 통계에는 아무것도 안 나왔다.
+
+테두리는 세지 않는다. 스텐실이 이미지 밖으로 나가는 것은 추정기의 정의역이 끝나는 것이지 측정값을 버리는 게 아니고, 둘을 합치면 숫자가 장면보다 창 크기를 따라간다.
 
 ### [H4] StraddlesADepthStep
 
@@ -148,18 +166,73 @@ if (std::abs(depth[j] - z) > tolerance) continue;
 
 - $\tau$ 조건 없이 유효성만 계수 시 2×2 근접 blob이 $S=8$로 통과. 자기 표면 이웃은 3.
 
-### EstimateNormal
+### EstimateSurfaceNormal
 
-$$\mathbf n = \bigl(P(u{+}1,v)-P\bigr)\times\bigl(P(u,v{+}1)-P\bigr),\qquad \hat n=\mathbf n/\|\mathbf n\|$$
+GPU에서 세 가지 추정기 중 하나로 컴파일된다. 축이 셰이더 안에 있으므로 C++ 가상함수가 아니라 [`NormalStrategy.glsl`](../src/Pipeline/Reconstruction/Algorithm/NormalStrategy.glsl) 디스패처 + `-D` 매크로로 가른다. 이름은 [`NormalEstimator.h`](../src/Pipeline/Reconstruction/Algorithm/NormalEstimator.h)에 등록되고 `DepthFilterOptions::normalEstimator`로 고른다.
+
+셋 다 **방향 없는** 단위 법선만 돌려준다. 부호 결정, `[H4]`, `[H5]`, `[H6]`, 모든 카운터는 커널이 갖는다 — 거부 원인 분류가 어느 조각이 컴파일됐는지에 따라 달라지면 안 된다.
+
+**`forward`** (기본, 기존 동작)
+
+$$\mathbf n = \bigl(P(u{+}1,v)-P\bigr)\times\bigl(P(u,v{+}1)-P\bigr)$$
+
+**`central`** — 같은 3×3 발자국, 같은 비용
+
+$$\mathbf n = \tfrac{1}{2}\bigl(P(u{+}1,v)-P(u{-}1,v)\bigr)\times\tfrac{1}{2}\bigl(P(u,v{+}1)-P(u,v{-}1)\bigr)$$
+
+**`planefit`** — $k\times k$ 창의 같은표면 표본에 대한 전최소제곱 평면. 중심점 기준 공분산의 최소 고유벡터 (특성삼차식 닫힌해 + 영공간 외적).
+
+$$C=\tfrac1N\sum(P_i-\bar P)(P_i-\bar P)^\top,\qquad \mathbf n=\arg\min_{\|x\|=1} x^\top C x$$
+
+기울기 잡음 (표본당 축방향 잡음 $\sigma$ 대비, 등간격 최소제곱 기울기 $\sigma\sqrt{12/(k(k^2{-}1))}$):
+
+| 추정기 | 스텐실 | 기울기 잡음 | 잃는 테두리 |
+| --- | --- | --- | --- |
+| `forward` | 2 표본 | $1.41\,\sigma$ | 마지막 행·열 |
+| `central` | 4 표본 | $0.71\,\sigma$ | 1 px 액자 |
+| `planefit` $k{=}5$ | ≤25 표본 | $0.32\,\sigma$ | 2 px 액자 |
+
+`forward`는 코너에 물린 삼각형이라 실제로는 $(u{+}0.5,v{+}0.5)$의 법선을 $(u,v)$에 저장한다 — 곡면에서 법선장이 반 픽셀 밀린다. `central`이 같은 비용으로 그 편이도 없앤다.
+
+`planefit`의 두 가지 구현 함정 (둘 다 뮤테이션으로 검증됨):
+
+1. **원점 이동 필수.** 1.5 m에서 좌표는 $O(1\,\mathrm m)$인데 창 안 퍼짐은 $O(1\,\mathrm{mm})$이라, $E[p^2]-E[p]^2$를 float32로 계산하면 7자리가 상쇄돼 1자리만 남는다. 중심점을 원점으로 잡아 모멘트를 누적한다.
+2. **트레이스 정규화 필수.** 공분산 성분이 $O(10^{-6})$이라 그 세제곱(행렬식·영공간 외적)이 float32 하한 근처로 내려간다. 정규화 없이는 절대 임계값이 실제 표면을 전부 거부한다.
+
+표본이 공선이면(1 px 폭 표면) 최소 고유값이 중복근이라 영공간이 평면이 된다 — 세 쌍의 외적이 모두 붕괴하므로 거부한다. 개수 하한만으로는 못 막는다.
+
+**정확도 (합성 평면, 참값 대비).** $\sigma_z$ = 2 mm, 횡방향 간격 3.9 mm — 잡음이 큰 영역:
+
+| | `forward` | `central` | `planefit` |
+| --- | --- | --- | --- |
+| 평균 각오차 | 50.6° | 32.8° | 12.5° |
+| $\tan$ 환산 | 1.22 | 0.64 | 0.22 |
+| `forward` 대비 | 1× | 1.9× | 5.6× |
+
+$\tan$ 환산이 이론 비($1.41/0.71/0.32$)와 맞는다. 각도 자체는 큰 잡음에서 $\arctan$ 압축을 받는다. **참값 대비 오차**이므로 매끄러움이 아니라 정확도를 재는 것이다 — 뭉개기만 하는 추정기는 여기서 못 이긴다.
+
+**실측 (`capture/` 477프레임, D435 640×480).** [`normal_estimator_eval`](../example2/normal_estimator_eval.cpp), 인접 방출 픽셀 간 법선 불일치 중앙값:
+
+| 추정기 | `[H1]` | 방출 점 | 중앙값 | p90 | `rejectedByNormalStencil` |
+| --- | --- | --- | --- | --- | --- |
+| `forward` | 0 | 123,453,636 | 22.57° | 51.23° | 3,063,945 |
+| `forward` | 3 | 123,471,683 | 4.92° | 12.12° | 3,045,898 |
+| `forward` | 5 | 123,449,748 | 3.22° | 8.75° | 3,067,833 |
+| `central` | 0 | 121,185,841 | 11.88° | 26.13° | 5,120,579 |
+| `central` | 5 | 121,156,487 | 2.77° | 7.36° | 5,149,933 |
+| **`planefit`** | **0** | **125,411,710** | **3.28°** | **8.47°** | **240,756** |
+| `planefit` | 5 | 125,433,354 | 2.30° | 6.38° | 219,112 |
+
+- **`planefit`이 `[H1]`을 대체한다.** prefilter 없는 `planefit`(3.28°)이 5×5 prefilter를 건 `forward`(3.22°)와 동급인데, **점 좌표는 안 뭉갠다.**
+- `planefit`은 점을 **더** 방출한다(+1.6%). 창에 구멍이 있어도 남은 표본으로 적합하므로, 차분 스텐실이 통째로 잃는 픽셀을 살린다. 스텐실 거부가 12.7배 줄어든다(306만 → 24만).
+- `central`은 이론대로 1.9배 개선하지만(22.57° → 11.88°) 점을 **잃는다**(−1.8%, 거부 512만). 같은표면 이웃이 2개가 아니라 4개 필요하기 때문. 정확도를 점으로 산다.
+- 비용은 전 구성 0.3–0.7 ms/frame이며 **제출 오버헤드가 지배해 추정기 차이가 측정되지 않는다**. 30 fps 예산 33 ms 대비 두 자릿수 여유.
+
+한계: 이 지표는 인접 법선의 **일치도**라 "잡음이 줄었다"와 "디테일이 뭉개졌다"를 구분하지 못한다. 정확도는 위 합성 참값 표가 담당한다. TSDF RMSE로 확인하려면 depth 녹화에 대응하는 GT 메시가 필요한데 `capture/`에는 없고, `scan_out`/`scanData`는 이미 법선이 붙은 점군이라 이 경로를 안 탄다.
+
+### OrientTowardCamera
 
 $$\hat n \leftarrow -\hat n \quad\text{if}\quad \hat n\cdot P>0$$
-
-```cpp
-Eigen::Vector3f n = (grid[i + 1] - grid[i]).cross(grid[i + W] - grid[i]);
-if (n.norm() < 1e-9f) continue;
-n.normalize();
-if (n.dot(grid[i]) > 0.0f) n = -n;
-```
 
 - 카메라 = 원점. $P$ = 시선.
 - $n_z$ 부호 판정은 광축 위에서만 등가. 87° 화각 가장자리에서 약 40° 입사부터 반전.
@@ -207,13 +280,13 @@ return clamp(g_bandSigmaMultiplier * sigma, g_bandMinimumVoxels * voxelSize, tru
 
 **클램프 구간 (voxel 0.01, $\delta$ 0.03, $N=3$)**
 
-| $z$ | $3\sigma_z$ | 밴드 | 상태 |
-|---|---|---|---|
-| 1.0 m | 5.7 mm | 20.0 mm | 하한 클램프 |
-| 2.0 m | 18.2 mm | 20.0 mm | 하한 클램프 |
-| 2.5 m | 28.7 mm | 28.7 mm | 모델 사용 |
-| 3.0 m | 42.1 mm | 30.0 mm | 상한 클램프 |
-| 4.0 m | 77.5 mm | 30.0 mm | 상한 클램프 |
+| $z$   | $3\sigma_z$ | 밴드    | 상태        |
+| ----- | ----------- | ------- | ----------- |
+| 1.0 m | 5.7 mm      | 20.0 mm | 하한 클램프 |
+| 2.0 m | 18.2 mm     | 20.0 mm | 하한 클램프 |
+| 2.5 m | 28.7 mm     | 28.7 mm | 모델 사용   |
+| 3.0 m | 42.1 mm     | 30.0 mm | 상한 클램프 |
+| 4.0 m | 77.5 mm     | 30.0 mm | 상한 클램프 |
 
 - 모델이 실제로 참조되는 구간은 **2.10–2.55 m**뿐. 그 밖은 상수 밴드.
 - 따라서 측정된 −22.3%는 σ 모델이 아니라 **하한**이 만든 것. `capture/`는 대부분 1.5 m 이내 → 밴드 30 → 20 mm.

@@ -146,7 +146,7 @@ $$ slot = rowOffset[row] + \left| \{\, c < column : emitted(row, c) \,\} \right|
 
 # Pipeline 통합 (2026-09-05)
 
-`Pipeline::GpuDepthFrameSource`(`src/Pipeline/Reconstruction/GpuDepthFrameSource.h`)가 이 프론트엔드를
+`Pipeline::GpuDepthFrameSource`(`src/Pipeline/Realsense/GpuDepthFrameSource.h`)가 이 프론트엔드를
 재구성 파이프라인의 `IFrameSource`로 감싼다. **opt-in**이고 기존 CPU 경로는 그대로 남는다.
 
 ## 무엇을 대체하나

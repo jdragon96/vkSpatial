@@ -16,6 +16,13 @@
 //   ./realsense_scan --replay ./capture       replay a recording, no hardware needed
 //        [--tracker icp|icp-cpu|identity|global] [--voxel 0.01] [--truncation 0.03]
 //        [--width 640] [--height 480] [--fps 30]
+//        [--prefilter 3]                                    depth prefilter window (0 = off)
+//        [--near 0] [--far 0]                               range gate, metres (0 = off)
+//        [--min-neighbours 0]                               neighbourhood support, 0-8 (0 = off)
+//        [--max-incidence 0]                                grazing-surface gate, degrees (0 = off)
+//        [--high-accuracy]                                  D435 High Accuracy visual preset (live only)
+//        [--bootstrap-frames 5] [--bootstrap-fitness 0.70]  hold fusion until tracking locks on
+//        [--min-fuse-fitness 0] [--max-fuse-rmse 0]         per-frame fusion quality gates (0 = off)
 //
 // Defaults are indoor scale. MapConfig ships with baseVoxel 0.5 m for the 190 m synthetic scenes;
 // a D435 works between 0.3 and 5 m, where 0.5 m voxels would quantise a whole object into a
@@ -30,9 +37,9 @@
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
 #include "Pipeline/Pipeline.h"
-#include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
-#include "Pipeline/Reconstruction/DepthRecording.h"
-#include "Pipeline/Reconstruction/RealSenseDepthProvider.h"
+#include "Pipeline/Acquisition/DepthCameraFrameSource.h"
+#include "Pipeline/Acquisition/DepthRecording.h"
+#include "Pipeline/Realsense/RealSenseDepthProvider.h"
 #include "Pipeline/Registration/Tracker.h"
 #include "utilities/ArgParser.h"
 
@@ -57,6 +64,11 @@ namespace {
 
     constexpr int kSetSurface = 0;
     constexpr int kSetNew = 1;
+    // Map-structure overlays. Same three boxes, colors and meanings as voxel_fill_debugger, so a
+    // reading learned on the folder debugger transfers to a live scan unchanged.
+    constexpr int kSetTileBox = 2;   // coarse tile windows the map has opened
+    constexpr int kSetAllocBox = 3;  // the AABB the map has actually allocated
+    constexpr int kSetSubmapBox = 4; // dense (detail) submap regions
 
     enum class EColorMode { Normal, Age, Weight };
 
@@ -69,6 +81,60 @@ namespace {
     struct Color {
         uint8_t r, g, b;
     };
+
+    // A world-space AABB drawn as its 12 edges, each sampled densely enough to read as a line in
+    // the point pipeline (PointCloudPass draws points, not line lists). Sampling follows the box's
+    // longest side in voxels and is clamped so a huge tile window does not cost a million points.
+    // Points are converted per-vertex with SensorToView: the transform negates two axes, so
+    // converting the min/max corners instead would swap them and build the box inside out.
+    std::vector<PointVertex> BoxEdgePoints(const Vector3f &minimumCorner, const Vector3f &maximumCorner,
+                                           float voxel, Color color) {
+        std::vector<PointVertex> vertices;
+        const Vector3f corner[8] = {
+                {minimumCorner.x(), minimumCorner.y(), minimumCorner.z()},
+                {maximumCorner.x(), minimumCorner.y(), minimumCorner.z()},
+                {maximumCorner.x(), maximumCorner.y(), minimumCorner.z()},
+                {minimumCorner.x(), maximumCorner.y(), minimumCorner.z()},
+                {minimumCorner.x(), minimumCorner.y(), maximumCorner.z()},
+                {maximumCorner.x(), minimumCorner.y(), maximumCorner.z()},
+                {maximumCorner.x(), maximumCorner.y(), maximumCorner.z()},
+                {minimumCorner.x(), maximumCorner.y(), maximumCorner.z()}};
+        static const int kEdge[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
+                                         {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        const int samplesPerEdge =
+                std::clamp(int((maximumCorner - minimumCorner).maxCoeff() / std::max(1e-6f, voxel)), 24, 512);
+        vertices.reserve(std::size_t(12 * (samplesPerEdge + 1)));
+        for (const auto &edge: kEdge)
+            for (int i = 0; i <= samplesPerEdge; ++i) {
+                const float t = float(i) / float(samplesPerEdge);
+                const Vector3f world = corner[edge[0]] + t * (corner[edge[1]] - corner[edge[0]]);
+                const Vector3f view = SensorToView(world);
+                vertices.push_back({{view.x(), view.y(), view.z()}, {color.r, color.g, color.b, 255}});
+            }
+        return vertices;
+    }
+
+    // The three overlays for one snapshot. Kept together so the sets can never disagree about
+    // which snapshot they describe.
+    void BuildMapStructureBoxes(const ep::ModelSnapshot &snapshot,
+                                std::vector<PointVertex> &tileBoxes,
+                                std::vector<PointVertex> &allocBox,
+                                std::vector<PointVertex> &submapBoxes) {
+        tileBoxes.clear();
+        allocBox.clear();
+        submapBoxes.clear();
+        const float voxel = snapshot.voxel > 0.0f ? snapshot.voxel : 0.01f;
+        for (const auto &box: snapshot.baseCoreBoxes) {
+            const std::vector<PointVertex> edges = BoxEdgePoints(box.first, box.second, voxel, {40, 220, 220});
+            tileBoxes.insert(tileBoxes.end(), edges.begin(), edges.end());
+        }
+        if (snapshot.hasAlloc)
+            allocBox = BoxEdgePoints(snapshot.allocMin, snapshot.allocMax, voxel, {255, 160, 40});
+        for (const auto &box: snapshot.denseBlockBoxes) {
+            const std::vector<PointVertex> edges = BoxEdgePoints(box.first, box.second, voxel, {230, 60, 230});
+            submapBoxes.insert(submapBoxes.end(), edges.begin(), edges.end());
+        }
+    }
 
     Color Ramp(float t) {
         t = std::clamp(t, 0.0f, 1.0f);
@@ -130,13 +196,15 @@ namespace {
         }
     }
 
-    std::unique_ptr<ep::IDepthProvider> OpenDevice(int width, int height, int fps) {
+    std::unique_ptr<ep::IDepthProvider> OpenDevice(int width, int height, int fps,
+                                                   const ep::RealSenseOptions &options) {
 #ifdef VKBVH_HAS_REALSENSE
-        return std::make_unique<ep::RealSenseDepthProvider>(width, height, fps);
+        return std::make_unique<ep::RealSenseDepthProvider>(width, height, fps, options);
 #else
         (void) width;
         (void) height;
         (void) fps;
+        (void) options;
         throw std::runtime_error("realsense_scan: built without librealsense2. Install it and "
                                  "reconfigure, or scan a recording with --replay <dir>.");
 #endif
@@ -183,7 +251,49 @@ int main(int argc, char **argv) {
                            .Option("--truncation", 0.03)
                            .Option("--width", 640)
                            .Option("--height", 480)
-                           .Option("--fps", 30);
+                           .Option("--fps", 30)
+                           // Fusion gate. Unlike the library default (off), a live scan turns the
+                           // bootstrap run ON: a hand-held sweep's first frames are the ones most
+                           // likely to seed the map from a pose nothing has corroborated yet.
+                           .Option("--bootstrap-frames", 5)
+                           .Option("--bootstrap-fitness", 0.70)
+                           .Option("--min-fuse-fitness", 0.0) // 0 = off
+                           .Option("--max-fuse-rmse", 0.0)    // 0 = off
+                           // Tracker-side source reduction. A raw 640x480 frame is ~250k points;
+                           // solving on all of them dominates the align time AND jitters the pose,
+                           // which grows the map's voxel count on a camera that never moved. The
+                           // map still fuses every point -- only the ICP input is reduced.
+                           // Default scales with the map voxel; pass 0 to solve on the raw frame.
+                           // Discontinuity-aware depth prefilter (window in pixels; 0/1 = off).
+                           // The normal is a one-pixel forward difference, so per-pixel depth noise
+                           // sets its conditioning: adjacent normals on a smooth surface disagree by
+                           // a median 24 degrees raw, 4.7 at 3x3, 2.9 at 5x5 (see DepthFilterOptions).
+                           // A noisy normal both mis-values the SDF and mis-places the truncation
+                           // band, and it jitters the pose -- which is what grows the map's voxel
+                           // count on a camera that never moved.
+                           .Option("--prefilter", 3)
+                           // Confidence gates, 0 = off for each: --near/--far in metres,
+                           // --min-neighbours out of 8, --max-incidence in degrees. They discard
+                           // measurements, and a gate set too tight presents only as a thinner
+                           // reconstruction -- watch the "gate reject" line in the stats panel.
+                           .Option("--near", 0.0)
+                           .Option("--far", 0.0)
+                           .Option("--min-neighbours", 0)
+                           .Option("--max-incidence", 0.0)
+                           // Reject a point that straddles a depth step in ANY of the eight
+                           // neighbour directions, not only the two the normal is built from.
+                           // The measured cure for the streaks along the view direction.
+                           .Option("--symmetric-guard")
+                           // Weight only the occluded side of the truncation band down, instead
+                           // of both sides equally (Bylow / Voxblox eq. 5).
+                           .Option("--behind-dropoff")
+                           // Truncation band = N * sigma_z(z); 0 = the fixed band.
+                           .Option("--band-sigma", 0.0)
+                           // Device-side. Raises the matcher's own rejection thresholds, which is a
+                           // judgement made on the raw stereo pair -- information no gate this side
+                           // of the cable can see. Live only: a recording was made after the
+                           // matcher already decided.
+                           .Option("--high-accuracy");
 
         const std::string replayDirectory = arg.Value("--replay");
         const std::string recordDirectory = arg.Value("--record");
@@ -202,20 +312,42 @@ int main(int argc, char **argv) {
         config.map.baseVoxel = arg.ValueFloat("--voxel");
         config.map.truncation = arg.ValueFloat("--truncation");
         config.map.submap = false; // one level until a plain scan is known good
+        config.map.behindSurfaceDropoff = arg.Has("--behind-dropoff");
+        config.map.bandSigmaMultiplier = arg.ValueFloat("--band-sigma");
         config.acquisition.type = ep::EAcquisitionType::DepthCamera;
         // A camera keeps producing whether or not the map keeps up, so live must drop to bound
         // latency. A recording waits, so replaying it losslessly costs only wall-clock.
         config.acquisition.realTime = live;
+        config.fusion.bootstrapConsecutiveFrames = arg.ValueInt("--bootstrap-frames");
+        config.fusion.bootstrapMinFitness = arg.ValueFloat("--bootstrap-fitness");
+        config.fusion.minimumFusionFitness = arg.ValueFloat("--min-fuse-fitness");
+        config.fusion.maximumFusionRmse = arg.ValueFloat("--max-fuse-rmse");
 
         // Built fresh on every stage build, including each Reconfigure. Capturing an already-open
         // device instead would hand the rebuilt pipeline a source the previous one has closed.
+        ep::DepthFilterOptions depthFilter;
+        depthFilter.prefilterWindow = arg.ValueInt("--prefilter");
+        depthFilter.minimumDepthMeters = arg.ValueFloat("--near");
+        depthFilter.maximumDepthMeters = arg.ValueFloat("--far");
+        depthFilter.minimumValidNeighbours = arg.ValueInt("--min-neighbours");
+        depthFilter.maximumIncidenceDegrees = arg.ValueFloat("--max-incidence");
+        depthFilter.symmetricDepthJumpGuard = arg.Has("--symmetric-guard");
+
+        // Created here, not inside makeSource: the source is built on the acquisition thread and
+        // never handed back, so the only way to read its counters is to own them first. Shared, so
+        // it survives every Reconfigure that rebuilds the source.
+        const auto depthGateStats = std::make_shared<ep::DepthFilterStats>();
+
+        ep::RealSenseOptions deviceOptions;
+        deviceOptions.highAccuracyPreset = arg.Has("--high-accuracy");
         config.acquisition.makeSource = [=]() -> std::unique_ptr<ep::IFrameSource> {
             std::unique_ptr<ep::IDepthProvider> device =
-                    live ? OpenDevice(width, height, fps)
+                    live ? OpenDevice(width, height, fps, deviceOptions)
                          : std::make_unique<ep::RecordedDepthProvider>(replayDirectory);
             if (!recordDirectory.empty())
                 device = std::make_unique<ep::DepthRecorder>(std::move(device), recordDirectory);
-            return std::make_unique<ep::DepthCameraFrameSource>(std::move(device));
+            return std::make_unique<ep::DepthCameraFrameSource>(
+                    std::move(device), depthFilter, depthGateStats);
         };
 
         std::printf("source    : %s\n", live ? "live device" : replayDirectory.c_str());
@@ -227,7 +359,18 @@ int main(int argc, char **argv) {
         // which calls makeSource synchronously. A missing camera or an occupied recording
         // directory therefore reports as one CLI line, with no window ever appearing -- and the
         // device is opened exactly once, which a separate pre-flight probe would not manage.
-        ep::Pipeline pipeline(config, registry.Create(trackerName));
+        std::unique_ptr<ep::Tracker> tracker = registry.Create(trackerName);
+        if (!tracker) throw std::runtime_error("realsense_scan: unknown tracker '" + trackerName + "'");
+        std::printf("depth     : prefilter %d, range %.2f-%.2f m, neighbours >=%d, incidence <=%.0f deg%s\n",
+                    depthFilter.prefilterWindow, depthFilter.minimumDepthMeters,
+                    depthFilter.maximumDepthMeters, depthFilter.minimumValidNeighbours,
+                    depthFilter.maximumIncidenceDegrees,
+                    deviceOptions.highAccuracyPreset ? ", high-accuracy preset" : "");
+        std::printf("denoise   : symmetric guard %s, behind-dropoff %s, band %.1f sigma\n",
+                    depthFilter.symmetricDepthJumpGuard ? "on" : "off",
+                    arg.Has("--behind-dropoff") ? "on" : "off", arg.ValueFloat("--band-sigma"));
+
+        ep::Pipeline pipeline(config, std::move(tracker));
 
         Engine::Render::ApplicationDescriptor descriptor;
         descriptor.window = {1400, 900, "RealSense Scan Pipeline"};
@@ -256,6 +399,7 @@ int main(int argc, char **argv) {
 
         struct State {
             bool showSurface = true, showNew = true;
+            bool showTileBox = true, showAllocBox = true, showSubmapBox = true;
             EColorMode colorMode = EColorMode::Normal;
             float pointSize = 2.0f;
             float minimumWeight = 1.0f;
@@ -266,10 +410,14 @@ int main(int argc, char **argv) {
         auto applyVisibility = [&] {
             points->SetVisible(kSetSurface, state.showSurface);
             points->SetVisible(kSetNew, state.showNew);
+            points->SetVisible(kSetTileBox, state.showTileBox);
+            points->SetVisible(kSetAllocBox, state.showAllocBox);
+            points->SetVisible(kSetSubmapBox, state.showSubmapBox);
         };
         applyVisibility();
 
         std::vector<PointVertex> surfaceVertices, newVertices;
+        std::vector<PointVertex> tileBoxVertices, allocBoxVertices, submapBoxVertices;
         std::shared_ptr<const ep::ModelSnapshot> snapshot;
         std::string workerError;
 
@@ -287,6 +435,15 @@ int main(int argc, char **argv) {
             ImGui::SeparatorText("Layers");
             if (ImGui::Checkbox("surface", &state.showSurface)) applyVisibility();
             if (ImGui::Checkbox("new this frame", &state.showNew)) applyVisibility();
+            if (ImGui::Checkbox("tile windows", &state.showTileBox)) applyVisibility();
+            if (ImGui::Checkbox("allocated box", &state.showAllocBox)) applyVisibility();
+            // Empty unless the map runs submaps, which realsense_scan leaves off; kept so turning
+            // them on needs no viewer change.
+            if (ImGui::Checkbox("submap regions", &state.showSubmapBox)) applyVisibility();
+            ImGui::Text("boxes: %zu tile / %s alloc / %zu submap",
+                        snapshot ? snapshot->baseCoreBoxes.size() : 0u,
+                        (snapshot && snapshot->hasAlloc) ? "1" : "0",
+                        snapshot ? snapshot->denseBlockBoxes.size() : 0u);
 
             ImGui::SeparatorText("Display");
             int mode = int(state.colorMode);
@@ -319,6 +476,14 @@ int main(int argc, char **argv) {
             ImGui::Text("frames        %llu", (unsigned long long) stats.acquiredFrames);
             ImGui::Text("per frame     %.2f ms", stats.acquireMsAvg);
             ImGui::Text("queued        %zu", stats.captureDepth);
+            ImGui::Text("points kept   %llu",
+                        (unsigned long long) depthGateStats->emittedPoints.load());
+            // Per cause, never summed: the three gates count different populations (range counts
+            // pixels, the other two count candidate points) and want opposite corrections.
+            ImGui::Text("gate reject   %llu range / %llu support / %llu incidence",
+                        (unsigned long long) depthGateStats->rejectedByRange.load(),
+                        (unsigned long long) depthGateStats->rejectedByNeighbourSupport.load(),
+                        (unsigned long long) depthGateStats->rejectedByIncidence.load());
 
             ImGui::SeparatorText("Track");
             ImGui::Text("tracker       %s", trackerName.c_str());
@@ -332,6 +497,16 @@ int main(int argc, char **argv) {
             ImGui::SeparatorText("Integrate");
             ImGui::Text("frames        %llu", (unsigned long long) stats.integratedFrames);
             ImGui::Text("per frame     %.2f ms", stats.integrateMsAvg);
+            ImGui::Text("skipped       %llu", (unsigned long long) stats.skippedFusions);
+            // While the gate holds, the map deliberately stays at its seed frame. Without this the
+            // screen is indistinguishable from a pipeline that has simply stopped working.
+            if (!stats.fusionArmed)
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "BOOTSTRAP  holding %llu fr.",
+                                   (unsigned long long) stats.bootstrapHeldFrames);
+            if (stats.fusionRejectedByFitness > 0 || stats.fusionRejectedByRmse > 0)
+                ImGui::Text("gate reject   %llu fitness / %llu rmse",
+                            (unsigned long long) stats.fusionRejectedByFitness,
+                            (unsigned long long) stats.fusionRejectedByRmse);
 
             ImGui::SeparatorText("Map");
             if (snapshot) {
@@ -421,6 +596,13 @@ int main(int argc, char **argv) {
                     vkDeviceWaitIdle(context.device);
                     points->SetPointSet(kSetSurface, surfaceVertices);
                     points->SetPointSet(kSetNew, newVertices);
+                    if (modelAdvanced) {
+                        BuildMapStructureBoxes(*snapshot, tileBoxVertices, allocBoxVertices,
+                                               submapBoxVertices);
+                        points->SetPointSet(kSetTileBox, tileBoxVertices);
+                        points->SetPointSet(kSetAllocBox, allocBoxVertices);
+                        points->SetPointSet(kSetSubmapBox, submapBoxVertices);
+                    }
                     uploadedFrame = snapshot->processedFrame;
                     uploadedColorMode = state.colorMode;
                     uploadedMinimumWeight = state.minimumWeight;

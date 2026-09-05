@@ -1,4 +1,4 @@
-#include "Pipeline/Reconstruction/DepthRecording.h"
+#include "Pipeline/Acquisition/DepthRecording.h"
 
 #include <algorithm>
 #include <cstdint>

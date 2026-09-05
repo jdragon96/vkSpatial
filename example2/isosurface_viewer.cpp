@@ -39,7 +39,7 @@
 #include "ImGuiPass.h"
 
 #include "Engine/Core/Context.h"
-#include "Pipeline/Reconstruction/FrameLoader.h"
+#include "Pipeline/Acquisition/FrameLoader.h"
 #include "Engine/Render/Application.h"
 #include "Engine/Render/Camera.h"
 #include "Engine/Render/GlfwWindow.h"

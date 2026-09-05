@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Pipeline/Reconstruction/DepthCameraFrameSource.h" // IDepthProvider, CameraIntrinsics, DepthFrame
+#include "Pipeline/Acquisition/DepthCameraFrameSource.h" // IDepthProvider, CameraIntrinsics, DepthFrame
 
 #include <memory>
 #include <string>

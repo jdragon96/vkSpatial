@@ -2,7 +2,7 @@
 
 #include "Pipeline/CommunicationModule.h"
 #include "Pipeline/Integration/IntegrationThread.h"
-#include "Pipeline/Reconstruction/ReconstructionThread.h"
+#include "Pipeline/Acquisition/ReconstructionThread.h"
 #include "Pipeline/Registration/RegistrationThread.h"
 #include "Pipeline/Registration/Tracker.h"
 
@@ -22,7 +22,7 @@ namespace Pipeline {
         m_reconstruction.reset();
         m_comm = std::make_unique<CommunicationModule>(cfg.acquisition.realTime);
         m_reconstruction = std::make_unique<ReconstructionThread>(*m_comm, std::move(cfg.acquisition));
-        m_registration = std::make_unique<RegistrationThread>(*m_comm, std::move(align));
+        m_registration = std::make_unique<RegistrationThread>(*m_comm, std::move(align), cfg.fusion);
         m_integration = std::make_unique<IntegrationThread>(*m_comm, cfg.map);
     }
 
@@ -41,7 +41,7 @@ namespace Pipeline {
     void Pipeline::Stop() {
         m_comm->capturedFrames.Close();
         m_comm->trackedFrames.Close();
-        m_comm->handshake.Close(); // release a registration thread parked in WaitForDrain
+        m_comm->handshake.Close();
         m_reconstruction->Stop();
         m_registration->Stop();
         m_integration->Stop();
@@ -76,6 +76,13 @@ namespace Pipeline {
         s.rejectedLowOverlap = m_registration->RejectedLowOverlap();
         s.rejectedImplausibleMotion = m_registration->RejectedImplausibleMotion();
         s.skippedFusions = m_registration->SkippedFusions();
+        s.bootstrapHeldFrames = m_registration->BootstrapHeldFrames();
+        s.fusionRejectedByFitness = m_registration->FusionRejectedByFitness();
+        s.fusionRejectedByRmse = m_registration->FusionRejectedByRmse();
+        s.fusionArmed = m_registration->FusionArmed();
+        const TrackerStats trackerStats = m_registration->TrackerCounters();
+        s.relocalizationAttempts = trackerStats.relocalizationAttempts;
+        s.relocalizationSuccesses = trackerStats.relocalizationSuccesses;
         s.poseDeltaMetersAvg = m_registration->PoseDeltaMetersAvg();
         s.poseDeltaMetersMax = m_registration->PoseDeltaMetersMax();
         s.poseDeltaDegreesMax = m_registration->PoseDeltaDegreesMax();

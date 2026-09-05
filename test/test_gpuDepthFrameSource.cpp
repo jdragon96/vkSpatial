@@ -1,5 +1,5 @@
 #include "Engine/Core/Context.h"
-#include "Pipeline/Reconstruction/GpuDepthFrameSource.h"
+#include "Pipeline/Realsense/GpuDepthFrameSource.h"
 
 #include <gtest/gtest.h>
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Pipeline/PipelineStage.h"
-#include "Pipeline/Reconstruction/ReconstructionSource.h" // IFrameSource, AcquisitionConfig
+#include "Pipeline/Acquisition/ReconstructionSource.h" // IFrameSource, AcquisitionConfig
 
 #include "utilities/RunningMean.h"
 

@@ -34,7 +34,7 @@
 #include "Engine/Render/Camera.h"
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
-#include "Pipeline/Reconstruction/DepthRecording.h"
+#include "Pipeline/Acquisition/DepthRecording.h"
 #include "Realsense/RealSenseD435.h"
 #include "Realsense/Algorithm/NormalEstimation.h"
 #include "Realsense/RealSensePipeline.h"

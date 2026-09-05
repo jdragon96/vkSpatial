@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Pipeline/Reconstruction/ReconstructionSource.h" // AcquisitionConfig, EAcquisitionType
+#include "Pipeline/Acquisition/ReconstructionSource.h" // AcquisitionConfig, EAcquisitionType
 #include "Pipeline/Types.h"
 
 #include <memory>
@@ -19,6 +19,7 @@ namespace Pipeline {
         struct Config {
             MapConfig map;                 // TSDF/submap parameters
             AcquisitionConfig acquisition; // which acquisition strategy + its params
+            FusionGateConfig fusion;       // extra fusion conditions layered on ShouldFuse; off by default
         };
 
         Pipeline(Config cfg, std::unique_ptr<Tracker> align);

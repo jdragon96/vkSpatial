@@ -3,8 +3,8 @@
 #include "Engine/Compute/CommandBatch.h"
 #include "Engine/Core/Context.h"
 
-#include "Pipeline/Reconstruction/DepthCameraFrameSource.h" // IDepthProvider, CameraIntrinsics
-#include "Pipeline/Reconstruction/ReconstructionSource.h"   // IFrameSource
+#include "Pipeline/Acquisition/DepthCameraFrameSource.h" // IDepthProvider, CameraIntrinsics
+#include "Pipeline/Acquisition/ReconstructionSource.h"   // IFrameSource
 
 #include "Realsense/RealSensePipeline.h"
 

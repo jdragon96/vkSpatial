@@ -19,10 +19,10 @@
 #include "Pipeline/Pipeline.h"
 #include "Pipeline/Registration/GpuIcpTracker.h"
 #include "Pipeline/Registration/Tracker.h"       // TrackerRegistry
-#include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
-#include "Pipeline/Reconstruction/GpuDepthFrameSource.h"
-#include "Pipeline/Reconstruction/DepthRecording.h"
-#include "Pipeline/Reconstruction/FrameLoader.h" // LoadFrames / ComputeBounds
+#include "Pipeline/Acquisition/DepthCameraFrameSource.h"
+#include "Pipeline/Realsense/GpuDepthFrameSource.h"
+#include "Pipeline/Acquisition/DepthRecording.h"
+#include "Pipeline/Acquisition/FrameLoader.h" // LoadFrames / ComputeBounds
 #include "Engine/Eval/RmseMetrics.h"                     // NearestNeighbourRMSE
 #include "utilities/ArgParser.h"
 

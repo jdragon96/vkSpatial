@@ -9,12 +9,12 @@
 //   depth_capture --record <dir> [--frames N] [--width 640] [--height 480] [--fps 30]
 //   depth_capture --replay <dir>
 
-#include "Pipeline/Reconstruction/DepthCameraFrameSource.h" // BackprojectDepth, DepthFrame, IDepthProvider
-#include "Pipeline/Reconstruction/DepthRecording.h"          // DepthRecorder, RecordedDepthProvider
+#include "Pipeline/Acquisition/DepthCameraFrameSource.h" // BackprojectDepth, DepthFrame, IDepthProvider
+#include "Pipeline/Acquisition/DepthRecording.h"          // DepthRecorder, RecordedDepthProvider
 #include "utilities/ArgParser.h"
 
 #ifdef VKBVH_HAS_REALSENSE
-#include "Pipeline/Reconstruction/RealSenseDepthProvider.h"
+#include "Pipeline/Realsense/RealSenseDepthProvider.h"
 #endif
 
 #include <cstddef>

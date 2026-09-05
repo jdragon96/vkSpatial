@@ -1,5 +1,5 @@
-#include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
-#include "Pipeline/Reconstruction/DepthRecording.h"
+#include "Pipeline/Acquisition/DepthCameraFrameSource.h"
+#include "Pipeline/Acquisition/DepthRecording.h"
 
 #include <gtest/gtest.h>
 

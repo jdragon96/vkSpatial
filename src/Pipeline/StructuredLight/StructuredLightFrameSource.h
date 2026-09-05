@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Pipeline/Reconstruction/DepthCameraFrameSource.h" // CameraIntrinsics (shared)
-#include "Pipeline/Reconstruction/ReconstructionSource.h"
+#include "Pipeline/Acquisition/DepthCameraFrameSource.h" // CameraIntrinsics (shared)
+#include "Pipeline/Acquisition/ReconstructionSource.h"
 
 #include <cstdint>
 #include <memory>

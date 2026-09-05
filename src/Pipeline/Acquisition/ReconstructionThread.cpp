@@ -1,8 +1,8 @@
-#include "Pipeline/Reconstruction/ReconstructionThread.h"
+#include "Pipeline/Acquisition/ReconstructionThread.h"
 
 #include "Pipeline/CommunicationModule.h"
 #include "Features/Downsample.h"
-#include "Pipeline/Reconstruction/FileFrameSource.h"
+#include "Pipeline/Acquisition/FileFrameSource.h"
 
 #include <stdexcept>
 #include <utility>

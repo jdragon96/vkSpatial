@@ -24,9 +24,9 @@
 #include "Engine/Render/Camera.h"
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
-#include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
-#include "Pipeline/Reconstruction/DepthRecording.h"
-#include "Pipeline/Reconstruction/RealSenseDepthProvider.h"
+#include "Pipeline/Acquisition/DepthCameraFrameSource.h"
+#include "Pipeline/Acquisition/DepthRecording.h"
+#include "Pipeline/Realsense/RealSenseDepthProvider.h"
 #include "utilities/ArgParser.h"
 
 #include "imgui.h"

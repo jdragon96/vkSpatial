@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Pipeline/Reconstruction/ReconstructionSource.h"
+#include "Pipeline/Acquisition/ReconstructionSource.h"
 
 #include <Eigen/Core>
 
@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace Pipeline {
@@ -68,8 +69,8 @@ namespace Pipeline {
         // Reject a neighbour whose depth differs by more than max(minimumDepthJump,
         // relativeDepthJump * z). Relative because stereo depth error grows as z^2/(f*baseline): a
         // fixed threshold over-rejects near the camera and under-rejects far from it.
-        float relativeDepthJump = 0.02f;  // 2 % of range
-        float minimumDepthJump = 0.005f;  // 5 mm floor, for the near field
+        float relativeDepthJump = 0.02f; // 2 % of range
+        float minimumDepthJump = 0.005f; // 5 mm floor, for the near field
 
         // Side of a square, discontinuity-aware mean applied to the depth image BEFORE
         // back-projection. 0 or 1 = off (the historical behaviour, and the default: exposing a knob
@@ -134,14 +135,41 @@ namespace Pipeline {
         // capture/ (12 frames, prefilter 3) those are 0.17% of emitted points, sitting a median
         // 403 mm from the neighbour nobody tested -- the streaks along the view direction.
         bool symmetricDepthJumpGuard = false;
+
+        // Which estimator kernel_EstimateNormal compiles; one of Pipeline::NormalEstimatorNames().
+        // "forward" is the historical one-triangle difference and stays the default, so exposing
+        // this axis changes nothing for a caller that does not set it.
+        //
+        // GPU ONLY. BackprojectDepth below is the CPU reference path and always differences
+        // forward -- it exists to pin the GPU's default against a readable implementation, and a
+        // second implementation of every estimator would only pin them against each other.
+        std::string normalEstimator = "forward";
+
+        // Side of the square window "planefit" fits its plane through. Must be odd and at least 3;
+        // the fit spans planeFitWindow/2 pixels either side of the centre. Ignored by the others.
+        //
+        // 5 by default: the gradient noise of a k-sample least-squares slope falls as
+        // sqrt(12/(k(k^2-1))), so 3 -> 5 is the large step (0.71 -> 0.32 sigma) while 5 -> 7 buys
+        // much less (0.19) for twice the gather -- and the window has to stay small enough to sit
+        // inside real surface detail.
+        int planeFitWindow = 5;
+
+        // How many same-surface samples the window must hold for "planefit" to fit a plane at all.
+        // Below it the pixel is refused and charged to rejectedByNormalStencil.
+        //
+        // A plane needs three non-collinear samples to be determined; requiring 8 leaves the fit
+        // comfortably over-determined and matches the number [H5] already reasons about (a complete
+        // 3x3 neighbourhood). Refusing rather than falling back to a smaller stencil is deliberate:
+        // a frame whose normals came from two different estimators cannot answer "did the plane fit
+        // help", which is the only reason this axis exists.
+        int minimumPlaneFitSamples = 8;
     };
 
-    // Discontinuity-aware square mean over `depth`: each pixel averages only the neighbours that are
-    // valid AND within the same depth-jump tolerance the normal estimator uses, so a step edge is
-    // never averaged across. Invalid pixels stay invalid; border pixels average over whatever exists
-    // (never dropped -- shrinking the usable region would silently crop the frame).
-    inline std::vector<float> PrefilterDepth(const std::vector<float> &depth, int width, int height,
-                                             int window, const DepthFilterOptions &filter) {
+    inline std::vector<float> PrefilterDepth(const std::vector<float> &depth,
+                                             int width,
+                                             int height,
+                                             int window,
+                                             const DepthFilterOptions &filter) {
         if (window <= 1) return depth;
         const int radius = window / 2;
         std::vector<float> out(depth.size(), 0.0f);
@@ -149,7 +177,7 @@ namespace Pipeline {
             for (int u = 0; u < width; ++u) {
                 const std::size_t centre = std::size_t(v) * width + u;
                 const float z = depth[centre];
-                if (z <= 0.0f) continue; // invalid stays invalid
+                if (z <= 0.0f) continue;
                 const float tolerance =
                         std::max(filter.minimumDepthJump, filter.relativeDepthJump * z);
                 float sum = 0.0f;
@@ -189,6 +217,15 @@ namespace Pipeline {
         std::atomic<std::uint64_t> rejectedByRange{0};
         std::atomic<std::uint64_t> rejectedByNeighbourSupport{0};
         std::atomic<std::uint64_t> rejectedByIncidence{0};
+        // The pixel carries a measurement and the estimator's stencil fits inside the image, but
+        // the stencil did not hold enough same-surface measurements to form a normal. This is the
+        // one discard that used to be silent: the forward guard simply returned, so a frame could
+        // lose most of its points to depth steps with nothing in the stats saying so.
+        //
+        // Border pixels are NOT counted. A stencil hanging off the edge of the image is outside
+        // the estimator's domain, not a rejected measurement, and folding the two together would
+        // make the number depend mostly on the window size.
+        std::atomic<std::uint64_t> rejectedByNormalStencil{0};
     };
 
     // True when any of the eight neighbours of (u,v) exists and lies further than `tolerance` in
@@ -247,11 +284,12 @@ namespace Pipeline {
         Frame fr;
         const int W = k.width, H = k.height;
         if (W <= 0 || H <= 0 || int(d.depth.size()) < W * H) return fr;
-        // Points AND normals come from the filtered depth. Filtering only for the normals would leave
-        // the two describing different surfaces, which is precisely the inconsistency a
-        // point-to-plane SDF punishes.
         const std::vector<float> depth =
-                PrefilterDepth(d.depth, W, H, filter.prefilterWindow, filter);
+                PrefilterDepth(d.depth,
+                               W,
+                               H,
+                               filter.prefilterWindow,
+                               filter);
         std::vector<Eigen::Vector3f> grid(std::size_t(W) * H, Eigen::Vector3f::Zero());
         std::vector<char> valid(std::size_t(W) * H, 0);
         for (int v = 0; v < H; ++v)
@@ -282,15 +320,22 @@ namespace Pipeline {
         for (int v = 0; v + 1 < H; ++v)
             for (int u = 0; u + 1 < W; ++u) {
                 const std::size_t i = std::size_t(v) * W + u;
-                if (!valid[i] || !valid[i + 1] || !valid[i + W]) continue;
+                // A centre without a measurement is not a rejection -- there was nothing to reject.
+                if (!valid[i]) continue;
+                if (!valid[i + 1] || !valid[i + W]) {
+                    if (stats) stats->rejectedByNormalStencil.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
 
                 // A step in depth is two surfaces, not one: differencing across it yields a normal
                 // belonging to neither. The point goes with the normal -- Frame's contract is
                 // pts.size() == nrm.size(), and the whole pipeline assumes it.
                 const float z = grid[i].z();
                 const float maxJump = std::max(filter.minimumDepthJump, filter.relativeDepthJump * z);
-                if (std::abs(grid[i + 1].z() - z) > maxJump) continue;
-                if (std::abs(grid[i + W].z() - z) > maxJump) continue;
+                if (std::abs(grid[i + 1].z() - z) > maxJump || std::abs(grid[i + W].z() - z) > maxJump) {
+                    if (stats) stats->rejectedByNormalStencil.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
 
                 // The forward test above protects the NORMAL, which is differenced from exactly
                 // those two neighbours. Whether the POINT is trustworthy is a different question,

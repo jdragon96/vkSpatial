@@ -144,6 +144,7 @@ ReconstructionThread --Channel<Frame>-->  RegistrationThread
 ```
 
 - 취득 전략은 `EAcquisitionType`(File / DepthCamera / StructuredLight)으로 갈리고, 정합은 `Tracker` 인터페이스로, 융합은 TSDF 백엔드로 갈린다 — 세 축이 각각 독립적으로 교체된다.
+- **취득 쪽 폴더는 소스별로 나뉜다.** `Acquisition/`이 공용 기계(`IFrameSource`, `AcquisitionConfig`, `ReconstructionThread`, depth 장치 추상화 `IDepthProvider`)를 갖고, `Realsense/`와 `StructuredLight/`가 그 인터페이스를 구현한다. 두 소스가 `IDepthProvider`를 공유하므로 그것은 `Acquisition/`에 남는다.
 - `CommunicationModule(dropWhenBehind)`가 두 링크의 오버플로 정책을 함께 정한다. **라이브 센서는 `true`(오래된 프레임을 버려 지연을 묶음), 녹화 재생은 `false`(블로킹 = 무손실).** 녹화를 드롭 모드로 돌리면 느린 설정이 조용히 더 적은 프레임을 처리해서, 설정 간 비교 측정이 전부 오염된다.
 - **무손실은 재현성이 아니다.** 블로킹 채널은 프레임 *개수*만 맞춘다. 맵은 latest-wins `Mailbox`로 트래커에 전달되고 정합은 `trackedFrames` 용량만큼 융합보다 앞서 달릴 수 있으므로, 프레임 N이 *어느 버전의 맵*에 정합하는지가 쓰레드 스케줄링에 달렸다. 그 맵이 정합 타깃이므로 포즈가 달라지고, 다음 맵이 달라진다 — 실행마다 발산한다. 그래서 `CommunicationModule`은 녹화 모드에서 `FrameHandshake`도 켠다(정합이 매 프레임 융합 완료를 기다림 = lock-step). **파이프라인을 통과하는 A/B 측정은 이것 없이는 무의미하다.**
 - **정합에 실패한 프레임을 융합할지는 `ETrackFailure`별로 갈린다**(`ShouldFuse()`, `Pipeline/Types.h`). `TooFewInliers`/`LowOverlap`은 융합하지 않는다 — 로컬 맵이 있는데도 solve가 게이트를 못 넘긴 경우이고, 그 틀린 포즈로 오염된 맵이 다음 프레임의 정합 타깃이 된다. `NoModel`/`NoLocalTarget`은 **융합한다**: 오염시킬 맵이 애초에 없고, 거부하면 맵이 부트스트랩되지 않거나(프레임 0이 `NoModel`) 새 영역으로 자라지 못한다. 건너뛴 수는 `PipelineStats::skippedFusions`로 관측한다.

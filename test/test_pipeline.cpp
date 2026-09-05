@@ -1,8 +1,8 @@
 #include "Pipeline/CommunicationModule.h" // Pipeline::CommunicationModule
 #include "Pipeline/Pipeline.h"            // Pipeline::Pipeline / Config / EAcquisitionType
-#include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
-#include "Pipeline/Reconstruction/DepthRecording.h"
-#include "Pipeline/Reconstruction/ReconstructionThread.h" // MakeAcquisitionSource
+#include "Pipeline/Acquisition/DepthCameraFrameSource.h"
+#include "Pipeline/Acquisition/DepthRecording.h"
+#include "Pipeline/Acquisition/ReconstructionThread.h" // MakeAcquisitionSource
 #include "Pipeline/Registration/GpuIcpTracker.h"
 #include "LocalRegistration/Algorithm/GpuPointToPlaneIcp.h"
 #include "Pipeline/Registration/PointToPlaneIcpTracker.h"

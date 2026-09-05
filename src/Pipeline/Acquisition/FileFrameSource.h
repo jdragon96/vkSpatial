@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Pipeline/Reconstruction/FrameLoader.h" // EstimateCameraHint
-#include "Pipeline/Reconstruction/ReconstructionSource.h"
+#include "Pipeline/Acquisition/FrameLoader.h" // EstimateCameraHint
+#include "Pipeline/Acquisition/ReconstructionSource.h"
 
 #include "utilities/PointCloudIO.h" // util::LoadPly
 
