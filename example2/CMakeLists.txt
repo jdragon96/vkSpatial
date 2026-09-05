@@ -146,6 +146,14 @@ if (GLSLC_EXECUTABLE)
     target_link_libraries(depth_live_viewer PRIVATE Engine::Render imgui Engine::Core Pipeline)
     add_compiled_shaders(depth_live_viewer VOXDBG_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
 
+    # Confidence viewer for the D400 score kernel: drag a knob, watch WHERE the score moves.
+    # --sweep turns it headless and prints a table instead. --replay needs neither a camera nor
+    # librealsense2, so both modes work on a recording.
+    add_spatial_example(validation_score_lab validation_score_lab.cpp PointCloudPass.cpp ImGuiPass.cpp)
+    target_link_libraries(validation_score_lab
+            PRIVATE Engine::Render imgui Engine::Core Engine::Compute Pipeline Realsense)
+    add_compiled_shaders(validation_score_lab VOXDBG_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
+
     # RealSense scan pipeline: a depth camera driving the full Track/Map/Render pipeline, with the
     # TSDF surface accumulating live. The first source here for which tracking is a real problem --
     # a camera sees one side at a time, so point-to-plane ICP has something to solve. --replay
