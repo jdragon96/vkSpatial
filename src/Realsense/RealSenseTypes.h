@@ -181,9 +181,15 @@ namespace Realsense {
         // truth where "forward" reads 50.6, and on real frames it needs no depth prefilter, so the
         // point that reaches the TSDF is not smoothed to fix the normal.
         std::string estimator = "planefit";
-        // The fit spans planeFitRadius pixels either side of the centre; 2 is a 5x5 window, which
-        // matches Pipeline's planeFitWindow = 5. Ignored by the two difference estimators.
-        int planeFitRadius = 2;
+        // The fit spans planeFitRadius pixels either side of the centre; 4 is a 9x9 window.
+        //
+        // NOT Pipeline's planeFitWindow = 5, which is where this started. Measured on capture/, a
+        // wider window improves accuracy and YIELD together, because the fit degrades gracefully
+        // where a difference stencil refuses outright: adjacent-normal disagreement 3.22 -> 1.97 deg
+        // from radius 2 to 4, while emitted points rise 262,291 -> 268,729 and stencil refusals fall
+        // 10,538 -> 1,106. The cost is an 81-sample gather per pixel against 25, and the front end's
+        // cost is dominated by submission overhead at either size.
+        int planeFitRadius = 4;
         int minimumPlaneFitSamples = 8;
         // Skips the pass outright. For callers that want the compacted points and nothing else --
         // the normal stencil costs a border of pixels, so a test pinning an exact point count has

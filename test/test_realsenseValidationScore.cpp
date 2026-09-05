@@ -397,3 +397,57 @@ TEST(RealsenseValidationScore, CompactionCarriesAcrossChunksOnAWideFrame) {
         EXPECT_NEAR(points[i].x(), expectedX[i], 1e-5f)
                 << "point " << i << " -- the chunk carry lost or duplicated a slot";
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// The confidence bar as a flying-pixel gate. This is the property the tuned default rests on.
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+// A depth cliff with interpolated pixels across it -- what a stereo matcher produces at a silhouette
+// and what shows up in a viewer as a trail strung between the foreground and the wall behind it.
+//
+// The pixels ON the cliff have no neighbours on their own surface, so c_nb drives their score to
+// zero, and the bar is what removes them. Measured on capture/ with cliff pixels labelled from the
+// depth image: they are 1.06% of the delivered cloud at a bar of 0.0, 0.09% at 0.7 and none at 0.9.
+//
+// Downsampling is what makes this matter so much rather than a little: thinning to a 50 mm voxel
+// removes over 99% of a surface but keeps a trail nearly intact, because each trail point owns its
+// own voxel. The share of junk in the delivered cloud is amplified about twentyfold.
+TEST(RealsenseValidationScore, TheConfidenceBarRemovesPixelsStrungAcrossADepthCliff) {
+    Engine::Core::Context context;
+    const int width = 48, height = 32;
+    const ValidationScoreOptions options = TestOptions();
+
+    // Left half at 1 m, right half at 2 m, and one column between them holding the midpoint -- a
+    // pixel the sensor reports where there is no surface at all.
+    std::vector<std::uint16_t> depth(std::size_t(width) * height);
+    const int cliffColumn = width / 2;
+    for (int row = 0; row < height; ++row)
+        for (int column = 0; column < width; ++column) {
+            std::uint16_t value = column < cliffColumn ? 1000 : 2000;
+            if (column == cliffColumn) value = 1500;
+            depth[std::size_t(row) * width + column] = value;
+        }
+
+    const auto countOnCliff = [&](float bar) {
+        Realsense::RealSensePipeline pipeline(context, width, height);
+        const Realsense::PinholeIntrinsics intrinsics{options.focalLengthPixels,
+                                                      options.focalLengthPixels,
+                                                      float(width) * 0.5f, float(height) * 0.5f};
+        {
+            Engine::Compute::CommandBatch batch(context);
+            pipeline.Execute(batch, depth.data(), options, intrinsics, bar, WithoutNormals());
+            batch.Submit();
+        }
+        std::size_t onCliff = 0;
+        for (const Eigen::Vector3f &p: pipeline.DownloadValidPoints()) {
+            if (!(p.z() > 0.0f)) continue;
+            // The interpolated column is the only place a point sits at 1.5 m.
+            if (std::abs(p.z() - 1.5f) < 0.01f) ++onCliff;
+        }
+        return onCliff;
+    };
+
+    EXPECT_GT(countOnCliff(0.0f), 0u) << "the fixture has no cliff pixels to remove";
+    EXPECT_EQ(countOnCliff(0.9f), 0u)
+            << "the confidence bar let pixels through that sit on a half-metre depth step";
+}

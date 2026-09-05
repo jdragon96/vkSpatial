@@ -131,8 +131,8 @@ namespace Realsense {
                 throw std::runtime_error("Realsense::RealSensePipeline::RecordExtract: fx and fy "
                                          "must be positive; back-projection divides by them");
 
-            const RemainPushConstants remain{m_width,          m_height,        intrinsics.fx,
-                                             intrinsics.fy,    intrinsics.cx,   intrinsics.cy,
+            const RemainPushConstants remain{m_width, m_height, intrinsics.fx,
+                                             intrinsics.fy, intrinsics.cx, intrinsics.cy,
                                              options.depthScale, scoreThreshold};
             kernel_RemainValidDepth->Bind(0, m_mask.DepthImage(), m_mask.ImageSampler())
                     .Bind(1, m_mask.Properties())

@@ -217,8 +217,16 @@ namespace {
         NormalEstimationOptions normalOptions;
         DownSampleOptions downSampleOptions;
         EColorMode colorMode = EColorMode::Score;
-        float validThreshold = 0.5f; // what counts as a usable pixel
-        bool showRejected = true;    // draw score == 0 dim, so losses are visible not absent
+        // 0.9, not 0.5. Measured on capture/ against pixels labelled from the depth image as
+        // sitting on a cliff -- the physical definition of a flying pixel: at 0.0 they are 1.06% of
+        // the delivered cloud, at 0.7 they are 0.09%, and at 0.9 none survive. Thinning is what
+        // makes the bar matter this much: it removes over 99% of a surface but keeps a trail nearly
+        // intact, since each trail point owns its own voxel.
+        float validThreshold = 0.9f;
+        // Off by default so the bar handed to the GPU IS the display bar. With it on the GPU bar is
+        // 0, every measured pixel is compacted, and the threshold above stops gating anything --
+        // which is how a tuned setting can look like it does nothing.
+        bool showRejected = false;
         float pointSize = 2.0f;
         float rampNear = 0.3f, rampFar = 3.0f;
 
