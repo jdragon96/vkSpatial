@@ -8,11 +8,20 @@
 > 인접 불일치 3.28°)는 새 구현이 재현했고, 그 검토는
 > [`src/Realsense/Algorithm/NormalEstimation.md`](../src/Realsense/Algorithm/NormalEstimation.md)에 있다.
 >
-> CPU 경로(`PrefilterDepth`, `BackprojectDepth`)는 그대로 있고 여전히 파이프라인의 기본값이다.
+> **CPU 경로(`PrefilterDepth`, `BackprojectDepth`, `DepthCameraFrameSource`)도 2026-09-06에 삭제됐다.**
+> 같은 녹화(`capture/`, 476프레임, `--trackers icp`)에서 CPU 프론트엔드는 ICP에 3,208,407 엔트리와
+> 프레임당 240.61 ms를 안겼고 GPU 프론트엔드는 616,294 엔트리와 30.43 ms를 안겼다 — 30 fps 센서 앞에서
+> 4 fps다. 취득에서 `IDepthProvider` 한 층만 남기면서 함께 지웠다.
+>
+> **그래서 이 문서는 근거 기록이다.** 아래의 게이트 서술은 지금 코드의 API가 아니라, 어떤 잡음이
+> 무엇으로 잡혔는지를 남긴다. 살아 있는 것들의 대응: 깊이 절벽 → 신뢰도 점수 문턱값,
+> `minimumValidNeighbours` → `c_nb`, `maximumIncidenceDegrees` → planefit 법선의 지지 조건.
+> 지금 도는 프론트엔드는
+> [`src/Realsense/RealSensePipeline.md`](../src/Realsense/RealSensePipeline.md)에 있다.
 
 depth 프레임 → 점 → 복셀 경로의 전체 필터.
 
-기준: [`DepthCameraFrameSource.h`](../src/Pipeline/Acquisition/DepthCameraFrameSource.h), [`RealSenseDepthProvider.cpp`](../src/Pipeline/Realsense/RealSenseDepthProvider.cpp), [`kernel_AdvancedTSDF.integrate.comp.glsl`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl).
+기준(당시): `src/Pipeline/Reconstruction/DepthCameraFrameSource.h`, `src/Pipeline/Realsense/RealSenseDepthProvider.cpp`, [`kernel_AdvancedTSDF.integrate.comp.glsl`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl).
 
 ## 1. 의사코드
 

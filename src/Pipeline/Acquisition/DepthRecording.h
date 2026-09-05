@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Pipeline/Acquisition/DepthCameraFrameSource.h" // IDepthProvider, CameraIntrinsics, DepthFrame
+#include "Pipeline/Acquisition/DepthProvider.h"
 
 #include <memory>
 #include <string>
@@ -13,10 +13,10 @@ namespace Pipeline {
     // attached -- the only way this front end is debuggable in a session where the device is not
     // present.
     //
-    // DepthRecorder stores the RAW depth, before back-projection: replay then runs through the
-    // same BackprojectDepth / normal-estimation front end the live device path does, so a later
-    // fix to that front end is exercised against real captures, not only synthetic ones. Storing
-    // the back-projected Frame instead would freeze the front end at record time.
+    // DepthRecorder stores the DEPTH IMAGE, before any front end has run on it: replay then goes
+    // through the same score / back-project / normal front end the live device path does, so a
+    // later fix to that front end is exercised against real captures, not only synthetic ones.
+    // Storing the resulting Frame instead would freeze the front end at record time.
     //
     // Format -- no external dependency, debuggable by hand:
     //   <directory>/intrinsics.txt   "fx fy cx cy width height"   (one space-separated line)

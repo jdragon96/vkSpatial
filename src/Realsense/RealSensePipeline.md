@@ -146,25 +146,24 @@ $$ slot = rowOffset[row] + \left| \{\, c < column : emitted(row, c) \,\} \right|
 
 # Pipeline 통합 (2026-09-05)
 
-`Pipeline::RealsenseFrameSource`(`src/Pipeline/Acquisition/RealsenseFrameSource.h`)가 이 프론트엔드를
-취득 스레드의 `IFrameSource`로 감싼다. **opt-in**이고 기존 CPU 경로는 그대로 남는다 —
-`AcquisitionConfig::source`가 `Realsense`(라이브 D435) / `RealsenseFile`(녹화) / `PlyFolder` 중 하나를
-고른다.
+`Pipeline::AcquisitionThread`(`src/Pipeline/Acquisition/`)가 이 프론트엔드를 직접 돌린다. 감싸는
+클래스는 없다 — depth 이미지에서 `Frame`을 만드는 방법이 이것 하나뿐이라 인터페이스로 뺄 축이 아니다.
+`AcquisitionConfig::source`가 `Realsense`(라이브 D435) / `RealsenseFile`(녹화) / `PlyFolder`를 고른다.
 
-## 무엇을 대체하나
+## 무엇을 대체했나
 
-기존 `DepthCameraFrameSource`는 전부 CPU다 — `PrefilterDepth` 후 `BackprojectDepth`의 픽셀 루프로
-역투영과 법선 추정을 하고, 그다음 `ReconstructionThread::reduceFrame`이 호스트에서 voxel 솎기를 한다.
-새 소스는 프레임을 `RealSensePipeline`에 넘겨 점수·문턱값·역투영·법선·다운샘플·압축을 전부 디바이스에서
-하고 **살아남은 점만 읽어온다.**
+이전 `DepthCameraFrameSource`는 전부 CPU였다 — `PrefilterDepth` 후 `BackprojectDepth`의 픽셀 루프로
+역투영과 법선 추정을 하고, 그다음 호스트에서 voxel 솎기를 했다. 지금은 프레임이 `RealSensePipeline`으로
+가서 점수·문턱값·역투영·법선·다운샘플·압축을 전부 디바이스에서 하고 **살아남은 점만 읽어온다.**
+CPU 경로는 아래 A/B로 근거를 남기고 삭제됐다.
 
 그래서 `AcquisitionConfig::downsampleVoxel`은 0으로 둔다. 그건 readback **후**에 도는 CPU 축소이고,
 여기 `DownSampleOptions`는 readback **전**에 솎으므로 전송량까지 준다.
 
 입력은 두 갈래이고 손실이 붙는 것은 한쪽뿐이다.
 
-- **라이브(`Realsense`)** — `Realsense::RealSenseD435`를 직접 잡고 드라이버의 Z16 버퍼를 **그대로**
-  넘긴다. float을 거치지 않으므로 왕복 손실이 없고, `focalLengthPixels`/`baselineMeters`/`depthScale`도
+- **라이브(`Realsense`)** — `D435DepthProvider`가 드라이버의 Z16 버퍼를 `DepthFrame::rawZ16`에 **그대로**
+  실어 넘긴다. float을 거치지 않으므로 왕복 손실이 없고, `focalLengthPixels`/`baselineMeters`/`depthScale`도
   장치의 실제 캘리브레이션에서 온다(`MakeScoreOptions`) — 호출자가 그 숫자를 알 필요도, 조용히 틀릴
   방법도 없다.
 - **녹화·테스트(`RealsenseFile`)** — `IDepthProvider`가 float 미터를 주므로 소스가 Z16으로

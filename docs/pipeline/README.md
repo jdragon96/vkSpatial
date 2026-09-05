@@ -9,7 +9,7 @@
 - `CommunicationModule(cfg.acquisition.realTime)`을 만들어 두 링크의 오버플로 정책을 한 번에 정한다.
   - `realTime == true`(라이브 센서) → 큐가 차면 오래된 프레임을 버려 지연을 묶는다.
   - `realTime == false`(녹화 재생) → 블로킹 = 무손실이고, `FrameHandshake`가 함께 켜져 lock-step이 된다.
-- 새 스테이지를 **상류부터** 만든다: `ReconstructionThread`(취득) → `RegistrationThread`(정합 + `Tracker`) → `IntegrationThread`(융합 + `MapConfig`).
+- 새 스테이지를 **상류부터** 만든다: `AcquisitionThread`(취득) → `RegistrationThread`(정합 + `Tracker`) → `IntegrationThread`(융합 + `MapConfig`).
 - 세 축(취득 전략 / 트래커 / TSDF 백엔드)이 각각 독립적으로 교체된다.
 
 ## 2. 기동 (Start)
@@ -20,12 +20,12 @@
 ## 3. 프레임 흐름
 
 ```
-ReconstructionThread --Channel<Frame>(8)--> RegistrationThread
+AcquisitionThread --Channel<Frame>(8)--> RegistrationThread
                      --Channel<TrackedFrame>(4)--> IntegrationThread
                      --Mailbox<ModelSnapshot>--> 호출자 / 렌더 스레드
 ```
 
-1. 취득: `IFrameSource::Next`로 프레임을 받고, `downsampleVoxel > 0`이면 복셀 다운샘플까지 마친 뒤 push한다.
+1. 취득: `IDepthProvider::Grab`한 depth 이미지를 GPU 프론트엔드로 `Frame`으로 만들거나(PLY 소스면 파일에서 읽어), `downsampleVoxel > 0`이면 복셀 다운샘플까지 마친 뒤 push한다.
 2. 정합: `model.Latest()`를 타깃으로 `Tracker::Track(frame, model, prior)`를 돌린다.
    - prior는 직전 포즈이며, 연속 2회 채택 AND 직전 step > 0.02 m일 때만 상수속도 외삽을 얹는다.
    - 실패는 `ETrackFailure`별로 카운트되고, 포즈는 직전 포즈로 되돌린다.
@@ -55,7 +55,7 @@ ReconstructionThread --Channel<Frame>(8)--> RegistrationThread
 
 ```python
 # 아래와 같은 순서로 스레드 알고리즘이 동작한다.
-ReconstructionThread()
+AcquisitionThread()
 |
 |- CommuniationModule.capturedFrames.Push()
 |
@@ -69,7 +69,7 @@ IntegrationThread()
 |
 ```
 
-### 6.1. ReconstructionThread (`Reconstruction/ReconstructionThread.cpp`)
+### 6.1. AcquisitionThread (`Acquisition/AcquisitionThread.cpp`)
 
 ```python
 def Run():

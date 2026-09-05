@@ -1,9 +1,15 @@
 // RealSense scan pipeline — a depth camera driving the full Track/Map/Render pipeline, with the
 // surface accumulating on screen as you sweep the sensor over an object.
 //
-//   depth frames -> BackprojectDepth -> ICP against the model -> TSDF integrate -> extracted surface
-//   \___________________________________/  \_______________/     \____________/
-//          AcquisitionThread                 RegistrationThread    IntegrationThread
+//   depth frames -> depth front end -> ICP against the model -> TSDF integrate -> accumulated surface
+//   \_______________________________/   \___________________/    \_____________________________/
+//          AcquisitionThread                RegistrationThread            IntegrationThread
+//
+// The depth front end is src/Realsense: confidence score, threshold, back-project, normals, voxel
+// thinning and compaction all on the device, with only the survivors read back. It replaced a host
+// one that back-projected per pixel, and a live camera left no choice -- measured over capture/
+// (476 frames, --gpu-downsample 0.01) the host front end handed ICP 3.2M map entries and 240.6 ms
+// per frame, which is 4 fps against a sensor producing 30. This one hands it 616k and 30.4 ms.
 //
 // This is the first source in the repo for which tracking is a real problem. The synthetic
 // scan_out frames each cover the whole scene from every side, so there is no viewpoint to
@@ -16,10 +22,8 @@
 //   ./realsense_scan --replay ./capture       replay a recording, no hardware needed
 //        [--tracker icp|icp-cpu|identity|global] [--voxel 0.01] [--truncation 0.03]
 //        [--width 640] [--height 480] [--fps 30]
-//        [--prefilter 3]                                    depth prefilter window (0 = off)
-//        [--near 0] [--far 0]                               range gate, metres (0 = off)
-//        [--min-neighbours 0]                               neighbourhood support, 0-8 (0 = off)
-//        [--max-incidence 0]                                grazing-surface gate, degrees (0 = off)
+//        [--score-threshold 0.9]                            confidence a pixel must reach
+//        [--gpu-downsample <m>]                             device-side thinning; default --voxel, 0 = off
 //        [--high-accuracy]                                  D435 High Accuracy visual preset (live only)
 //        [--bootstrap-frames 5] [--bootstrap-fitness 0.70]  hold fusion until tracking locks on
 //        [--min-fuse-fitness 0] [--max-fuse-rmse 0]         per-frame fusion quality gates (0 = off)
@@ -37,7 +41,7 @@
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
 #include "Pipeline/Pipeline.h"
-#include "Pipeline/Acquisition/DepthCameraFrameSource.h"
+#include "Pipeline/Acquisition/DepthProvider.h"
 #include "Pipeline/Acquisition/DepthRecording.h"
 #include "Pipeline/Acquisition/D435DepthProvider.h"
 #include "Pipeline/Registration/Tracker.h"
@@ -198,14 +202,7 @@ namespace {
 
     // No VKBVH_HAS_REALSENSE guard: D435DepthProvider builds either way, and without the SDK the
     // camera underneath throws with its own message when this is actually called.
-    std::unique_ptr<ep::IDepthProvider> OpenDevice(int width, int height, int fps,
-                                                   bool highAccuracyPreset) {
-        Realsense::D435StreamOptions stream;
-        stream.width = width;
-        stream.height = height;
-        stream.fps = fps;
-        stream.enableInfrared = false; // this tool scores depth only
-        stream.visualPreset = highAccuracyPreset ? "high-accuracy" : "default";
+    std::unique_ptr<ep::IDepthProvider> OpenDevice(const Realsense::D435StreamOptions &stream) {
         return std::make_unique<ep::D435DepthProvider>(stream);
     }
 
@@ -258,31 +255,6 @@ int main(int argc, char **argv) {
                            .Option("--bootstrap-fitness", 0.70)
                            .Option("--min-fuse-fitness", 0.0) // 0 = off
                            .Option("--max-fuse-rmse", 0.0)    // 0 = off
-                           // Tracker-side source reduction. A raw 640x480 frame is ~250k points;
-                           // solving on all of them dominates the align time AND jitters the pose,
-                           // which grows the map's voxel count on a camera that never moved. The
-                           // map still fuses every point -- only the ICP input is reduced.
-                           // Default scales with the map voxel; pass 0 to solve on the raw frame.
-                           // Discontinuity-aware depth prefilter (window in pixels; 0/1 = off).
-                           // The normal is a one-pixel forward difference, so per-pixel depth noise
-                           // sets its conditioning: adjacent normals on a smooth surface disagree by
-                           // a median 24 degrees raw, 4.7 at 3x3, 2.9 at 5x5 (see DepthFilterOptions).
-                           // A noisy normal both mis-values the SDF and mis-places the truncation
-                           // band, and it jitters the pose -- which is what grows the map's voxel
-                           // count on a camera that never moved.
-                           .Option("--prefilter", 3)
-                           // Confidence gates, 0 = off for each: --near/--far in metres,
-                           // --min-neighbours out of 8, --max-incidence in degrees. They discard
-                           // measurements, and a gate set too tight presents only as a thinner
-                           // reconstruction -- watch the "gate reject" line in the stats panel.
-                           .Option("--near", 0.0)
-                           .Option("--far", 0.0)
-                           .Option("--min-neighbours", 0)
-                           .Option("--max-incidence", 0.0)
-                           // Reject a point that straddles a depth step in ANY of the eight
-                           // neighbour directions, not only the two the normal is built from.
-                           // The measured cure for the streaks along the view direction.
-                           .Option("--symmetric-guard")
                            // Weight only the occluded side of the truncation band down, instead
                            // of both sides equally (Bylow / Voxblox eq. 5).
                            .Option("--behind-dropoff")
@@ -292,7 +264,17 @@ int main(int argc, char **argv) {
                            // judgement made on the raw stereo pair -- information no gate this side
                            // of the cable can see. Live only: a recording was made after the
                            // matcher already decided.
-                           .Option("--high-accuracy");
+                           .Option("--high-accuracy")
+                           // --- gpu front end ---------------------------------------------
+                           // The confidence a pixel must reach to survive. Measured on capture/:
+                           // 0.9 leaves zero depth-cliff pixels where 0.0 leaves 1.06%, and it is
+                           // half of why the long stretched streaks disappear (radius 4 is the
+                           // other half -- the two are a pair, see NormalEstimation.md).
+                           .Option("--score-threshold", 0.9)
+                           // Device-side voxel thinning, BEFORE the readback, so it cuts the
+                           // transfer too. Negative = follow --voxel, which is the size below
+                           // which the map cannot represent the difference anyway; 0 = off.
+                           .Option("--gpu-downsample", -1.0);
 
         const std::string replayDirectory = arg.Value("--replay");
         const std::string recordDirectory = arg.Value("--record");
@@ -313,8 +295,6 @@ int main(int argc, char **argv) {
         config.map.submap = false; // one level until a plain scan is known good
         config.map.behindSurfaceDropoff = arg.Has("--behind-dropoff");
         config.map.bandSigmaMultiplier = arg.ValueFloat("--band-sigma");
-        // No `source` set: this tool runs the CPU front end with its own gate knobs, which no
-        // enum value describes, so it builds the source through makeSource below.
         // A camera keeps producing whether or not the map keeps up, so live must drop to bound
         // latency. A recording waits, so replaying it losslessly costs only wall-clock.
         config.acquisition.realTime = live;
@@ -323,31 +303,48 @@ int main(int argc, char **argv) {
         config.fusion.minimumFusionFitness = arg.ValueFloat("--min-fuse-fitness");
         config.fusion.maximumFusionRmse = arg.ValueFloat("--max-fuse-rmse");
 
-        // Built fresh on every stage build, including each Reconfigure. Capturing an already-open
-        // device instead would hand the rebuilt pipeline a source the previous one has closed.
-        ep::DepthFilterOptions depthFilter;
-        depthFilter.prefilterWindow = arg.ValueInt("--prefilter");
-        depthFilter.minimumDepthMeters = arg.ValueFloat("--near");
-        depthFilter.maximumDepthMeters = arg.ValueFloat("--far");
-        depthFilter.minimumValidNeighbours = arg.ValueInt("--min-neighbours");
-        depthFilter.maximumIncidenceDegrees = arg.ValueFloat("--max-incidence");
-        depthFilter.symmetricDepthJumpGuard = arg.Has("--symmetric-guard");
-
-        // Created here, not inside makeSource: the source is built on the acquisition thread and
-        // never handed back, so the only way to read its counters is to own them first. Shared, so
-        // it survives every Reconfigure that rebuilds the source.
-        const auto depthGateStats = std::make_shared<ep::DepthFilterStats>();
-
         const bool highAccuracyPreset = arg.Has("--high-accuracy");
-        config.acquisition.makeSource = [=]() -> std::unique_ptr<ep::IFrameSource> {
-            std::unique_ptr<ep::IDepthProvider> device =
-                    live ? OpenDevice(width, height, fps, highAccuracyPreset)
-                         : std::make_unique<ep::RecordedDepthProvider>(replayDirectory);
-            if (!recordDirectory.empty())
-                device = std::make_unique<ep::DepthRecorder>(std::move(device), recordDirectory);
-            return std::make_unique<ep::DepthCameraFrameSource>(
-                    std::move(device), depthFilter, depthGateStats);
-        };
+
+        // The front end publishes what it discarded here. Owned by the caller because the front
+        // end is built on the acquisition thread and never handed back.
+        const auto gpuStats = std::make_shared<ep::GpuFrontEndStats>();
+
+        // Device-side thinning. Below the map voxel the map cannot represent the difference, so
+        // that is the default; the tracker still sees every surviving point.
+        float gpuDownsampleVoxel = arg.ValueFloat("--gpu-downsample");
+        if (gpuDownsampleVoxel < 0.0f) gpuDownsampleVoxel = config.map.baseVoxel;
+
+        Realsense::D435StreamOptions stream;
+        stream.width = width;
+        stream.height = height;
+        stream.fps = fps;
+        stream.enableInfrared = false; // this tool scores depth only
+        stream.visualPreset = highAccuracyPreset ? "high-accuracy" : "default";
+
+        config.acquisition.stream = stream;
+        config.acquisition.scoreThreshold = arg.ValueFloat("--score-threshold");
+        config.acquisition.downSample.enabled = gpuDownsampleVoxel > 0.0f;
+        config.acquisition.downSample.detailVoxelMeters = gpuDownsampleVoxel;
+        config.acquisition.gpuStats = gpuStats;
+        // Already thinned on the device, before the readback. Thinning again on the host would only
+        // pay for the same reduction twice.
+        config.acquisition.downsampleVoxel = 0.0f;
+
+        if (recordDirectory.empty()) {
+            config.acquisition.source = live ? ep::EAcquisitionSource::Realsense
+                                             : ep::EAcquisitionSource::RealsenseFile;
+            config.acquisition.recordingDirectory = replayDirectory;
+        } else {
+            // Recording needs a DepthRecorder in the chain, and the enum describes a device, not a
+            // chain. So this one case builds it -- and pays for it: the recorder's file format is
+            // float metres, so the frame is unpacked on the way out and re-quantised on the way
+            // into the kernels. Exact (the floats came from Z16 at this scale), but two host passes
+            // the plain live path does not make.
+            config.acquisition.makeProvider = [=]() -> std::unique_ptr<ep::IDepthProvider> {
+                return std::make_unique<ep::DepthRecorder>(
+                        std::make_unique<ep::D435DepthProvider>(stream), recordDirectory);
+            };
+        }
 
         std::printf("source    : %s\n", live ? "live device" : replayDirectory.c_str());
         std::printf("tracker   : %s\n", trackerName.c_str());
@@ -355,18 +352,18 @@ int main(int argc, char **argv) {
                     config.map.truncation);
 
         // Constructed before the window on purpose: the Pipeline constructor builds its stages,
-        // which calls makeSource synchronously. A missing camera or an occupied recording
+        // which opens the device synchronously. A missing camera or an occupied recording
         // directory therefore reports as one CLI line, with no window ever appearing -- and the
         // device is opened exactly once, which a separate pre-flight probe would not manage.
         std::unique_ptr<ep::Tracker> tracker = registry.Create(trackerName);
         if (!tracker) throw std::runtime_error("realsense_scan: unknown tracker '" + trackerName + "'");
-        std::printf("depth     : prefilter %d, range %.2f-%.2f m, neighbours >=%d, incidence <=%.0f deg%s\n",
-                    depthFilter.prefilterWindow, depthFilter.minimumDepthMeters,
-                    depthFilter.maximumDepthMeters, depthFilter.minimumValidNeighbours,
-                    depthFilter.maximumIncidenceDegrees,
+        std::printf("depth     : score >=%.2f, normals %s r%d, downsample %s%s\n",
+                    config.acquisition.scoreThreshold,
+                    config.acquisition.normal.estimator.c_str(),
+                    config.acquisition.normal.planeFitRadius,
+                    config.acquisition.downSample.enabled ? "on" : "off",
                     highAccuracyPreset ? ", high-accuracy preset" : "");
-        std::printf("denoise   : symmetric guard %s, behind-dropoff %s, band %.1f sigma\n",
-                    depthFilter.symmetricDepthJumpGuard ? "on" : "off",
+        std::printf("denoise   : behind-dropoff %s, band %.1f sigma\n",
                     arg.Has("--behind-dropoff") ? "on" : "off", arg.ValueFloat("--band-sigma"));
 
         ep::Pipeline pipeline(config, std::move(tracker));
@@ -475,14 +472,24 @@ int main(int argc, char **argv) {
             ImGui::Text("frames        %llu", (unsigned long long) stats.acquiredFrames);
             ImGui::Text("per frame     %.2f ms", stats.acquireMsAvg);
             ImGui::Text("queued        %zu", stats.captureDepth);
-            ImGui::Text("points kept   %llu",
-                        (unsigned long long) depthGateStats->emittedPoints.load());
-            // Per cause, never summed: the three gates count different populations (range counts
-            // pixels, the other two count candidate points) and want opposite corrections.
-            ImGui::Text("gate reject   %llu range / %llu support / %llu incidence",
-                        (unsigned long long) depthGateStats->rejectedByRange.load(),
-                        (unsigned long long) depthGateStats->rejectedByNeighbourSupport.load(),
-                        (unsigned long long) depthGateStats->rejectedByIncidence.load());
+            ImGui::Text("points kept   %u this fr. / %llu total",
+                        gpuStats->lastFramePoints.load(),
+                        (unsigned long long) gpuStats->emittedPoints.load());
+            // Two different refusals, never summed: the border is the estimator's domain and scales
+            // with the stencil, while "support" is the scene refusing the pixel.
+            ImGui::Text("normal reject %llu border / %llu support",
+                        (unsigned long long) gpuStats->normalOutOfDomain.load(),
+                        (unsigned long long) gpuStats->normalNoSupport.load());
+            // Both ceilings fail OPEN -- the point is dropped, the frame still looks fine -- so they
+            // are loud when nonzero and invisible otherwise.
+            {
+                const unsigned long long insertFailures = gpuStats->downSampleInsertFailures.load();
+                const unsigned long long outOfRange = gpuStats->downSampleOutOfRange.load();
+                if (insertFailures || outOfRange)
+                    ImGui::TextColored(ImVec4(1, 0.7f, 0.2f, 1),
+                                       "downsample    %llu full / %llu out of range",
+                                       insertFailures, outOfRange);
+            }
 
             ImGui::SeparatorText("Track");
             ImGui::Text("tracker       %s", trackerName.c_str());

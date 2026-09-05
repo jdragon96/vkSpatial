@@ -93,6 +93,12 @@ namespace Pipeline {
     bool DepthRecorder::Grab(DepthFrame &out) {
         if (!m_device->Grab(out)) return false;
 
+        // The file format is float32 metres, so this is the one place that pays for the unpack when
+        // the device handed over Z16. It stays float32 on disk: 16-bit would need the scale stored
+        // alongside it, and a scale mistake corrupts every reconstruction made from the recording
+        // without ever looking wrong.
+        EnsureMetres(out, m_device->Intrinsics());
+
         // On the first frame only: create the directory and write the one intrinsics.txt that
         // describes every frame in it.
         if (m_recordedFrameCount == 0) {
@@ -149,6 +155,8 @@ namespace Pipeline {
         const std::size_t sampleCount =
                 std::size_t(m_intrinsics.width) * std::size_t(m_intrinsics.height);
         out.depth.assign(sampleCount, 0.0f);
+        out.rawZ16 = nullptr; // a recording holds metres; there is no device buffer behind it
+        out.depthScale = 0.0f;
         frameFile.read(reinterpret_cast<char *>(out.depth.data()),
                         std::streamsize(sampleCount * sizeof(float)));
         if (!frameFile) throw std::runtime_error("RecordedDepthProvider: short read: " + framePath);

@@ -1,22 +1,26 @@
-// RealSense capture / replay tool for the depth-camera front end (DepthCameraFrameSource +
-// D435DepthProvider, see src/Pipeline/Acquisition). --record drives a live D435 through
-// DepthRecorder to a directory; --replay reads a recording back through RecordedDepthProvider and
-// the same BackprojectDepth front end the live path uses, printing per-frame point/normal counts.
-// --replay needs neither a camera nor the librealsense2 SDK -- it is the only way this front end
-// is exercisable in a session where the device is not attached.
+// RealSense capture / replay tool for the depth PROVIDER layer (src/Pipeline/Acquisition).
+// --record drives a live D435 through DepthRecorder to a directory; --replay reads a recording
+// back through RecordedDepthProvider and prints what each frame actually holds.
+// --replay needs neither a camera nor the librealsense2 SDK -- it is the only way this layer is
+// exercisable in a session where the device is not attached.
+//
+// It deliberately stops at the depth image. Turning one into points is the GPU front end's job and
+// belongs to the tools that own it: validation_score_lab shows it a frame at a time, and
+// realsense_scan runs it through the whole pipeline.
 //
 // Usage:
 //   depth_capture --record <dir> [--frames N] [--width 640] [--height 480] [--fps 30]
 //   depth_capture --replay <dir>
 
-#include "Pipeline/Acquisition/DepthCameraFrameSource.h" // BackprojectDepth, DepthFrame, IDepthProvider
-#include "Pipeline/Acquisition/DepthRecording.h"          // DepthRecorder, RecordedDepthProvider
+#include "Pipeline/Acquisition/DepthProvider.h"  // DepthFrame, IDepthProvider
+#include "Pipeline/Acquisition/DepthRecording.h" // DepthRecorder, RecordedDepthProvider
 #include "utilities/ArgParser.h"
 
 #ifdef VKBVH_HAS_REALSENSE
 #include "Pipeline/Acquisition/D435DepthProvider.h"
 #endif
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <memory>
@@ -25,27 +29,35 @@
 
 namespace {
 
-    // Replays a recording with no camera or SDK required: reads back the raw depth via
-    // RecordedDepthProvider and runs it through the same BackprojectDepth front end the live
-    // device path uses, printing the per-frame point/normal counts it produced.
+    // Replays a recording with no camera or SDK required. Reports the measured pixels per frame
+    // and the depth range over them: a recording whose frames are mostly zero, or whose range is
+    // nothing like the scene that was scanned, is the failure this tool exists to catch, and it
+    // catches it without any front end in the way.
     int RunReplay(const std::string &directory) {
         Pipeline::RecordedDepthProvider provider(directory);
+        const Pipeline::CameraIntrinsics &intrinsics = provider.Intrinsics();
         std::printf("replaying %s (%d recorded frames, %dx%d)\n", directory.c_str(),
-                    provider.FrameCount(), provider.Intrinsics().width, provider.Intrinsics().height);
+                    provider.FrameCount(), intrinsics.width, intrinsics.height);
 
         Pipeline::DepthFrame depthFrame;
         int frameIndex = 0;
-        std::size_t totalPointCount = 0, totalNormalCount = 0;
+        std::size_t totalMeasured = 0;
         while (provider.Grab(depthFrame)) {
-            const Pipeline::Frame frame = Pipeline::BackprojectDepth(depthFrame, provider.Intrinsics());
-            std::printf("  frame %4d: %6zu points, %6zu normals\n", frameIndex, frame.pts.size(),
-                        frame.nrm.size());
-            totalPointCount += frame.pts.size();
-            totalNormalCount += frame.nrm.size();
+            std::size_t measured = 0;
+            float nearest = 0.0f, farthest = 0.0f;
+            for (const float z: depthFrame.depth) {
+                if (!(z > 0.0f)) continue;
+                if (measured == 0) nearest = farthest = z;
+                nearest = std::min(nearest, z);
+                farthest = std::max(farthest, z);
+                ++measured;
+            }
+            std::printf("  frame %4d: %6zu measured of %zu, %.3f-%.3f m\n", frameIndex, measured,
+                        depthFrame.depth.size(), nearest, farthest);
+            totalMeasured += measured;
             ++frameIndex;
         }
-        std::printf("replayed %d frames, %zu total points, %zu total normals\n", frameIndex,
-                    totalPointCount, totalNormalCount);
+        std::printf("replayed %d frames, %zu total measured pixels\n", frameIndex, totalMeasured);
         return 0;
     }
 

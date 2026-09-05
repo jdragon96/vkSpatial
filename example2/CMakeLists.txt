@@ -48,10 +48,10 @@ target_link_libraries(tsdf_pipeline_debugger PRIVATE Engine::Core Pipeline)
 add_spatial_example(icp_quality_diag icp_quality_diag.cpp)
 target_link_libraries(icp_quality_diag PRIVATE Pipeline Engine::Core)
 
-# RealSense D435 depth-camera capture/replay tool: --record drives a live device through
-# DepthRecorder to a directory; --replay reads a recording back through RecordedDepthProvider +
-# BackprojectDepth with no camera or SDK required (no window -- headless, like the diagnostics
-# above). --record prints a reason and exits when built without librealsense2 (VKBVH_HAS_REALSENSE
+# RealSense D435 depth capture/replay tool for the provider layer: --record drives a live device
+# through DepthRecorder to a directory; --replay reads a recording back through
+# RecordedDepthProvider and reports what each frame holds, with no camera or SDK required (no
+# window -- headless, like the diagnostics above). --record prints a reason and exits when built without librealsense2 (VKBVH_HAS_REALSENSE
 # not defined by src/Pipeline/CMakeLists.txt's optional find_package(realsense2)).
 add_spatial_example(depth_capture depth_capture.cpp)
 target_link_libraries(depth_capture PRIVATE Pipeline)
@@ -137,14 +137,6 @@ if (GLSLC_EXECUTABLE)
     add_compiled_shaders(voxel_fill_debugger VOXDBG_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag
         Shaders/IsosurfaceMesh.vert.glsl Shaders/IsosurfaceMesh.frag.glsl
         Shaders/EdgeOverlay.vert.glsl Shaders/EdgeOverlay.frag.glsl)
-
-    # Live depth-camera viewer: stream an IDepthProvider (RealSense device or a recording),
-    # run each frame through the pipeline's own BackprojectDepth, and render the resulting
-    # oriented point cloud. Shows exactly what the reconstruction consumes, with the depth
-    # discontinuity filter editable while it runs. --replay works with no hardware.
-    add_spatial_example(depth_live_viewer depth_live_viewer.cpp PointCloudPass.cpp ImGuiPass.cpp)
-    target_link_libraries(depth_live_viewer PRIVATE Engine::Render imgui Engine::Core Pipeline)
-    add_compiled_shaders(depth_live_viewer VOXDBG_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
 
     # Confidence viewer for the D400 score kernel: drag a knob, watch WHERE the score moves.
     # --sweep turns it headless and prints a table instead. --replay needs neither a camera nor

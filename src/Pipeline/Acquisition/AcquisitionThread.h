@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Pipeline/Acquisition/DepthProvider.h"
 #include "Pipeline/PipelineStage.h"
 #include "Pipeline/Types.h" // Pipeline::Frame
 
@@ -9,6 +10,7 @@
 #include "utilities/RunningMean.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -19,16 +21,25 @@
 
 namespace Pipeline {
 
-    // Where frames come from. One Frame per Next(); Close() also wakes a blocked Next() so the
-    // pipeline can stop promptly.
-    class IFrameSource {
-    public:
-        virtual ~IFrameSource() = default;
-        virtual const char *Name() const = 0;
-
-        virtual void Open() {}             // acquire the device / open the dataset (optional)
-        virtual bool Next(Frame &out) = 0; // fill the next frame; false when exhausted/stopped
-        virtual void Close() {}            // release the device / wake a blocked Next() (optional)
+    // What the GPU depth front end discarded, published once per frame by RealsenseFrameSource.
+    //
+    // Without this the panel over a live scan reads zero while points flow, and the two ceilings
+    // below fail OPEN -- a full probe table or a voxel outside the packable range silently drops
+    // the point. Atomic because the reader is the render thread and the writer is acquisition.
+    //
+    // The score kernel's own rejection breakdown is NOT here: it costs an atomic per rejected
+    // pixel and most of a depth image is usually invalid, so it stays behind
+    // ValidationScoreOptions::countRejections for the lab tools that want it.
+    struct GpuFrontEndStats {
+        std::atomic<std::uint64_t> emittedPoints{0}; // cumulative, over the whole run
+        std::atomic<std::uint32_t> lastFramePoints{0};
+        // The estimator's stencil hung off the edge of the image: its domain, not the scene.
+        std::atomic<std::uint64_t> normalOutOfDomain{0};
+        // The stencil fitted and still found too few same-surface samples. The scene refusing the
+        // pixel, which is the number worth watching.
+        std::atomic<std::uint64_t> normalNoSupport{0};
+        std::atomic<std::uint64_t> downSampleInsertFailures{0};
+        std::atomic<std::uint64_t> downSampleOutOfRange{0};
     };
 
     enum class EAcquisitionSource {
@@ -63,6 +74,10 @@ namespace Pipeline {
         float scoreThreshold = 0.9f;
         Realsense::D435StreamOptions stream; // live device only
 
+        // Optional. Owned by the caller because the source is built on the acquisition thread and
+        // never handed back, so this is the only way to read what the front end discarded.
+        std::shared_ptr<GpuFrontEndStats> gpuStats;
+
         // Voxel-grid reduce each frame as it is acquired; 0 (default) disables it.
         //
         // Reducing HERE rather than at integration is what makes it worth anything: a 640x480 depth
@@ -80,25 +95,35 @@ namespace Pipeline {
         // slower setting and every A/B taken over it is worthless. See CommunicationModule.
         bool realTime = true;
 
-        // Escape hatch, and the only reason it survives: tests inject synthetic sources that no
-        // enum can describe. When set it wins over `source`. Production code should not need it --
-        // if a real source cannot be described above, add it above.
-        std::function<std::unique_ptr<IFrameSource>()> makeSource;
+        // Escape hatch on the DEVICE, not on the frame: a test injects a scripted depth image and
+        // gets the real front end over it. When set it wins over `source`, and the frames it
+        // produces go through exactly the path a camera's do.
+        std::function<std::unique_ptr<IDepthProvider>()> makeProvider;
     };
 
-    std::unique_ptr<IFrameSource> MakeAcquisitionSource(const AcquisitionConfig &config);
+    // Built from `source`, or from makeProvider when that is set. PlyFolder has no device and
+    // returns null -- the thread reads the files itself.
+    std::unique_ptr<IDepthProvider> MakeDepthProvider(const AcquisitionConfig &config);
+
+    // The depth front end, hidden here because it owns a Vulkan context and every consumer of
+    // Pipeline.h would otherwise pay for it. Defined in AcquisitionThread.cpp.
+    class DepthFrontEnd;
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
-    // The acquisition stage: pulls frames from one source and hands them to the ICP thread.
+    // The acquisition stage: makes frames and hands them to the ICP thread.
     //
-    // Every source ends in the same place -- comm.capturedFrames -- so which one is running changes
+    // It MAKES them rather than pulling them from a source object. There are only two ways a frame
+    // comes into being -- a depth image through the GPU front end, or a PLY off disk -- and an
+    // interface over two cases bought nothing but a second axis to configure wrongly.
+    //
+    // Every path ends in the same place, comm.capturedFrames, so which one is running changes
     // nothing downstream. A live camera and a replayed recording are two configurations of this one
     // stage, not two pipelines.
     ///////////////////////////////////////////////////////////////////////////////////////////////
     class AcquisitionThread : public PipelineStage {
     public:
         AcquisitionThread(CommunicationModule &comm, AcquisitionConfig config);
-        ~AcquisitionThread() override; // join before m_source dies (Run uses it)
+        ~AcquisitionThread() override; // joins before the device and front end die (Run uses them)
 
         EAcquisitionSource Source() const { return m_config.source; }
 
@@ -117,8 +142,19 @@ namespace Pipeline {
         bool waitWhilePaused();
         void reduceFrame(Frame &frame) const;
 
+        void open();
+        bool next(Frame &out);
+        bool nextDepthFrame(Frame &out);
+        bool nextPlyFrame(Frame &out);
+        bool waitForNextPlySlot();
+
         AcquisitionConfig m_config;
-        std::unique_ptr<IFrameSource> m_source;
+        std::unique_ptr<IDepthProvider> m_provider;   // null for PlyFolder
+        std::unique_ptr<DepthFrontEnd> m_frontEnd;    // built on Open, once the device can be asked
+        std::size_t m_plyCursor = 0;
+        bool m_hasLastPlyEmit = false;
+        std::chrono::steady_clock::time_point m_lastPlyEmit{};
+        bool m_closed = false;
         std::atomic<bool> m_paused{false};
         std::mutex m_pauseMutex;
         std::condition_variable m_pauseCv;

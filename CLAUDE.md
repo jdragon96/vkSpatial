@@ -41,7 +41,7 @@ cmake --build build-rel --target tsdf_folder_eval icp_quality_diag -j8
 ./build-rel/example2/depth_capture     --replay capture        # depth 녹화 재생 (카메라 불필요)
 ```
 
-창을 띄우는 디버그 뷰어(`voxel_fill_debugger`, `depth_live_viewer`, `realsense_scan`, `isosurface_viewer`, `object_scan_viewer`)는 대개 `--dump`/`--no-view` 헤드리스 모드를 함께 가진다.
+창을 띄우는 디버그 뷰어(`voxel_fill_debugger`, `validation_score_lab`, `realsense_scan`, `isosurface_viewer`, `object_scan_viewer`)는 대개 `--dump`/`--no-view` 헤드리스 모드를 함께 가진다.
 
 저장소에 들어 있는 실데이터 자산(정밀도 주장은 이 위에서 측정한다):
 
@@ -144,7 +144,8 @@ AcquisitionThread --Channel<Frame>-->  RegistrationThread
 ```
 
 - 취득 전략은 `EAcquisitionSource`(PlyFolder / Realsense / RealsenseFile)로 갈리고, 정합은 `Tracker` 인터페이스로, 융합은 TSDF 백엔드로 갈린다 — 세 축이 각각 독립적으로 교체된다.
-- **취득은 `Acquisition/` 하나에 모인다.** `AcquisitionThread`가 공용 기계(`IFrameSource`, `AcquisitionConfig`, depth 장치 추상화 `IDepthProvider`)를 갖고, `AcquisitionConfig::source` 하나로 구현을 고른다 — `RealsenseFrameSource`(라이브 D435와 녹화, 둘 다 `src/Realsense`의 GPU 프론트엔드) 또는 `FileFrameSource`(PLY 폴더). 알고리즘은 `src/Realsense`에 있고 여기 있는 것은 어댑터뿐이다. `StructuredLight/`는 별도 소스로 남는다.
+- **취득에는 추상화가 하나뿐이다 — `IDepthProvider`.** 한때 그 위에 `IFrameSource`가 한 층 더 있었고(장치를 `Frame`으로 바꾸는 전략), 축 하나에 인터페이스가 둘이라 모든 도구가 장치와 소스를 따로 골라 **잘못 짝지을 수 있었다.** 지금은 `AcquisitionThread`가 프레임을 직접 만든다: depth 이미지는 `src/Realsense`의 GPU 프론트엔드로, PLY는 `FrameLoader`로. `AcquisitionConfig::source`가 `Realsense`(라이브 D435) / `RealsenseFile`(녹화) / `PlyFolder`를 고르고, 테스트는 `makeProvider`로 **장치를** 주입한다 — 합성 depth 이미지가 카메라와 똑같은 경로를 지난다.
+- **`DepthFrame`은 metres와 raw Z16을 둘 다 실을 수 있고, provider는 자기가 원래 갖고 있는 쪽만 채운다.** D400은 Z16을 주고 GPU 프론트엔드는 Z16을 먹으므로, 중간에서 float으로 풀었다가 되돌리면 드라이버가 시작한 자리로 돌아오는 데 프레임당 호스트 전체 패스를 두 번 쓴다. metres가 필요한 소비자(`DepthRecorder`)가 `EnsureMetres`로 요청한다.
 - `CommunicationModule(dropWhenBehind)`가 두 링크의 오버플로 정책을 함께 정한다. **라이브 센서는 `true`(오래된 프레임을 버려 지연을 묶음), 녹화 재생은 `false`(블로킹 = 무손실).** 녹화를 드롭 모드로 돌리면 느린 설정이 조용히 더 적은 프레임을 처리해서, 설정 간 비교 측정이 전부 오염된다.
 - **무손실은 재현성이 아니다.** 블로킹 채널은 프레임 *개수*만 맞춘다. 맵은 latest-wins `Mailbox`로 트래커에 전달되고 정합은 `trackedFrames` 용량만큼 융합보다 앞서 달릴 수 있으므로, 프레임 N이 *어느 버전의 맵*에 정합하는지가 쓰레드 스케줄링에 달렸다. 그 맵이 정합 타깃이므로 포즈가 달라지고, 다음 맵이 달라진다 — 실행마다 발산한다. 그래서 `CommunicationModule`은 녹화 모드에서 `FrameHandshake`도 켠다(정합이 매 프레임 융합 완료를 기다림 = lock-step). **파이프라인을 통과하는 A/B 측정은 이것 없이는 무의미하다.**
 - **정합에 실패한 프레임을 융합할지는 `ETrackFailure`별로 갈린다**(`ShouldFuse()`, `Pipeline/Types.h`). `TooFewInliers`/`LowOverlap`은 융합하지 않는다 — 로컬 맵이 있는데도 solve가 게이트를 못 넘긴 경우이고, 그 틀린 포즈로 오염된 맵이 다음 프레임의 정합 타깃이 된다. `NoModel`/`NoLocalTarget`은 **융합한다**: 오염시킬 맵이 애초에 없고, 거부하면 맵이 부트스트랩되지 않거나(프레임 0이 `NoModel`) 새 영역으로 자라지 못한다. 건너뛴 수는 `PipelineStats::skippedFusions`로 관측한다.
