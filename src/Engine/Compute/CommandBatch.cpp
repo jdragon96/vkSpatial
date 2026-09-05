@@ -1,5 +1,6 @@
 #include "Engine/Compute/CommandBatch.h"
 
+#include <mutex>
 #include <stdexcept>
 
 namespace Engine::Compute {
@@ -24,6 +25,9 @@ namespace Engine::Compute {
 
     void CommandBatch::ensureBegun() {
         if (m_cmd != VK_NULL_HANDLE) return;
+
+        // First recorded command: take the pool for the rest of this batch's life.
+        m_submissionLock = std::unique_lock<std::recursive_mutex>(m_context.submissionMutex);
 
         VkCommandBufferAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -60,6 +64,42 @@ namespace Engine::Compute {
         if (regions.empty()) return *this;
         ensureBegun();
         vkCmdCopyBuffer(m_cmd, src, dst, static_cast<uint32_t>(regions.size()), regions.data());
+        return *this;
+    }
+
+    CommandBatch &CommandBatch::CopyBufferToImage(VkBuffer source,
+                                                  Engine::Core::Image &image,
+                                                  VkImageLayout finalLayout) {
+        if (!image.Valid())
+            throw std::runtime_error("CommandBatch::CopyBufferToImage: the image was never created");
+        ensureBegun();
+
+        const VkExtent3D extent = image.Extent();
+
+        image.TransitionLayout(m_cmd,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               0,
+                               VK_ACCESS_TRANSFER_WRITE_BIT);
+
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask = image.AspectMask();
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = extent;
+        vkCmdCopyBufferToImage(m_cmd,
+                               source,
+                               image.Handle(),
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               1,
+                               &region);
+
+        image.TransitionLayout(m_cmd,
+                               finalLayout,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                               VK_ACCESS_TRANSFER_WRITE_BIT,
+                               VK_ACCESS_SHADER_READ_BIT);
         return *this;
     }
 
@@ -104,6 +144,7 @@ namespace Engine::Compute {
         vkFreeCommandBuffers(m_context.device, m_pool, 1, &m_cmd);
         m_cmd = VK_NULL_HANDLE;
         m_submitted = true;
+        m_submissionLock.unlock();
     }
 
 } // namespace Engine::Compute

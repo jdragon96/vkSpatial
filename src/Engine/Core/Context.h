@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 
 #include <functional>
+#include <mutex>
 #include <vector>
 
 namespace Engine::Core {
@@ -25,6 +26,23 @@ namespace Engine::Core {
         VkSurfaceKHR surface = VK_NULL_HANDLE;
 
         VmaAllocator allocator = VK_NULL_HANDLE;
+
+        // Vulkan requires EXTERNAL SYNCHRONISATION of a VkCommandPool and a VkQueue, and that
+        // covers recording too -- vkBeginCommandBuffer and every vkCmd* on a buffer from the pool,
+        // not just allocation. This Context hands out one compute pool and one compute queue, and
+        // the reconstruction pipeline already drives them from two threads (RegistrationThread
+        // through CommandBatch, IntegrationThread through TSDF's ComputePipeline dispatches). A
+        // third arrives with the GPU depth front end.
+        //
+        // Everything funnels through two places -- SubmitOneShot and CommandBatch -- so one lock
+        // taken there covers the whole surface.
+        //
+        // Costs nothing worth having: compute is ONE queue, so the GPU serialises this work
+        // regardless. What the lock serialises is command RECORDING, which is CPU-cheap.
+        //
+        // Recursive because the nesting is legitimate: a caller may Upload a buffer, which submits
+        // its own one-shot, while a CommandBatch of its own is open and holding the lock.
+        std::recursive_mutex submissionMutex;
 
         explicit Context(bool enablePresent = false,
                          const std::vector<const char *> &extraInstanceExtensions = {},

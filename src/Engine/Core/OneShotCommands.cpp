@@ -1,5 +1,7 @@
 #include "Engine/Core/OneShotCommands.h"
 
+#include <mutex>
+
 #include <stdexcept>
 
 namespace Engine::Core {
@@ -7,6 +9,10 @@ namespace Engine::Core {
     void SubmitOneShot(Context &context,
                        QueueRole role,
                        const std::function<void(VkCommandBuffer)> &record) {
+    // Held for the whole allocate -> record -> submit -> wait -> free sequence: the pool needs
+    // external synchronisation for every one of those, not only the allocation.
+    std::lock_guard<std::recursive_mutex> submissionLock(context.submissionMutex);
+
         VkQueue queue = (role == QueueRole::Compute) ? context.computeQueue : context.graphicsQueue;
         VkCommandPool pool = (role == QueueRole::Compute) ? context.cmdPool : context.graphicsCmdPool;
 
