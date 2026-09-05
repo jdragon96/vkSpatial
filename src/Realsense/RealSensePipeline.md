@@ -141,3 +141,51 @@ $$ slot = rowOffset[row] + \left| \{\, c < column : emitted(row, c) \,\} \right|
   지표 동일).
 - **복셀당 최소 표본 수** — 표면과 노이즈를 같은 비율로 지웠다. minVox 32에서 점이 1,009 → 778로
   줄지만 cliff는 이미 0이고 다른 지표도 안 움직였다.
+
+---
+
+# Pipeline 통합 (2026-09-05)
+
+`Pipeline::GpuDepthFrameSource`(`src/Pipeline/Reconstruction/GpuDepthFrameSource.h`)가 이 프론트엔드를
+재구성 파이프라인의 `IFrameSource`로 감싼다. **opt-in**이고 기존 CPU 경로는 그대로 남는다.
+
+## 무엇을 대체하나
+
+기존 `DepthCameraFrameSource`는 전부 CPU다 — `PrefilterDepth` 후 `BackprojectDepth`의 픽셀 루프로
+역투영과 법선 추정을 하고, 그다음 `ReconstructionThread::reduceFrame`이 호스트에서 voxel 솎기를 한다.
+새 소스는 프레임을 `RealSensePipeline`에 넘겨 점수·문턱값·역투영·법선·다운샘플·압축을 전부 디바이스에서
+하고 **살아남은 점만 읽어온다.**
+
+그래서 `AcquisitionConfig::downsampleVoxel`은 0으로 둔다. 그건 readback **후**에 도는 CPU 축소이고,
+여기 `DownSampleOptions`는 readback **전**에 솎으므로 전송량까지 준다.
+
+한 가지 손실이 붙는다: `IDepthProvider`가 float 미터를 주므로 소스가 Z16으로 재양자화한다. RealSense
+계열에서는 그 float이 애초에 같은 스케일의 Z16에서 나왔으므로 왕복이 정확하고, 테스트가 한 양자 이내임을
+고정한다.
+
+## A/B — 같은 녹화, 같은 하류 (`capture/` 476프레임, `--trackers icp`)
+
+```
+icp_quality_diag --replay capture --trackers icp --frontend cpu
+icp_quality_diag --replay capture --trackers icp --frontend gpu --gpu-downsample 0.01
+```
+
+| | CPU (`BackprojectDepth`) | GPU (`RealSensePipeline`) |
+| --- | --- | --- |
+| ICP align (프레임당) | 240.61 ms | **30.43 ms** (7.9배) |
+| 맵 엔트리 | 3,208,407 | **616,294** (5.2배 적음) |
+| tracker RMSE | 0.001214 | 0.001902 |
+| 경로 길이 | 1.282 m | 1.238 m |
+| 최대 step | 0.0112 m | **0.0085 m** |
+| 추적 거부 | 1 (프레임 0, no-model) | 1 (동일) |
+
+**ICP가 8배 빨라진다** — 점이 5배 적기 때문이고, 이게 통합의 근거다. 추적 품질은 유지된다: 거부가 늘지
+않고(`TooFewInliers` 0), 최대 step은 오히려 작아져 움직임이 더 매끈하다.
+
+잔차 RMSE는 0.0012 → 0.0019로 올라간다. 5배 성긴 맵에 대한 잔차이므로 오르는 것이 예상되는 방향이고,
+827 mm 규모 장면에서 둘 다 1~2 mm다. **이 숫자로 "정확도가 나빠졌다"고 말할 수는 없다** — 같은 밀도에서
+비교한 것이 아니기 때문이다. 그 비교가 필요하면 점 수를 맞춰 다시 재야 한다.
+
+`--gpu-downsample 0.01`에 CPU reduce를 껐을 때(`--downsample 0`) 결과가 616,294로 **동일**하다. GPU
+출력이 이미 10 mm 이상 떨어져 있어 CPU 축소가 지울 것이 없다는 뜻이고, 두 축소가 겹쳐 이중으로 솎이지
+않는다는 확인이다.

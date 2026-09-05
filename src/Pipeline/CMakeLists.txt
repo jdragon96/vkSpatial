@@ -9,7 +9,7 @@ add_library(Pipeline ALIAS EnginePipeline)
 # Engine::Render is PRIVATE: only Render/RenderThread.cpp uses it, and RenderThread.h forward-
 # declares the render types, so consumers (and the headless tests) don't pull in GLFW/render.
 target_link_libraries(EnginePipeline
-        PUBLIC Engine::Features Engine::Core TSDF Mesh BVH Ceres::ceres
+        PUBLIC Engine::Features Engine::Core TSDF Mesh BVH Realsense Ceres::ceres
         PRIVATE Engine::Render imgui)
 
 target_include_directories(EnginePipeline

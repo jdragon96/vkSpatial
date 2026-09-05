@@ -20,6 +20,7 @@
 #include "Pipeline/Registration/GpuIcpTracker.h"
 #include "Pipeline/Registration/Tracker.h"       // TrackerRegistry
 #include "Pipeline/Reconstruction/DepthCameraFrameSource.h"
+#include "Pipeline/Reconstruction/GpuDepthFrameSource.h"
 #include "Pipeline/Reconstruction/DepthRecording.h"
 #include "Pipeline/Reconstruction/FrameLoader.h" // LoadFrames / ComputeBounds
 #include "Engine/Eval/RmseMetrics.h"                     // NearestNeighbourRMSE
@@ -47,8 +48,22 @@ namespace {
     // changed which map version the tracker saw, so the trajectory diverged and the comparison
     // measured thread scheduling instead of the setting.
     bool g_pointToPlane = true;
+    // Range-adaptive truncation band multiplier (0 = off, the shipped default).
+    float g_bandSigmaMultiplier = 0.0f;
+    // Occluded-side-only weight profile (off = the symmetric one, the shipped default).
+    bool g_behindSurfaceDropoff = false;
+    bool g_submap = true;
     // Depth prefilter window for the --replay front end (0 = off, the shipped default).
     int g_prefilterWindow = 0;
+    // Confidence gates for the --replay front end, all off by default. Globals for the same reason
+    // the prefilter window is one: makeSource is rebuilt per tracker run and captures by value.
+    ep::DepthFilterOptions g_depthGates;
+    std::string g_frontEnd = "cpu";
+    float g_gpuScoreThreshold = 0.9f;
+    float g_gpuDownsampleVoxel = 0.0f;
+
+    // Shared so the counters survive every makeSource rebuild and can be reported after the runs.
+    std::shared_ptr<ep::DepthFilterStats> g_depthGateStats;
 
 
     std::vector<std::string> collectFramePaths(const std::string &dir) {
@@ -63,6 +78,9 @@ namespace {
         std::sort(paths.begin(), paths.end());
         return paths;
     }
+
+    // Fusion gate settings from the CLI; off unless the caller asks for them.
+    ep::FusionGateConfig g_fusion;
 
     struct RunResult {
         std::vector<Eigen::Vector3f> reconPoints; // occupied-voxel centres of the final model
@@ -79,6 +97,8 @@ namespace {
         std::uint64_t rejected = 0, noModel = 0, noLocal = 0, fewInliers = 0, lowOverlap = 0;
         std::uint64_t implausibleMotion = 0;
         std::uint64_t skippedFusions = 0;
+        std::uint64_t bootstrapHeld = 0, rejectedByFitness = 0, rejectedByRmse = 0;
+        bool fusionArmed = true;
     };
 
     // Drive the pipeline to completion over all frames, then snapshot the final model + stats.
@@ -88,8 +108,12 @@ namespace {
         ep::Pipeline::Config config;
         config.map.baseVoxel = voxel;
         config.map.pointToPlane = g_pointToPlane;
+        config.map.bandSigmaMultiplier = g_bandSigmaMultiplier;
+        config.map.behindSurfaceDropoff = g_behindSurfaceDropoff;
+        config.map.submap = g_submap;
         if (truncation > 0.0f) config.map.truncation = truncation;
         config.acquisition = acquisition;
+        config.fusion = g_fusion;
 
         ep::TrackerRegistry registry = ep::TrackerRegistry::Default();
         std::unique_ptr<ep::Tracker> tracker = registry.Create(trackerName);
@@ -156,12 +180,23 @@ namespace {
         r.lowOverlap = stats.rejectedLowOverlap;
         r.implausibleMotion = stats.rejectedImplausibleMotion;
         r.skippedFusions = stats.skippedFusions;
+        r.bootstrapHeld = stats.bootstrapHeldFrames;
+        r.rejectedByFitness = stats.fusionRejectedByFitness;
+        r.rejectedByRmse = stats.fusionRejectedByRmse;
+        r.fusionArmed = stats.fusionArmed;
         r.stepAvg = stats.poseDeltaMetersAvg;
         r.stepMax = stats.poseDeltaMetersMax;
         r.turnMax = stats.poseDeltaDegreesMax;
         r.pathLength = stats.trajectoryLengthMeters;
         if (const std::shared_ptr<const ep::ModelSnapshot> model = pipe.LatestModel()) {
             r.entries = model->entries.size();
+            // Observable ceilings: a detail level that cannot be inserted disappears silently, so
+            // an entry count that moved the wrong way is diagnosable only from here.
+            std::printf("  [%s] base tiles %u  detail tiles %u  dense blocks %u  "
+                        "hash insert failures %llu  window refusals %u\n",
+                        trackerName.c_str(), model->baseTiles, model->detailTiles, model->denseBlocks,
+                        (unsigned long long) model->map.insertFailureCount,
+                        model->windowLimitRefusals);
             r.reconPoints.reserve(model->entries.size());
             for (const TSDFVoxel &e: model->entries) r.reconPoints.push_back(e.center);
         }
@@ -183,7 +218,41 @@ int main(int argc, char **argv) {
                         .Option("--downsample") // acquisition-stage voxel; default = the map's finest
                         .Option("--min-fitness", 0.0)
                         .Option("--prefilter", 0)
-                        .Option("--trackers", "identity,icp");
+                        // Confidence gates, 0 = off for each: --near/--far in metres,
+                        // --min-neighbours out of 8, --max-incidence in degrees. They discard
+                        // measurements, so the per-cause counts are printed with the run.
+                        .Option("--near", 0.0)
+                        .Option("--far", 0.0)
+                        .Option("--min-neighbours", 0)
+                        .Option("--max-incidence", 0.0)
+                        // Range-adaptive truncation band: band = N * sigma_z(z), floored at 2
+                        // voxels and capped at --truncation. 0 = off (the fixed band).
+                        .Option("--band-sigma", 0.0)
+                        // Weight only the occluded side of the band down (Bylow / Voxblox eq. 5)
+                        // instead of both sides equally.
+                        .Option("--behind-dropoff")
+                        // Test the point against all eight neighbours for a depth step, not only
+                        // the two the normal is differenced from.
+                        .Option("--symmetric-guard")
+                        // Base-only map: no density classifier, no detail level, no detail hash.
+                        .Option("--no-submap")
+                        .Option("--trackers", "identity,icp")
+                        .Option("--bootstrap-frames", 0)      // 0 = off
+                        .Option("--bootstrap-fitness", 0.70)
+                        .Option("--min-fuse-fitness", 0.0)    // 0 = off
+                        .Option("--max-fuse-rmse", 0.0)  // 0 = off
+                        // Which depth front end builds the frames. "cpu" is BackprojectDepth on
+                        // the host; "gpu" is Realsense::RealSensePipeline on the device. Everything
+                        // downstream is identical either way, so the table separates the two.
+                        .Option("--frontend", "cpu")
+                        .Option("--gpu-threshold", 0.9)   // confidence bar, gpu front end only
+                        .Option("--gpu-downsample", 0.0); // detail voxel [m]; 0 = off
+
+        g_frontEnd = arg.Value("--frontend");
+        if (g_frontEnd != "cpu" && g_frontEnd != "gpu")
+            throw std::runtime_error("--frontend must be cpu or gpu, not '" + g_frontEnd + "'");
+        g_gpuScoreThreshold = float(arg.ValueFloat("--gpu-threshold"));
+        g_gpuDownsampleVoxel = float(arg.ValueFloat("--gpu-downsample"));
 
         const std::string dir = arg.Value("--dir");
         const std::string replayDirectory = arg.Value("--replay");
@@ -227,11 +296,33 @@ int main(int argc, char **argv) {
             if (truncation <= 0.0f) truncation = 3.0f * voxel;
 
             acquisition.type = ep::EAcquisitionType::DepthCamera;
-            acquisition.makeSource = [replayDirectory]() -> std::unique_ptr<ep::IFrameSource> {
-                ep::DepthFilterOptions filter;
+            // Two front ends over the SAME recording. The CPU one back-projects and estimates
+            // normals per pixel on the host; the GPU one hands the frame to
+            // Realsense::RealSensePipeline and reads back only the survivors. Selecting here rather
+            // than in two tools is the point -- everything downstream is then identical, so a
+            // difference in the table below is the front end and nothing else.
+            const bool useGpuFrontEnd = g_frontEnd == "gpu";
+            acquisition.makeSource = [replayDirectory, useGpuFrontEnd, k]()
+                    -> std::unique_ptr<ep::IFrameSource> {
+                if (useGpuFrontEnd) {
+                    Realsense::ValidationScoreOptions score;
+                    score.focalLengthPixels = k.fx;
+                    score.depthScale = 0.001f;
+                    // The recording predates this module and carries no baseline, so the D435
+                    // datasheet value stands in. Every comparison here is relative.
+                    score.baselineMeters = 0.05f;
+                    Realsense::DownSampleOptions downSample;
+                    downSample.enabled = g_gpuDownsampleVoxel > 0.0f;
+                    downSample.detailVoxelMeters = g_gpuDownsampleVoxel;
+                    return std::make_unique<ep::GpuDepthFrameSource>(
+                            std::make_unique<ep::RecordedDepthProvider>(replayDirectory), score,
+                            Realsense::NormalEstimationOptions{}, downSample, g_gpuScoreThreshold);
+                }
+                ep::DepthFilterOptions filter = g_depthGates;
                 filter.prefilterWindow = g_prefilterWindow;
                 return std::make_unique<ep::DepthCameraFrameSource>(
-                        std::make_unique<ep::RecordedDepthProvider>(replayDirectory), filter);
+                        std::make_unique<ep::RecordedDepthProvider>(replayDirectory), filter,
+                        g_depthGateStats);
             };
             char buf[512];
             std::snprintf(buf, sizeof buf, "%s  (%d depth frames, %dx%d, fx %.2f)",
@@ -258,17 +349,38 @@ int main(int argc, char **argv) {
         // Scoring is offline: every configuration must process the SAME frames, or a slower
         // setting silently processes fewer and the comparison measures the drop rate instead of
         // the tracker.
+        g_fusion.bootstrapConsecutiveFrames = arg.ValueInt("--bootstrap-frames");
+        g_fusion.bootstrapMinFitness = arg.ValueFloat("--bootstrap-fitness");
+        g_fusion.minimumFusionFitness = arg.ValueFloat("--min-fuse-fitness");
+        g_fusion.maximumFusionRmse = arg.ValueFloat("--max-fuse-rmse");
+
         acquisition.realTime = false;
 
         g_minFitness = arg.ValueFloat("--min-fitness", 0.0f);
         g_pointToPlane = !arg.Has("--no-p2p");
+        g_bandSigmaMultiplier = arg.ValueFloat("--band-sigma");
+        g_behindSurfaceDropoff = arg.Has("--behind-dropoff");
+        g_submap = !arg.Has("--no-submap");
+        g_depthGates.symmetricDepthJumpGuard = arg.Has("--symmetric-guard");
         g_prefilterWindow = arg.ValueInt("--prefilter", 0);
+        g_depthGates.minimumDepthMeters = arg.ValueFloat("--near");
+        g_depthGates.maximumDepthMeters = arg.ValueFloat("--far");
+        g_depthGates.minimumValidNeighbours = arg.ValueInt("--min-neighbours");
+        g_depthGates.maximumIncidenceDegrees = arg.ValueFloat("--max-incidence");
+        g_depthGateStats = std::make_shared<ep::DepthFilterStats>();
         const float downsample = arg.ValueFloat("--downsample", 0.0f);
         if (downsample != 0.0f) acquisition.downsampleVoxel = downsample;
 
         std::printf("source   : %s\n", label.c_str());
         std::printf("map      : point-to-plane %s   depth prefilter %d\n",
                     g_pointToPlane ? "on" : "off", g_prefilterWindow);
+        std::printf("band     : adaptive %.1f sigma_z (0 = fixed truncation), behind-dropoff %s\n",
+                    g_bandSigmaMultiplier, g_behindSurfaceDropoff ? "on" : "off");
+        std::printf("guard    : symmetric depth-jump %s\n",
+                    g_depthGates.symmetricDepthJumpGuard ? "on" : "off");
+        std::printf("gates    : range %.2f-%.2f m   neighbours >=%d   incidence <=%.0f deg\n",
+                    g_depthGates.minimumDepthMeters, g_depthGates.maximumDepthMeters,
+                    g_depthGates.minimumValidNeighbours, g_depthGates.maximumIncidenceDegrees);
         std::printf("voxel    : %.4f   truncation : %.4f   downsample : %s\n\n", voxel,
                     truncation > 0.0f ? truncation : 1.5f,
                     downsample == 0.0f ? "(map's finest)"
@@ -319,6 +431,39 @@ int main(int argc, char **argv) {
                         (unsigned long long) results[i].lowOverlap,
                         (unsigned long long) results[i].implausibleMotion,
                         (unsigned long long) results[i].skippedFusions);
+
+        // The FusionGate's share of those skipped fusions. Printed only when the gate is on, so a
+        // default run's report stays exactly as it was.
+        const bool gateOn = g_fusion.bootstrapConsecutiveFrames > 0 || g_fusion.minimumFusionFitness > 0.0f ||
+                            g_fusion.maximumFusionRmse > 0.0f;
+        if (gateOn) {
+            std::printf("\nFusion gate (bootstrap %d frames @ fitness %.2f; steady minFitness %.2f, maxRmse %.4f):\n",
+                        g_fusion.bootstrapConsecutiveFrames, g_fusion.bootstrapMinFitness,
+                        g_fusion.minimumFusionFitness, g_fusion.maximumFusionRmse);
+            std::printf("%-10s | %15s | %18s | %15s | %6s\n", "tracker", "bootstrap held", "rejected by fitness",
+                        "rejected by rmse", "armed");
+            std::printf("-----------|-----------------|--------------------|-----------------|-------\n");
+            for (std::size_t i = 0; i < trackers.size(); ++i)
+                std::printf("%-10s | %15llu | %18llu | %15llu | %6s\n",
+                            trackers[i].c_str(),
+                            (unsigned long long) results[i].bootstrapHeld,
+                            (unsigned long long) results[i].rejectedByFitness,
+                            (unsigned long long) results[i].rejectedByRmse,
+                            results[i].fusionArmed ? "yes" : "NO");
+        }
+
+        // Per cause, never summed: rejectedByRange counts PIXELS (the gate runs before
+        // back-projection) while the other two count candidate POINTS, and a gate set too tight
+        // shows up only as a thinner reconstruction unless it is reported. Totals span every
+        // tracker run, since one shared counter outlives each makeSource rebuild.
+        if (g_depthGateStats && !replayDirectory.empty()) {
+            std::printf("\nDepth gates over all runs: %llu points kept, rejected %llu range (px) / "
+                        "%llu support / %llu incidence\n",
+                        (unsigned long long) g_depthGateStats->emittedPoints.load(),
+                        (unsigned long long) g_depthGateStats->rejectedByRange.load(),
+                        (unsigned long long) g_depthGateStats->rejectedByNeighbourSupport.load(),
+                        (unsigned long long) g_depthGateStats->rejectedByIncidence.load());
+        }
 
         // If an `identity` run exists, score every other tracker's reconstruction against it (identity
         // == the pre-registered ground-truth reference). Higher RMSE => that tracker drifted the surface.
