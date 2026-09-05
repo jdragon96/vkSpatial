@@ -3,7 +3,7 @@
 #include "Engine/Core/Buffer.h"
 #include "Engine/Core/ComputePipeline.h"
 #include "Engine/Core/Context.h"
-#include "Pipeline/Registration/RegistrationTypes.h"
+#include "Engine/Registration/RegistrationTypes.h"
 #include <Eigen/Dense>
 #include <cstdint>
 #include <memory>
@@ -13,9 +13,9 @@ namespace Pipeline {
 
     class LocalGrid {
     public:
-        LocalGrid(const std::vector<Eigen::Vector3f> &pts, float cell);
+        LocalGrid(const std::vector<Eigen::Vector3f> &points, float cell);
 
-        int Nearest(const Eigen::Vector3f &q, float radius) const;
+        int Nearest(const Eigen::Vector3f &query, float radius) const;
 
         Eigen::Vector3f m_origin = Eigen::Vector3f::Zero(); // AABB min (zeroed: left indeterminate on
                                                             // empty input otherwise, and this is a
@@ -27,13 +27,13 @@ namespace Pipeline {
         const std::vector<Eigen::Vector3f> &m_pts; // caller-owned; must outlive this LocalGrid
 
     private:
-        int cellIndex(const Eigen::Vector3i &c) const {
-            return (c.z() * m_dims.y() + c.y()) * m_dims.x() + c.x();
+        int cellIndex(const Eigen::Vector3i &cellCoordinate) const {
+            return (cellCoordinate.z() * m_dims.y() + cellCoordinate.y()) * m_dims.x() + cellCoordinate.x();
         }
-        Eigen::Vector3i cellOf(const Eigen::Vector3f &p) const {
-            return Eigen::Vector3i(int(std::floor((p.x() - m_origin.x()) / m_cell)),
-                                   int(std::floor((p.y() - m_origin.y()) / m_cell)),
-                                   int(std::floor((p.z() - m_origin.z()) / m_cell)));
+        Eigen::Vector3i cellOf(const Eigen::Vector3f &point) const {
+            return Eigen::Vector3i(int(std::floor((point.x() - m_origin.x()) / m_cell)),
+                                   int(std::floor((point.y() - m_origin.y()) / m_cell)),
+                                   int(std::floor((point.z() - m_origin.z()) / m_cell)));
         }
     };
 
@@ -72,8 +72,13 @@ namespace Pipeline {
         static constexpr float kNoRobustWeightingHuberScale = 1e30f;
         Engine::Core::Context *m_ctx;
         std::unique_ptr<Engine::Core::ComputePipeline> m_kernel;
-        std::unique_ptr<Engine::Core::Buffer> m_src, m_tgtPts, m_tgtNrm, m_bucketStart, m_bucketIdx, m_partials,
-                m_sourceNormals;
+        std::unique_ptr<Engine::Core::Buffer> m_src;
+        std::unique_ptr<Engine::Core::Buffer> m_tgtPts;
+        std::unique_ptr<Engine::Core::Buffer> m_tgtNrm;
+        std::unique_ptr<Engine::Core::Buffer> m_bucketStart;
+        std::unique_ptr<Engine::Core::Buffer> m_bucketIdx;
+        std::unique_ptr<Engine::Core::Buffer> m_partials;
+        std::unique_ptr<Engine::Core::Buffer> m_sourceNormals;
 
         IterOut AccumulateCentred(const std::vector<Eigen::Vector3f> &src,
                                   const Engine::Registration::PointCloud &tgt, const Eigen::Vector3f &c,
@@ -96,7 +101,7 @@ namespace Pipeline {
         float m_pCell = 1.0f;
         float m_pMaxCorr = 0.0f;
         uint32_t m_pNumSrc = 0;
-        uint32_t m_pNumWG = 0;
+        uint32_t m_pNumWorkerGroup = 0;
     };
 
 } // namespace Pipeline

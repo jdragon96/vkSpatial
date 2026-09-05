@@ -1,4 +1,4 @@
-#include "Pipeline/Registration/GpuPointToPlaneIcp.h"
+#include "LocalRegistration/Algorithm/GpuPointToPlaneIcp.h"
 #include <Eigen/Core>
 #include <gtest/gtest.h>
 #include <random>
@@ -42,8 +42,8 @@ TEST(LocalGrid, NearestMatchesBruteForce) {
 }
 
 #include "Engine/Core/Context.h"
-#include "Pipeline/Registration/GpuPointToPlaneIcp.h"
-#include "Pipeline/Registration/RegistrationTypes.h"
+#include "LocalRegistration/Algorithm/GpuPointToPlaneIcp.h"
+#include "Engine/Registration/RegistrationTypes.h"
 
 // CPU reference: point-to-plane H,b in T's frame, over grid-NN correspondences, CENTRED on tgt centroid.
 static void cpuAccumulate(const std::vector<Vector3f> &src, const Engine::Registration::PointCloud &tgt,
@@ -105,7 +105,32 @@ TEST(GpuIcp, AccumulateMatchesCpu) {
                                                                                       << bc;
 }
 
-#include "Pipeline/Registration/PointToPlaneIcp.h"
+// The residual accumulator must not have a fixed-point floor. Historically slot 28 summed
+// int(round(e^2 * SCALE)) with SCALE=10000: a 3 mm residual squares to 9e-6, which rounds to a
+// ZERO int32 term, so a whole cloud of sub-7mm residuals reported sumOfSquaredResiduals == 0 and
+// every rmse under the floor was meaningless (docs/REALDATA_CAPTURE_FIXES.md "남은 것"). The sum
+// must instead be accurate at sub-millimetre scales.
+TEST(GpuIcp, AccumulateResidualSumHasNoFixedPointFloor) {
+    Engine::Core::Context ctx;
+    std::vector<Vector3f> src;
+    Engine::Registration::PointCloud tgt;
+    for (int i = -15; i <= 15; ++i)
+        for (int j = -15; j <= 15; ++j) {
+            src.emplace_back(i * 0.02f, j * 0.02f, 0.003f); // 3 mm: below the historical ~7 mm floor
+            tgt.points.emplace_back(i * 0.02f, j * 0.02f, 0.0f);
+            tgt.normals.emplace_back(0, 0, 1);
+        }
+
+    Pipeline::GpuPointToPlaneIcp gpu(ctx);
+    const auto out = gpu.Accumulate(src, tgt, Eigen::Matrix4f::Identity(), 0.05f);
+
+    ASSERT_EQ(out.inliers, int(src.size()));
+    const double expected = double(src.size()) * 0.003 * 0.003; // every residual is exactly 3 mm
+    EXPECT_NEAR(out.sumOfSquaredResiduals, expected, 0.02 * expected)
+            << "sum " << out.sumOfSquaredResiduals << " for " << src.size() << " 3 mm residuals";
+}
+
+#include "LocalRegistration/Algorithm/PointToPlaneIcp.h"
 #include <Eigen/Geometry>
 
 TEST(GpuIcp, SolveMatchesCpuOnCorner) {
@@ -170,10 +195,9 @@ TEST(GpuIcp, ResidualRmseMatchesCpu) {
     perturb.translate(Vector3f(0.02f, -0.015f, 0.01f));
     perturb.rotate(Eigen::AngleAxisf(0.03f, Vector3f::UnitZ()));
     // This corner is an EXACT rigid map of tgt (no noise), so ICP's Newton iterations converge the
-    // point-to-plane residual to ~machine epsilon -- far below the GPU accumulator's fixed-point
-    // resolution (SCALE=10000 needs |e| >~ 0.007 to register a nonzero int32; see kernel_icp_iterate.comp.glsl).
-    // Add small deterministic per-point jitter so the least-squares optimum has a genuine nonzero
-    // residual floor (comfortably above that resolution, still well inside maxCorrDist below).
+    // point-to-plane residual to ~machine epsilon, where a CPU-vs-GPU rmse comparison is all
+    // rounding noise. Add small deterministic per-point jitter so the least-squares optimum has a
+    // genuine nonzero residual floor for the two paths to agree on (well inside maxCorrDist below).
     std::mt19937 jitterRng(7);
     std::uniform_real_distribution<float> jitter(-0.01f, 0.01f);
     for (const auto &q: tgt.points) {
@@ -324,9 +348,10 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
 // sub-voxel `tsdf` (so a later tier's sub-voxel target reconstruction is measurable), perturbs a
 // source frame by a KNOWN transform, drives the real tracker's Track() (not just Solve, so a later
 // tier's target-construction path stays exercisable), and reports recovered-pose error +
-// Engine::Eval::NearestNeighbourRMSE (CPU float, no fixed-point floor) as the PRIMARY signal, plus
-// the residual `rmse` as a SECONDARY one: Task 1 found the GPU accumulator under-reports residuals
-// below ~7mm (fixed-point floor), so this harness does not assert on residual rmse being large.
+// Engine::Eval::NearestNeighbourRMSE as the PRIMARY signal, plus the residual `rmse` as a
+// SECONDARY one. (Historical note: this harness was written while the GPU accumulator still had a
+// ~7mm fixed-point floor -- see GpuIcp.AccumulateResidualSumHasNoFixedPointFloor for its removal --
+// so it never asserted on residual rmse; the NN metric remains the primary signal regardless.)
 #include "Engine/Eval/RmseMetrics.h"
 #include "Pipeline/Registration/Tracker.h"
 

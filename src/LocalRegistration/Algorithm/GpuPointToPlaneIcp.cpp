@@ -1,68 +1,72 @@
-#include "Pipeline/Registration/GpuPointToPlaneIcp.h"
+#include "LocalRegistration/Algorithm/GpuPointToPlaneIcp.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace Pipeline {
 
-    LocalGrid::LocalGrid(const std::vector<Eigen::Vector3f> &pts, float cell) : m_pts(pts) {
-        m_cell = cell > 1e-8f ? cell : 1e-8f;
-        if (pts.empty()) {
+    LocalGrid::LocalGrid(const std::vector<Eigen::Vector3f> &points, float cell) : m_pts(points) {
+        m_cell = std::max(cell, 1e-8f);
+        if (points.empty()) {
             m_bucketStart.assign(2, 0);
             return;
         }
-        Eigen::Vector3f mn = pts[0], mx = pts[0];
-        for (const auto &p: pts) {
-            mn = mn.cwiseMin(p);
-            mx = mx.cwiseMax(p);
-        }
-        m_origin = mn;
 
-        auto computeDims = [&]() {
-            for (int a = 0; a < 3; ++a)
-                m_dims[a] = std::max(1, int(std::floor((mx[a] - mn[a]) / m_cell)) + 1);
+        Eigen::Vector3f minBound = points[0], maxBound = points[0];
+        for (const auto &point: points) {
+            minBound = minBound.cwiseMin(point);
+            maxBound = maxBound.cwiseMax(point);
+        }
+        m_origin = minBound;
+
+        const auto updateDimsFromCellSize = [&]() {
+            for (int axis = 0; axis < 3; ++axis)
+                m_dims[axis] = std::max(1, int(std::floor((maxBound[axis] - minBound[axis]) / m_cell)) + 1);
         };
-        computeDims();
-        constexpr uint64_t kMaxCells = 32ull * 1024 * 1024;
-        for (int guard = 0; guard < 64; ++guard) {
-            const uint64_t nc = uint64_t(m_dims.x()) * uint64_t(m_dims.y()) * uint64_t(m_dims.z());
-            if (nc <= kMaxCells) break;
-            m_cell *= float(std::cbrt(double(nc) / double(kMaxCells))) * 1.02f; // +2% to converge in one step
-            computeDims();
-        }
-        const int nCells = m_dims.x() * m_dims.y() * m_dims.z();
+        updateDimsFromCellSize();
 
-        // Counting sort of point indices by cell -> CSR (bucketStart prefix sum, bucketIdx grouped).
-        m_bucketStart.assign(nCells + 1, 0);
-        for (const auto &p: pts) ++m_bucketStart[cellIndex(cellOf(p)) + 1];
-        for (int i = 0; i < nCells; ++i) m_bucketStart[i + 1] += m_bucketStart[i];
-        m_bucketIdx.resize(pts.size());
-        std::vector<uint32_t> cursor(m_bucketStart.begin(), m_bucketStart.end() - 1);
-        for (int i = 0; i < (int) pts.size(); ++i)
-            m_bucketIdx[cursor[cellIndex(cellOf(pts[i]))]++] = uint32_t(i);
+        constexpr uint64_t kMaxCellCount = 32ull * 1024 * 1024;
+        constexpr float kOneStepConvergenceMargin = 1.02f;
+        for (int attempt = 0; attempt < 64; ++attempt) {
+            const uint64_t currentCellCount = uint64_t(m_dims.x()) * uint64_t(m_dims.y()) * uint64_t(m_dims.z());
+            if (currentCellCount <= kMaxCellCount) break;
+            const double overflowRatio = double(currentCellCount) / double(kMaxCellCount);
+            m_cell *= float(std::cbrt(overflowRatio)) * kOneStepConvergenceMargin;
+            updateDimsFromCellSize();
+        }
+
+        const int cellCount = m_dims.x() * m_dims.y() * m_dims.z();
+        m_bucketStart.assign(cellCount + 1, 0);
+        for (const auto &point: points) ++m_bucketStart[cellIndex(cellOf(point)) + 1];
+        for (int i = 0; i < cellCount; ++i) m_bucketStart[i + 1] += m_bucketStart[i];
+
+        m_bucketIdx.resize(points.size());
+        std::vector<uint32_t> nextFreeSlot(m_bucketStart.begin(), m_bucketStart.end() - 1);
+        for (int i = 0; i < int(points.size()); ++i)
+            m_bucketIdx[nextFreeSlot[cellIndex(cellOf(points[i]))]++] = uint32_t(i);
     }
 
-    int LocalGrid::Nearest(const Eigen::Vector3f &q, float radius) const {
+    int LocalGrid::Nearest(const Eigen::Vector3f &query, float radius) const {
         if (m_pts.empty()) return -1;
-        const Eigen::Vector3i c = cellOf(q);
-        const float r2 = radius * radius;
-        int best = -1;
-        float bestD2 = r2;
+        const Eigen::Vector3i centerCell = cellOf(query);
+        int bestPointIndex = -1;
+        float bestSquaredDistance = radius * radius;
         for (int dz = -1; dz <= 1; ++dz)
             for (int dy = -1; dy <= 1; ++dy)
                 for (int dx = -1; dx <= 1; ++dx) {
-                    const Eigen::Vector3i cc(c.x() + dx, c.y() + dy, c.z() + dz);
-                    if ((cc.array() < 0).any() || (cc.array() >= m_dims.array()).any()) continue;
-                    const int ci = cellIndex(cc);
-                    for (uint32_t k = m_bucketStart[ci]; k < m_bucketStart[ci + 1]; ++k) {
-                        const int idx = int(m_bucketIdx[k]);
-                        const float d2 = (q - m_pts[idx]).squaredNorm();
-                        if (d2 < bestD2) {
-                            bestD2 = d2;
-                            best = idx;
+                    const Eigen::Vector3i neighborCell(centerCell.x() + dx, centerCell.y() + dy, centerCell.z() + dz);
+                    if ((neighborCell.array() < 0).any() || (neighborCell.array() >= m_dims.array()).any()) continue;
+                    const int neighborCellIndex = cellIndex(neighborCell);
+                    for (uint32_t slot = m_bucketStart[neighborCellIndex]; slot < m_bucketStart[neighborCellIndex + 1]; ++slot) {
+                        const int pointIndex = int(m_bucketIdx[slot]);
+                        const float squaredDistance = (query - m_pts[pointIndex]).squaredNorm();
+                        if (squaredDistance < bestSquaredDistance) {
+                            bestSquaredDistance = squaredDistance;
+                            bestPointIndex = pointIndex;
                         }
                     }
                 }
-        return best;
+        return bestPointIndex;
     }
 
     namespace {
@@ -95,7 +99,7 @@ namespace Pipeline {
         m_partials = std::make_unique<Engine::Core::Buffer>(ctx);
         m_sourceNormals = std::make_unique<Engine::Core::Buffer>(ctx);
         m_kernel = std::make_unique<Engine::Core::ComputePipeline>(ctx);
-        m_kernel->Build("Pipeline/Registration/kernel_icp_iterate.comp.glsl");
+        m_kernel->Build("LocalRegistration/Algorithm/GpuPointToPlaneIcp.Iterate.glsl");
     }
 
     GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::Accumulate(
@@ -122,41 +126,74 @@ namespace Pipeline {
     bool GpuPointToPlaneIcp::prepareCentred(const std::vector<Eigen::Vector3f> &src,
                                             const std::vector<Eigen::Vector3f> &sourceNormals,
                                             const Engine::Registration::PointCloud &tgt,
-                                            const Eigen::Vector3f &c, float maxCorrDist) {
+                                            const Eigen::Vector3f &surfaceCenter,
+                                            float maxCorrDist) {
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return false;
         if (!sourceNormals.empty() && sourceNormals.size() != src.size()) return false;
 
         std::vector<Eigen::Vector3f> sc(src.size()), tc(tgt.points.size());
-        for (size_t i = 0; i < src.size(); ++i) sc[i] = src[i] - c;
-        for (size_t i = 0; i < tc.size(); ++i) tc[i] = tgt.points[i] - c;
+        for (size_t i = 0; i < src.size(); ++i) sc[i] = src[i] - surfaceCenter;
+        for (size_t i = 0; i < tc.size(); ++i) tc[i] = tgt.points[i] - surfaceCenter;
 
         LocalGrid grid(tc, maxCorrDist);
+
+        // Upload the target PERMUTED into bucket order, with an identity bucket index.
+        //
+        // The kernel's inner loop reads g_tgtPts[g_bidx[k]]: a second load that depends on the
+        // first, landing anywhere in a multi-megabyte array. That is the whole cost. Measured on a
+        // live D435 capture, one iteration over 6,618 source points against a 245k-point target
+        // takes 3.1 ms, and eight iterations recorded into one command buffer take 8x that -- so
+        // it is the kernel, not submission overhead (0.24 ms per dispatch), and it barely scales
+        // with the source count because 26 workgroups cannot hide the latency of ~66 dependent
+        // scattered loads per thread.
+        //
+        // Permuting here makes both loads sequential within a cell. The candidate sequence per
+        // cell is unchanged -- same points, same order -- so `best` resolves to the same target
+        // and the solve is bit-identical; only the addresses move.
+        std::vector<Eigen::Vector3f> bucketOrderedPoints(tc.size()), bucketOrderedNormals(tc.size());
+        std::vector<uint32_t> identityBucketIndex(grid.m_bucketIdx.size());
+        for (size_t slot = 0; slot < grid.m_bucketIdx.size(); ++slot) {
+            const uint32_t source = grid.m_bucketIdx[slot];
+            bucketOrderedPoints[slot] = tc[source];
+            bucketOrderedNormals[slot] = tgt.normals[source];
+            identityBucketIndex[slot] = uint32_t(slot);
+        }
+
         writeVec3Buf(*m_src, sc);
-        writeVec3Buf(*m_tgtPts, tc);
-        writeVec3Buf(*m_tgtNrm, tgt.normals);
+        writeVec3Buf(*m_tgtPts, bucketOrderedPoints);
+        writeVec3Buf(*m_tgtNrm, bucketOrderedNormals);
         writeVec3Buf(*m_sourceNormals,
                      sourceNormals.empty() ? std::vector<Eigen::Vector3f>(src.size(), Eigen::Vector3f::Zero())
                                            : sourceNormals);
         m_bucketStart->Allocate(uint32_t(grid.m_bucketStart.size() * sizeof(uint32_t)));
         m_bucketStart->Upload(grid.m_bucketStart.data(), uint32_t(grid.m_bucketStart.size() * sizeof(uint32_t)));
-        m_bucketIdx->Allocate(uint32_t(std::max<size_t>(1, grid.m_bucketIdx.size()) * sizeof(uint32_t)));
-        if (!grid.m_bucketIdx.empty())
-            m_bucketIdx->Upload(grid.m_bucketIdx.data(), uint32_t(grid.m_bucketIdx.size() * sizeof(uint32_t)));
+        m_bucketIdx->Allocate(uint32_t(std::max<size_t>(1, identityBucketIndex.size()) * sizeof(uint32_t)));
+        if (!identityBucketIndex.empty())
+            m_bucketIdx->Upload(
+                    identityBucketIndex.data(),
+                    uint32_t(identityBucketIndex.size() * sizeof(uint32_t)));
 
         m_pNumSrc = uint32_t(src.size());
-        m_pNumWG = (m_pNumSrc + kLocal - 1) / kLocal;
-        m_partials->AllocateHostVisibleReadback(m_pNumWG * 29u * sizeof(int32_t));
+        m_pNumWorkerGroup = (m_pNumSrc + kLocal - 1) / kLocal;
+        m_partials->AllocateHostVisibleReadback(m_pNumWorkerGroup * 29u * sizeof(int32_t));
 
         m_pOrigin = grid.m_origin;
         m_pDims = grid.m_dims;
         m_pCell = grid.m_cell;
         m_pMaxCorr = maxCorrDist;
 
-        m_kernel->Bind(0, *m_src).Bind(1, *m_tgtPts).Bind(2, *m_tgtNrm).Bind(3, *m_bucketStart).Bind(4, *m_bucketIdx).Bind(5, *m_partials).Bind(6, *m_sourceNormals);
+        m_kernel->Bind(0, *m_src)
+                .Bind(1, *m_tgtPts)
+                .Bind(2, *m_tgtNrm)
+                .Bind(3, *m_bucketStart)
+                .Bind(4, *m_bucketIdx)
+                .Bind(5, *m_partials)
+                .Bind(6, *m_sourceNormals);
         return true;
     }
 
-    GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::dispatchCentred(const Eigen::Matrix4f &T, float huberScale,
+    GpuPointToPlaneIcp::IterOut GpuPointToPlaneIcp::dispatchCentred(const Eigen::Matrix4f &T,
+                                                                    float huberScale,
                                                                     float normalCompatibilityCosine,
                                                                     float currentMaxCorrespondenceDistance) {
         IterOut out;
@@ -180,13 +217,20 @@ namespace Pipeline {
         pc.numCells = uint32_t(m_pDims.x() * m_pDims.y() * m_pDims.z());
 
         m_kernel->Args(pc);
-        m_kernel->DispatchElements(m_pNumSrc); // synchronous; buffers already bound by prepareCentred
+        m_kernel->DispatchElements(m_pNumSrc);
 
-        m_partials->MakeVisibleToCPU(m_pNumWG * 29u * sizeof(int32_t));
+        m_partials->MakeVisibleToCPU(m_pNumWorkerGroup * 29u * sizeof(int32_t));
         const int32_t *part = static_cast<const int32_t *>(m_partials->MappedPtr());
-        double acc[29] = {0};
-        for (uint32_t w = 0; w < m_pNumWG; ++w)
-            for (int k = 0; k < 29; ++k) acc[k] += part[w * 29u + k];
+        // Slots 0..27 are fixed-point ints; slot 28 carries the workgroup's squared-residual sum as
+        // FLOAT BITS (the fixed-point path zeroed every |e| under ~7 mm, flooring the rmse).
+        double acc[28] = {0};
+        double sumOfSquaredResiduals = 0.0;
+        for (uint32_t w = 0; w < m_pNumWorkerGroup; ++w) {
+            for (int k = 0; k < 28; ++k) acc[k] += part[w * 29u + k];
+            float workgroupSquaredResidualSum;
+            std::memcpy(&workgroupSquaredResidualSum, &part[w * 29u + 28u], sizeof(workgroupSquaredResidualSum));
+            sumOfSquaredResiduals += double(workgroupSquaredResidualSum);
+        }
         int k = 0;
         for (int r = 0; r < 6; ++r)
             for (int col = r; col < 6; ++col) {
@@ -196,7 +240,7 @@ namespace Pipeline {
             }
         for (int r = 0; r < 6; ++r) out.b(r) = acc[21 + r] / double(kScale);
         out.inliers = int(std::llround(acc[27])); // inlier count stored x1 (SCALE not applied to it)
-        out.sumOfSquaredResiduals = acc[28] / double(kScale);
+        out.sumOfSquaredResiduals = sumOfSquaredResiduals;
         return out;
     }
 
@@ -211,28 +255,31 @@ namespace Pipeline {
         if (src.empty() || tgt.points.size() < 3 || tgt.normals.size() != tgt.points.size()) return res;
         if (!sourceNormals.empty() && sourceNormals.size() != src.size()) return res;
 
-        // Accumulated in double: this centroid shifts every point before the residuals are
-        // quantised to fixed point, so a last-bit change in it flips a share of the contributions.
-        // In float, summing 100k+ points makes the result depend on their order.
         Eigen::Vector3d centroidSum = Eigen::Vector3d::Zero();
-        for (const auto &q: tgt.points) centroidSum += q.cast<double>();
-        const Eigen::Vector3f c = (centroidSum / double(tgt.points.size())).cast<float>();
-        Eigen::Matrix4f Tc = Eigen::Matrix4f::Identity();
-        Tc.block<3, 1>(0, 3) = -c; // shift world->centred
-        Eigen::Matrix4f TcInv = Eigen::Matrix4f::Identity();
-        TcInv.block<3, 1>(0, 3) = c;
-        Eigen::Matrix4f T = Tc * priorT * TcInv; // work in the centred frame
+        for (const auto &q: tgt.points) {
+            centroidSum += q.cast<double>();
+        }
+        const Eigen::Vector3f surfaceCenter = (centroidSum / double(tgt.points.size())).cast<float>();
 
-        if (!prepareCentred(src, sourceNormals, tgt, c, params.maxCorrDist)) return res;
+        Eigen::Matrix4f Tc = Eigen::Matrix4f::Identity();
+        Tc.block<3, 1>(0, 3) = -surfaceCenter;
+        Eigen::Matrix4f TcInv = Eigen::Matrix4f::Identity();
+        TcInv.block<3, 1>(0, 3) = surfaceCenter;
+        Eigen::Matrix4f T = (Tc * (priorT * TcInv));
+
+        if (!prepareCentred(src, sourceNormals, tgt, surfaceCenter, params.maxCorrDist)) {
+            return res;
+        }
 
         const float normalCompatibilityCosine =
                 sourceNormals.empty() ? kNoNormalRejectionCosine : params.normalCompatibilityCosine;
-
         double lastSumOfSquaredResiduals = 0.0;
+
         for (int iter = 0; iter < params.maxIters; ++iter) {
-            const Engine::Registration::AnnealedIcpIterationParams annealed =
-                    Engine::Registration::AnnealIcpIteration(params, iter);
-            const IterOut a = dispatchCentred(T, annealed.huberScale, normalCompatibilityCosine,
+            const Engine::Registration::AnnealedIcpIterationParams annealed = Engine::Registration::AnnealIcpIteration(params, iter);
+            const IterOut a = dispatchCentred(T,
+                                              annealed.huberScale,
+                                              normalCompatibilityCosine,
                                               annealed.maxCorrespondenceDistance);
             if (a.inliers < params.minInliers) break;
             const Eigen::Matrix<double, 6, 1> x = a.H.ldlt().solve(a.b);
@@ -249,9 +296,11 @@ namespace Pipeline {
             lastSumOfSquaredResiduals = a.sumOfSquaredResiduals;
             if (x.norm() < params.convEps) break;
         }
-        res.T = TcInv * T * Tc;
-        if (res.numInliers > 0)
+
+        res.T = (TcInv * (T * Tc));
+        if (res.numInliers > 0) {
             res.rmse = float(std::sqrt(lastSumOfSquaredResiduals / double(res.numInliers)));
+        }
         res.valid = res.numInliers >= size_t(params.minInliers) && res.fitness >= params.minFitness;
         return res;
     }

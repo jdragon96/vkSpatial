@@ -1,18 +1,15 @@
 #pragma once
 
-#include "Pipeline/Registration/RegistrationTypes.h"
+#include "Engine/Registration/RegistrationTypes.h"
+
+// SolveRigidUmeyama, which the RANSAC loop below calls once per hypothesis. Re-exported here
+// rather than only used internally: it is a useful closed-form fit on its own, and callers of this
+// pipeline were already reaching for it.
+#include "GlobalRegistration/Algorithm/RigidTransform.h"
 
 #include <vector>
 
 namespace Engine::Registration {
-
-    // Closed-form rigid (rotation + translation, NO scaling) alignment that maps
-    // src[i] -> dst[i] in a least-squares sense, via Eigen's umeyama() with
-    // with_scaling=false. `src` and `dst` must be the same (non-zero) size.
-    //
-    // Returns Identity if src/dst are empty, size-mismatched, or contain fewer than 3
-    // points (3 non-collinear points are the minimum for a well-posed rigid fit).
-    Eigen::Matrix4f SolveRigidUmeyama(const std::vector<Eigen::Vector3f> &src, const std::vector<Eigen::Vector3f> &dst);
 
     // Full coarse global-registration pipeline, src -> tgt:
     //   1. DownsampleVoxel both clouds at cfg.voxelSize.

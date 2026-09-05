@@ -81,6 +81,15 @@ namespace Engine::Registration {
     // stop claimed 0.09-0.23 m.
     inline constexpr float kDefaultTrackerMaxStepMeters = 0.08f;
 
+    // The same tuned gate expressed in map voxels (0.08 m at the capture/ voxel of 0.05 m). The
+    // absolute constant only means "hand-held camera, metres"; on maps whose units make the voxel
+    // comparable to 0.08 (scanData ~mm: voxel 5.7; scan_out: voxel 0.5) solve jitter alone exceeds
+    // it and the gate rejects nearly every frame. Trackers therefore default the gate to
+    // max(kDefaultTrackerMaxStepMeters, kDefaultTrackerMaxStepVoxels * voxel) — bit-identical on
+    // capture/-scale maps, proportionate on coarser ones. An explicit caller-set maxStepMeters is
+    // always absolute.
+    inline constexpr float kDefaultTrackerMaxStepVoxels = 1.6f;
+
     // Per-iteration coarse-to-fine schedule, shared verbatim by GpuPointToPlaneIcp::Solve (GPU) and
     // AlignPointToPlaneIcp (CPU) so both trackers anneal identically. `iter` in [0, params.maxIters).
     // huberScale is annealed by the SAME ratio as the distance gate, so the robust-weight knee
@@ -111,41 +120,29 @@ namespace Engine::Registration {
         int srcIdx, tgtIdx;
     };
 
-    // normals empty ⇒ absent.
     struct PointCloud {
         std::vector<Eigen::Vector3f> points, normals;
     };
 
-    // Put a target cloud into a canonical (lexicographic) order, so an ICP solve depends on the SET
-    // of target points and not on the order they arrived in.
-    //
-    // The order really does vary: a target built from ModelSnapshot::entries inherits the TSDF
-    // compaction kernel's output order, and that kernel appends via `atomicAdd(g_count, 1u)` -- i.e.
-    // thread-completion order, different on every run. Two things then leak that order into the
-    // result. Solve() sums the target centroid to shift into the centred frame, and float addition is
-    // not associative, so a 100k-point centroid moves in its last bits; every residual is then
-    // quantised through `int(round(x * SCALE))`, so a last-bit shift flips a share of the fixed-point
-    // contributions. And LocalGrid::Nearest breaks exact distance ties by whichever candidate it
-    // visited first. Neither is large per frame, but each frame's pose seeds the next frame's map,
-    // which is the next frame's alignment target -- so it compounds. Sorting removes both.
+    // Canonical(좌표 기준) Order: X -> Y -> Z 순서로 비교하여 정렬
     inline void SortTargetIntoCanonicalOrder(PointCloud &target) {
         const std::size_t n = target.points.size();
-        if (target.normals.size() != n) return; // malformed; Solve rejects it anyway
-        std::vector<std::size_t> order(n);
-        for (std::size_t i = 0; i < n; ++i) order[i] = i;
-        std::sort(order.begin(), order.end(), [&target](std::size_t a, std::size_t b) {
-            const Eigen::Vector3f &p = target.points[a], &q = target.points[b];
-            if (p.x() != q.x()) return p.x() < q.x();
-            if (p.y() != q.y()) return p.y() < q.y();
-            return p.z() < q.z();
+        if (target.normals.size() != n) return;
+
+        struct PointWithNormal {
+            Eigen::Vector3f point, normal;
+        };
+        std::vector<PointWithNormal> records(n);
+        for (std::size_t i = 0; i < n; ++i) records[i] = {target.points[i], target.normals[i]};
+        std::sort(records.begin(), records.end(), [](const PointWithNormal &a, const PointWithNormal &b) {
+            if (a.point.x() != b.point.x()) return a.point.x() < b.point.x();
+            if (a.point.y() != b.point.y()) return a.point.y() < b.point.y();
+            return a.point.z() < b.point.z();
         });
-        std::vector<Eigen::Vector3f> sortedPoints(n), sortedNormals(n);
         for (std::size_t i = 0; i < n; ++i) {
-            sortedPoints[i] = target.points[order[i]];
-            sortedNormals[i] = target.normals[order[i]];
+            target.points[i] = records[i].point;
+            target.normals[i] = records[i].normal;
         }
-        target.points.swap(sortedPoints);
-        target.normals.swap(sortedNormals);
     }
 
 } // namespace Engine::Registration

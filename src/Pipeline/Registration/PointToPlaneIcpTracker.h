@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Pipeline/Registration/PointToPlaneIcp.h"
-#include "Pipeline/Registration/RegistrationTypes.h"
+#include "LocalRegistration/Algorithm/PointToPlaneIcp.h"
+#include "Engine/Registration/RegistrationTypes.h"
 #include "Pipeline/Registration/Tracker.h"
 #include "TSDF/Backends/TSDFBackend.h" // TSDFVoxel
 

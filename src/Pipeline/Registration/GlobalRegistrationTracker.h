@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Pipeline/Registration/GlobalRegistration.h"
-#include "Pipeline/Registration/RegistrationTypes.h"
+#include "GlobalRegistration/GlobalRegistrationPipeline.h"
+#include "Engine/Registration/RegistrationTypes.h"
 #include "Pipeline/Registration/Tracker.h"
 #include "TSDF/Backends/TSDFBackend.h" // TSDFVoxel
 
