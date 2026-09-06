@@ -28,7 +28,7 @@ cmake --build build-rel --target vkspatial_tests -j8
 ./build-rel/test/vkspatial_tests --gtest_list_tests           # 이름 확인
 ```
 
-대부분의 테스트가 실제 Vulkan 디바이스를 열고 컴퓨트 커널을 돌린다. 순수 CPU인 것은 `Engine::Backend`(포즈 그래프·루프 클로저)와 유틸리티 정도다.
+대부분의 테스트가 실제 Vulkan 디바이스를 열고 컴퓨트 커널을 돌린다. 순수 CPU인 것은 `Registration::Backend`(포즈 그래프·루프 클로저), PLY I/O, 유틸리티 정도다.
 
 ## 헤드리스 진단 도구
 
@@ -37,19 +37,19 @@ cmake --build build-rel --target vkspatial_tests -j8
 ```bash
 cmake --build build-rel --target tsdf_folder_eval icp_quality_diag -j8
 ./build-rel/example2/tsdf_folder_eval  --dir scan_out          # 폴더 → TSDF → 추출 → GT 대비 RMSE
-./build-rel/example2/icp_quality_diag  --dir scanData --trackers icp  # 정합 드리프트 + 잔차 RMSE
+./build-rel/example2/icp_quality_diag  --replay capture --trackers icp  # 정합 드리프트 + 잔차 RMSE
 ./build-rel/example2/depth_capture     --replay capture        # depth 녹화 재생 (카메라 불필요)
 ```
 
-창을 띄우는 디버그 뷰어(`voxel_fill_debugger`, `validation_score_lab`, `realsense_scan`, `isosurface_viewer`, `object_scan_viewer`)는 대개 `--dump`/`--no-view` 헤드리스 모드를 함께 가진다.
+창을 띄우는 디버그 뷰어(`validation_score_lab`, `realsense_scan`, `isosurface_viewer`, `object_scan_viewer`)는 대개 `--dump`/`--no-view` 헤드리스 모드를 함께 가진다. `voxel_fill_debugger`는 헤드리스 전용이다 — 뷰어 경로가 PLY 폴더로 파이프라인을 몰던 것이라 취득 축에서 PLY가 빠지면서 같이 없어졌다.
 
 저장소에 들어 있는 실데이터 자산(정밀도 주장은 이 위에서 측정한다):
 
 | 경로 | 내용 |
 |---|---|
-| `scan_out/` | 합성 스캔 프레임 PLY. **이미 정합되어 있음** → 트래커는 `identity`가 기준선이고, 여기에 `icp`를 걸면 없는 문제를 푼다 |
-| `scanData/` | 실제 chair 스캔 프레임 PLY (~827mm 스케일). **이것도 이미 정합되어 있음**(프레임 간 NN 중앙값 0.00mm) → 트래커 기준선은 `identity` |
-| `capture/` | 실제 RealSense depth 녹화(`depth_*.bin`). `--replay`로 하드웨어 없이 재생 |
+| `scan_out/` | 합성 스캔 프레임 PLY. 파이프라인 소스가 아니라 오프라인 도구용이다(취득 축은 depth 전용). **이미 정합되어 있음** |
+| `scanData/` | 실제 chair 스캔 프레임 PLY (~827mm 스케일). 이것도 오프라인 도구용이고 **이미 정합되어 있음**(프레임 간 NN 중앙값 0.00mm) |
+| `capture/` | 실제 RealSense depth 녹화(`intrinsics.txt` + Z16 `depth_*.bin`). `--replay`로 하드웨어 없이 재생 |
 | `data/`, `scans/` | ground-truth 메시(`chair.ply`, `Dragon.obj`) |
 
 ## 아키텍처
@@ -59,25 +59,37 @@ cmake --build build-rel --target tsdf_folder_eval icp_quality_diag -j8
 도메인은 `src/` 바로 밑에 나란히 놓이고 **각자 자기 CMake 타깃을 가진다.** `Engine`의 하위 폴더로 넣지 않는다.
 
 ```
+Common            여러 라이브러리가 함께 쓰는 자료구조 하나당 파일 하나 (PointCloud) — Eigen만 의존
 Engine::Core      Vulkan 디바이스/버퍼/이미지/디스크립터/ComputePipeline — 모두의 바닥
 Engine::Compute   커널 실행 배치, 스테이징
 Engine::Render    GLFW 창, 렌더 그래프, 카메라  (헤드리스 경로는 이걸 안 쓴다)
-Engine::Backend   포즈 그래프·루프 클로저·Lie — 순수 Eigen, Vulkan 의존 없음
-Features          점군 어휘(PointCloud, RegistrationResult)와 그 위의 기술자(FPFH) — Eigen만 의존
 BVH / TSDF / Mesh 도메인 알고리즘
-GlobalRegistration  초기 추정 없는 정합 (FPFH → RANSAC → refine)
-LocalRegistration   point-to-plane ICP, CPU/GPU
-Realsense           D400 깊이 프론트엔드
+Registration      정합 전부 — 아래 셋으로 나뉜다
+  Frontend/         프레임 하나를 맞춘다: global(FPFH→RANSAC→Ceres) / local(point-to-plane ICP, CPU·GPU)
+  Backend/          여러 프레임을 한꺼번에 푼다: 포즈 그래프·루프 클로저·Lie — 순수 Eigen
+  Features/         FPFH와 매칭 — frontend의 global 쪽이 그 위에 선다
+Realsense         D400 깊이 프론트엔드
 Pipeline          위를 조립하는 재구성 스레드들 — 알고리즘은 두지 않는다
 ```
 
-**`Features`와 정합 모듈 둘은 `Engine` 밑이 아니라 옆이다.** `Features`는 Eigen 외에 의존이 없고
-GlobalRegistration·LocalRegistration·Pipeline이 모두 소비한다 — Engine 아래 층으로 두면 바닥 레이어가
-정합 타입의 소유자가 된다. `PointCloud`·`RegistrationResult`는 네 모듈이 다 쓰므로 어느 정합 모듈도
-소유할 수 없고, `Features`가 그들 모두가 닿는 가장 낮은 지점이라 `RegistrationTypes.h`가 거기 산다.
+**정합은 `Registration` 타깃 하나다.** frontend·backend·features는 호출 그래프가 아니라 **어휘**를
+공유해서 한 타깃에 있다 — `RegistrationConfig/Param/Result`, `RigidTransform`, `LocalGrid`가
+`src/Registration/` 루트에 있는 이유가 그것이다. frontend의 두 갈래(global/local)는 **단계가 아니라
+대안**이고, 어느 쪽이 도는지는 Pipeline의 `TrackerRegistry`가 고른다.
+
+**`Common`은 `Registration` 밑이 아니라 아래다.** `PointCloud`는 Registration·Pipeline이 다 쓰므로
+어느 쪽도 소유할 수 없다. Eigen 외에 의존이 없어야 모두가 링크할 수 있고, `Common`이 형제 하나라도
+의존하는 순간 그 형제는 `Common`을 못 쓴다. **한 타입에 파일 하나**로 둔다 — `PointCloud.h`가 헤더
+20여 개 TU에 들리므로, 거기에 `<fstream>` 같은 걸 끌어들이면 전부가 대가를 치른다(그래서
+`PointCloud::Save/Load`는 선언만 헤더에 있고 본문은 `PointCloud.cpp`에 있다).
+
+**이름이 겹치면 하나를 바꾼다.** `Registration::Backend`가 `Registration` 안에 중첩되면서
+`Backend::RegistrationResult`가 `Registration::RegistrationResult`를 조용히 가렸다 — 중첩
+네임스페이스에서 수식 없는 이름은 안쪽에 붙고 컴파일러는 아무 말도 안 한다. 지금은
+`PairwiseRegistrationConfig/Result`로 갈라 두었다.
 
 **`src/Pipeline`에는 알고리즘을 두지 않는다.** 스레드와, 알고리즘을 `Tracker` 같은 인터페이스로 감싸는
-어댑터만 둔다. 정합 알고리즘이 거기 있다가 나온 것이 위 두 모듈이다.
+어댑터만 둔다. 정합 알고리즘이 거기 있다가 나온 것이 `Registration`이다.
 
 방향이 고정된 곳이 둘 있다:
 
@@ -90,7 +102,7 @@ GlobalRegistration·LocalRegistration·Pipeline이 모두 소비한다 — Engin
 각자 파일 한 벌씩 앉는다:
 
 ```
-src/<도메인>/                    예: GlobalRegistration/
+src/<도메인>/                    예: Realsense/
   <도메인>Pipeline.h / .cpp      세부 알고리즘을 조합해 결과물을 낸다. 알고리즘은 없다
   <도메인>Pipeline.md            그 조합의 실행 흐름 (단계형)
   <도메인>Types.h                경계 전용 POD — 옵션, 카운터, 푸시상수 미러
@@ -143,8 +155,9 @@ AcquisitionThread --Channel<Frame>-->  RegistrationThread
                   --Mailbox<ModelSnapshot>--> 호출자/렌더 스레드
 ```
 
-- 취득 전략은 `EAcquisitionSource`(PlyFolder / Realsense / RealsenseFile)로 갈리고, 정합은 `Tracker` 인터페이스로, 융합은 TSDF 백엔드로 갈린다 — 세 축이 각각 독립적으로 교체된다.
-- **취득에는 추상화가 하나뿐이다 — `IDepthProvider`.** 한때 그 위에 `IFrameSource`가 한 층 더 있었고(장치를 `Frame`으로 바꾸는 전략), 축 하나에 인터페이스가 둘이라 모든 도구가 장치와 소스를 따로 골라 **잘못 짝지을 수 있었다.** 지금은 `AcquisitionThread`가 프레임을 직접 만든다: depth 이미지는 `src/Realsense`의 GPU 프론트엔드로, PLY는 `FrameLoader`로. `AcquisitionConfig::source`가 `Realsense`(라이브 D435) / `RealsenseFile`(녹화) / `PlyFolder`를 고르고, 테스트는 `makeProvider`로 **장치를** 주입한다 — 합성 depth 이미지가 카메라와 똑같은 경로를 지난다.
+- 취득 전략은 `EAcquisitionSource`(Realsense / RealsenseFile)로 갈리고, 정합은 `Tracker` 인터페이스로, 융합은 TSDF 백엔드로 갈린다 — 세 축이 각각 독립적으로 교체된다.
+- **취득에는 추상화가 하나뿐이다 — `IProvider::IDepthProvider`(`src/Interface/IDepthProvider.h`).** 한때 그 위에 `IFrameSource`가 한 층 더 있었고(장치를 `Frame`으로 바꾸는 전략), 축 하나에 인터페이스가 둘이라 모든 도구가 장치와 소스를 따로 골라 **잘못 짝지을 수 있었다.** 그다음엔 PLY 폴더가 같은 축에 얹혀 있었는데, 그건 애초에 depth 소스가 아니라 이미 만들어진 점군이라 `AcquisitionThread` 안에 두 번째 루프를 만들었다. 지금 그 축에 있는 것은 depth 이미지 하나뿐이다: `Realsense::RealSenseD435`(라이브)와 `Realsense::RealSenseD435Recorder`(녹화·재생) 둘 다 `IDepthProvider`이고, `AcquisitionThread`는 `DepthFrontEnd`로 프레임을 만든다. 테스트는 `makeProvider`로 **장치를** 주입한다 — 합성 depth 이미지가 카메라와 똑같은 경로를 지난다. PLY는 오프라인 도구(`FrameLoader`, `tsdf_folder_eval`, `isosurface_viewer`, `voxel_fill_debugger --dump`)의 것이다.
+- **깊이는 언제나 Z16이다.** provider는 `DepthFrame::rawZ16`만 채우고(자기 버퍼를 가리킨다, 다음 `Grab`까지 유효), GPU 프론트엔드가 그대로 업로드한다. metres로 풀었다 되돌리면 드라이버가 시작한 자리로 돌아오는 데 프레임당 호스트 전체 패스를 두 번 쓴다 — `capture/`의 옛 float32 포맷이 그랬다. sigma_z가 필요로 하는 `depthScale`/`stereoBaselineMeters`는 `CameraIntrinsics`에 실려 provider가 답한다. 예전엔 소비자가 구현 타입으로 `dynamic_cast`해서 캐냈고, 캐스트가 빗나가는 재생 경로가 **조용히 기본값 sigma_z로** 점수를 매겼다.
 - **`DepthFrame`은 metres와 raw Z16을 둘 다 실을 수 있고, provider는 자기가 원래 갖고 있는 쪽만 채운다.** D400은 Z16을 주고 GPU 프론트엔드는 Z16을 먹으므로, 중간에서 float으로 풀었다가 되돌리면 드라이버가 시작한 자리로 돌아오는 데 프레임당 호스트 전체 패스를 두 번 쓴다. metres가 필요한 소비자(`DepthRecorder`)가 `EnsureMetres`로 요청한다.
 - `CommunicationModule(dropWhenBehind)`가 두 링크의 오버플로 정책을 함께 정한다. **라이브 센서는 `true`(오래된 프레임을 버려 지연을 묶음), 녹화 재생은 `false`(블로킹 = 무손실).** 녹화를 드롭 모드로 돌리면 느린 설정이 조용히 더 적은 프레임을 처리해서, 설정 간 비교 측정이 전부 오염된다.
 - **무손실은 재현성이 아니다.** 블로킹 채널은 프레임 *개수*만 맞춘다. 맵은 latest-wins `Mailbox`로 트래커에 전달되고 정합은 `trackedFrames` 용량만큼 융합보다 앞서 달릴 수 있으므로, 프레임 N이 *어느 버전의 맵*에 정합하는지가 쓰레드 스케줄링에 달렸다. 그 맵이 정합 타깃이므로 포즈가 달라지고, 다음 맵이 달라진다 — 실행마다 발산한다. 그래서 `CommunicationModule`은 녹화 모드에서 `FrameHandshake`도 켠다(정합이 매 프레임 융합 완료를 기다림 = lock-step). **파이프라인을 통과하는 A/B 측정은 이것 없이는 무의미하다.**

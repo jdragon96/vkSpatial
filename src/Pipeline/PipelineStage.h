@@ -4,12 +4,6 @@
 #include <exception>
 #include <thread>
 
-// Base for one pipeline stage: a worker thread with a Start/Stop lifecycle, cooperative stop flag,
-// and worker-exception capture. Composition over inheritance for the thread — the base owns the
-// std::thread; derived classes only implement Run() (the stage loop) and Interrupt() (unblock
-// whatever Run() waits on). Because Run() and Interrupt() touch derived members, EVERY derived
-// class MUST call Stop() from its own destructor before its members die (the base destructor's
-// Stop() would call the base Interrupt(), too late for the derived state).
 namespace Pipeline {
 
     struct CommunicationModule; // CommunicationModule.h (reference member — forward decl suffices)

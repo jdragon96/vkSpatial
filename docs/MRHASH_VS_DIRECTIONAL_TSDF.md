@@ -99,7 +99,7 @@
 
 ---
 
-## 벤치마크 결과 (`example2/tsdf_benchmark`, voxel 0.1mm, 해석적 GT)
+## 벤치마크 결과 (2026-07, `example2/tsdf_benchmark`, voxel 0.1mm, 해석적 GT — 도구는 이후 삭제됨)
 
 구현된 TSDF들을 동일 다시점 입력·해석적 정답으로 실측. `tsdf_benchmark`는 정확도(GT 대비 RMSE·영역별)·메모리(점유 저장 바이트)·속도(chrono, 동일 방법론)를 보고한다.
 

@@ -2,22 +2,22 @@
 // graph. Uses an asymmetric bumpy surface so FPFH descriptors are discriminative.
 #include <gtest/gtest.h>
 
-#include "Engine/Backend/Lie.h"
-#include "Engine/Backend/LoopClosure.h"
-#include "Engine/Backend/PoseGraph.h"
+#include "Registration/Backend/Lie.h"
+#include "Registration/Backend/LoopClosure.h"
+#include "Registration/Backend/PoseGraph.h"
 #include "Engine/Core/OrientedPointCloud.h"
 
 #include <cmath>
 #include <random>
 #include <vector>
 
-using Engine::Backend::Mat6;
-using Engine::Backend::PoseGraph;
-using Engine::Backend::RegisterPointClouds;
-using Engine::Backend::RegistrationConfig;
-using Engine::Backend::SE3;
-using Engine::Backend::SE3Exp;
-using Engine::Backend::Vec6;
+using Registration::Backend::Mat6;
+using Registration::Backend::PoseGraph;
+using Registration::Backend::RegisterPointClouds;
+using Registration::Backend::PairwiseRegistrationConfig;
+using Registration::Backend::SE3;
+using Registration::Backend::SE3Exp;
+using Registration::Backend::Vec6;
 using Engine::Core::OrientedPointCloud;
 
 namespace {
@@ -97,7 +97,7 @@ TEST(LoopClosure, RecoversKnownTransform) {
         tgt.normals.push_back((Tgt.R * raw.normals[i].cast<double>()).cast<float>().normalized());
     }
 
-    RegistrationConfig cfg;
+    PairwiseRegistrationConfig cfg;
     cfg.fpfhRadius = 2.5f * step;
     cfg.inlierThreshold = 0.7f * step;
     cfg.ransacIterations = 6000;
@@ -117,7 +117,7 @@ TEST(LoopClosure, RejectsUnrelatedClouds) {
     Engine::Core::OrientedPointCloud flat = makeSurface(5.0f, 8.0f, 5.0f, 8.0f, step); // far, feature-poor
     for (auto &n : flat.normals) n = Eigen::Vector3f(0, 0, 1);
 
-    RegistrationConfig cfg;
+    PairwiseRegistrationConfig cfg;
     cfg.fpfhRadius = 2.5f * step;
     cfg.inlierThreshold = 0.7f * step;
     cfg.minInliers = 40;
@@ -157,7 +157,7 @@ TEST(LoopClosure, EndToEndDriftRemoval) {
 
     // Loop closures: each lap-2 keyframe re-observes its lap-1 counterpart's patch.
     // Registration of the two observations yields the relative pose measurement.
-    RegistrationConfig cfg;
+    PairwiseRegistrationConfig cfg;
     const float step = 0.2f;
     cfg.fpfhRadius = 2.5f * step;
     cfg.inlierThreshold = 0.7f * step;

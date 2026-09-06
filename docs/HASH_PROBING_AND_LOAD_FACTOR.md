@@ -2,7 +2,7 @@
 
 > "복셀이 몇 개일 때 linear probe를 몇 번 하는가"에 대한 문헌 조사.
 >
-> 대상 코드: [`AdvancedTSDF.cpp`](../src/TSDF/Backends/AdvancedTSDF.cpp) + [`kernel_AdvancedTSDF.integrate.comp.glsl`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl) + [`LinearProbe.glsl`](../src/TSDF/Memory/Hash/LinearProbe.glsl)
+> 대상 코드: [`AdvancedTSDF.cpp`](../src/TSDF/Backends/AdvancedTSDF.cpp) + [`kernel_AdvancedTSDF.integrate.comp.glsl`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl) + [`LinearProbe.glsl`](../src/TSDF/Hash/LinearProbe.glsl)
 > — open addressing + linear probing(`MAX_PROBE = 128`), load factor 50%에서 리해시.
 >
 > 관련 문서: [`ADVANCED_TSDF.md`](ADVANCED_TSDF.md) · [`MRHASH_VS_DIRECTIONAL_TSDF.md`](MRHASH_VS_DIRECTIONAL_TSDF.md)
@@ -194,7 +194,7 @@ MrHash. 충돌은 Nießner식 offset 필드(`o_j ∈ N`)로 처리하며, 탐사
 ## 5. 우리 구현에 대한 함의
 
 현재 상태 — [`AdvancedTSDF.cpp:257-302`](../src/TSDF/Backends/AdvancedTSDF.cpp#L257-L302),
-[`LinearProbe.glsl`](../src/TSDF/Memory/Hash/LinearProbe.glsl) (probing now lives in a swappable fragment; see [`HashStrategy.h`](../src/TSDF/Memory/Hash/HashStrategy.h)):
+[`LinearProbe.glsl`](../src/TSDF/Hash/LinearProbe.glsl) (probing now lives in a swappable fragment; see [`HashStrategy.h`](../src/TSDF/Hash/HashStrategy.h)):
 
 - open addressing + **linear probing**, `MAX_PROBE = 128`, 실패 시 조용한 드롭
 - `maybeGrow()`가 **α ≥ 0.5**에서 용량 2배 리해시
@@ -272,4 +272,4 @@ linear의 128슬롯 대비 32배다. 이 상태에서는 테스트 용량(2048)�
 또한 α=0.8은 문서화되지 않은 대가를 치른다. `maybeGrow`는 **완료된 제출**의 점유율만 보고 성장을
 결정하므로, 한 프레임이 `(1−α)×capacity`보다 많이 삽입하면 다음 `Record`가 자라기 전에 넘친다.
 0.5에서 테이블의 절반이던 여유가 0.8에서는 5분의 1이 된다. 자세한 것은
-[`HashStrategy.h`](../src/TSDF/Memory/Hash/HashStrategy.h)의 `loadFactorLimit` 주석.
+[`HashStrategy.h`](../src/TSDF/Hash/HashStrategy.h)의 `loadFactorLimit` 주석.

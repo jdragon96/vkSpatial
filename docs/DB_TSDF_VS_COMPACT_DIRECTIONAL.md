@@ -98,7 +98,7 @@ $K$ 가 맵 해상도와 무관하게 고정 → **$T_{\text{update}}$ 는 voxel
 
 ## Part B — 현재 CompactDirectionalTSDF 요약
 
-이 저장소의 구현(`src/TSDF/Backends/CompactDirectionalTSDF.{h,cpp}`, `src/shader/compact_directional_{integrate,extract}.comp`)은 **Splietker & Behnke(2019) DirectionalTSDF** 계열의 **GPU(Vulkan) 희소 해시** 버전이다. 자세한 대조는 [`COMPACT_VS_DIRECTIONAL_TSDF.md`](COMPACT_VS_DIRECTIONAL_TSDF.md), 적분 수식은 [`DIRECTIONAL_TSDF_INTEGRATION.md`](DIRECTIONAL_TSDF_INTEGRATION.md).
+이 저장소의 구현(`src/TSDF/Backends/CompactDirectionalTSDF.{h,cpp}`, `src/TSDF/Backends/kernel_compact_directional_{integrate,extract}.comp.glsl`)은 **Splietker & Behnke(2019) DirectionalTSDF** 계열의 **GPU(Vulkan) 희소 해시** 버전이다. 자세한 대조는 [`COMPACT_VS_DIRECTIONAL_TSDF.md`](COMPACT_VS_DIRECTIONAL_TSDF.md), 적분 수식은 [`DIRECTIONAL_TSDF_INTEGRATION.md`](DIRECTIONAL_TSDF_INTEGRATION.md).
 
 - **저장:** open-addressing 해시(`wangHash` + linear probing). 엔트리 `DirEntry{ key; weightedDistanceSum(int); weightSum(uint); pad }` = **16 B**. 관측된 (voxel, 방향) 칸만 저장(희소). 키는 이동식 $512^3$ 창의 local 좌표(축 9-bit) + 방향 3-bit.
 - **값:** 연속 **가중 평균 투영 부호거리**
@@ -108,7 +108,7 @@ $$
 $$
 분자 $\Sigma\psi\varphi\rho$(`weightedDistanceSum`)와 분모 $\Sigma\varphi\rho$(`weightSum`)를 각각 `atomicAdd` 로 누적(fixed-point $\times10000$) → lock-free.
 - **"directional"의 의미:** 표면 **법선의 6개 부호축**($\pm X,\pm Y,\pm Z$) 중 정렬 강한 **최대 3개 방향 레이어** 를 한 voxel에 분리 저장(`selectDirections`, 5% 미만 드롭). → 서로 다른 방향의 표면이 한 voxel에서 섞이지 않음.
-- **추출:** `compact_directional_extract.comp` — 같은 방향 레이어 안에서 +축 이웃과의 zero-crossing을 **서브복셀 보간**, 중앙차분 gradient로 법선 추정 → **oriented point cloud**(메시 아님). 선택적 `MergeCandidates`.
+- **추출:** `kernel_compact_directional_extract.comp.glsl` — 같은 방향 레이어 안에서 +축 이웃과의 zero-crossing을 **서브복셀 보간**, 중앙차분 gradient로 법선 추정 → **oriented point cloud**(메시 아님). 선택적 `MergeCandidates`.
 
 ---
 
@@ -195,5 +195,4 @@ DB-TSDF는 표면 뒤 hemispherical shadow에만 hit을 쌓고 $T$ 회 넘으면
 ## 참조
 - 논문 PDF: [`DB-TSDF.pdf`](DB-TSDF.pdf) (arXiv:2509.20081v1)
 - 현재 구현 대조: [`COMPACT_VS_DIRECTIONAL_TSDF.md`](COMPACT_VS_DIRECTIONAL_TSDF.md), 적분 수식: [`DIRECTIONAL_TSDF_INTEGRATION.md`](DIRECTIONAL_TSDF_INTEGRATION.md)
-- 구현: `src/TSDF/Backends/CompactDirectionalTSDF.{h,cpp}`, 셰이더: `src/shader/compact_directional_{integrate,extract}.comp`
-- 관련 아이디어: [`VARIANCE_ADAPTIVE_VOXEL_GRID.md`](VARIANCE_ADAPTIVE_VOXEL_GRID.md)
+- 구현: `src/TSDF/Backends/CompactDirectionalTSDF.{h,cpp}`, 셰이더: `src/TSDF/Backends/kernel_compact_directional_{integrate,extract}.comp.glsl`

@@ -1,6 +1,6 @@
-// RealSense capture / replay tool for the depth PROVIDER layer (src/Pipeline/Acquisition).
-// --record drives a live D435 through DepthRecorder to a directory; --replay reads a recording
-// back through RecordedDepthProvider and prints what each frame actually holds.
+// RealSense capture / replay tool for the depth PROVIDER layer (src/Realsense).
+// --record drives a live D435 through RealSenseD435Recorder to a directory; --replay reads a
+// recording back through the same class and prints what each frame actually holds.
 // --replay needs neither a camera nor the librealsense2 SDK -- it is the only way this layer is
 // exercisable in a session where the device is not attached.
 //
@@ -12,13 +12,9 @@
 //   depth_capture --record <dir> [--frames N] [--width 640] [--height 480] [--fps 30]
 //   depth_capture --replay <dir>
 
-#include "Pipeline/Acquisition/DepthProvider.h"  // DepthFrame, IDepthProvider
-#include "Pipeline/Acquisition/DepthRecording.h" // DepthRecorder, RecordedDepthProvider
+#include "Realsense/RealSenseD435.h"          // RealSenseD435
+#include "Realsense/RealSenseD435Recorder.h" // RealSenseD435Recorder
 #include "utilities/ArgParser.h"
-
-#ifdef VKBVH_HAS_REALSENSE
-#include "Pipeline/Acquisition/D435DepthProvider.h"
-#endif
 
 #include <algorithm>
 #include <cstddef>
@@ -34,18 +30,23 @@ namespace {
     // nothing like the scene that was scanned, is the failure this tool exists to catch, and it
     // catches it without any front end in the way.
     int RunReplay(const std::string &directory) {
-        Pipeline::RecordedDepthProvider provider(directory);
-        const Pipeline::CameraIntrinsics &intrinsics = provider.Intrinsics();
-        std::printf("replaying %s (%d recorded frames, %dx%d)\n", directory.c_str(),
-                    provider.FrameCount(), intrinsics.width, intrinsics.height);
+        Realsense::RealSenseD435Recorder provider(directory);
+        const Realsense::CameraIntrinsics &intrinsics = provider.Intrinsics();
+        std::printf("replaying %s (%d recorded frames, %dx%d, depth scale %g)\n", directory.c_str(),
+                    provider.FrameCount(), intrinsics.width, intrinsics.height,
+                    double(intrinsics.depthScale));
 
-        Pipeline::DepthFrame depthFrame;
+        const std::size_t pixels = std::size_t(intrinsics.width) * std::size_t(intrinsics.height);
+
+        Realsense::DepthFrame depthFrame;
         int frameIndex = 0;
         std::size_t totalMeasured = 0;
         while (provider.Grab(depthFrame)) {
             std::size_t measured = 0;
             float nearest = 0.0f, farthest = 0.0f;
-            for (const float z: depthFrame.depth) {
+            for (std::size_t i = 0; i < pixels; ++i) {
+                // Z16 is what the recording holds; metres are for the human reading this line.
+                const float z = float(depthFrame.rawZ16[i]) * intrinsics.depthScale;
                 if (!(z > 0.0f)) continue;
                 if (measured == 0) nearest = farthest = z;
                 nearest = std::min(nearest, z);
@@ -53,7 +54,7 @@ namespace {
                 ++measured;
             }
             std::printf("  frame %4d: %6zu measured of %zu, %.3f-%.3f m\n", frameIndex, measured,
-                        depthFrame.depth.size(), nearest, farthest);
+                        pixels, nearest, farthest);
             totalMeasured += measured;
             ++frameIndex;
         }
@@ -66,18 +67,18 @@ namespace {
     // above is the path that must work everywhere.
     int RunRecord(const std::string &directory, int frameCount, int width, int height, int fps) {
 #ifdef VKBVH_HAS_REALSENSE
-        auto device = std::make_unique<Pipeline::D435DepthProvider>(
-                Realsense::D435StreamOptions{width, height, fps, false, "high-accuracy"});
+        auto device = std::make_unique<Realsense::RealSenseD435>();
+        device->Open(Realsense::D435StreamOptions{width, height, fps, false, "high-accuracy"});
         // The preset is a quality request the device may refuse while still streaming correctly, so
         // it is said out loud rather than assumed -- a recording made without it is not the one the
         // caller asked for.
         if (!device->VisualPresetRefusal().empty())
             std::printf("  visual preset NOT applied: %s\n", device->VisualPresetRefusal().c_str());
-        Pipeline::DepthRecorder recorder(std::move(device), directory);
-        Pipeline::DepthFrame frame;
+        Realsense::RealSenseD435Recorder recorder(std::move(device), directory);
+        Realsense::DepthFrame frame;
         for (int i = 0; i < frameCount && recorder.Grab(frame); ++i)
             std::printf("  captured frame %d/%d\n", i + 1, frameCount);
-        std::printf("recorded %d frames to %s\n", recorder.RecordedFrameCount(), directory.c_str());
+        std::printf("recorded %d frames to %s\n", recorder.FrameCount(), directory.c_str());
         return 0;
 #else
         (void) directory;

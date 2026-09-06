@@ -8,7 +8,9 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <algorithm>
 #include <unordered_map>
+#include <vector>
 #include <utility>
 
 namespace Pipeline {
@@ -32,6 +34,9 @@ namespace Pipeline {
         virtual TrackingResult Track(const Frame &frame,
                                      const ModelSnapshot *model,
                                      const Eigen::Isometry3f &priorPose) = 0;
+        // Internal counters for Pipeline::GetStats(). Called from the caller's thread while Track
+        // runs on the registration thread, so an implementation must keep them atomic.
+        virtual TrackerStats Stats() const { return {}; }
     };
 
     class TrackerRegistry {
@@ -46,6 +51,16 @@ namespace Pipeline {
             return it == m_factories.end() ? nullptr : it->second();
         }
         bool Has(const std::string &name) const { return m_factories.count(name) != 0; }
+
+        // Sorted, so a UI listing them does not reorder itself between runs -- the backing map is
+        // unordered, and a combo box whose entries move is worse than no combo box.
+        std::vector<std::string> Names() const {
+            std::vector<std::string> names;
+            names.reserve(m_factories.size());
+            for (const auto &entry: m_factories) names.push_back(entry.first);
+            std::sort(names.begin(), names.end());
+            return names;
+        }
 
         static TrackerRegistry Default();
 

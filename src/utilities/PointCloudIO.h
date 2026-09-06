@@ -1,5 +1,7 @@
 #pragma once
 
+#include "utilities/PlyFormat.h" // the one PLY implementation; these are thin adapters over it
+
 #include <Eigen/Core>
 
 #include <algorithm>
@@ -23,67 +25,45 @@ namespace util {
         return tail == suffix;
     }
 
-    // ---- PLY ----
+    // ---- PLY (adapters over util::PlyFormat) ----
 
-    // Tolerant ASCII-PLY reader: x y z always; nx ny nz if the header declares them (appends to the
-    // vectors so callers can accumulate; returns false on open error, non-ascii, or no points).
+    // Appends to `pts` / `nrm` so callers can accumulate several files, which is why this is not
+    // simply Common::PointCloud::Load (that one replaces). Reads ASCII and binary_little_endian
+    // alike -- the hand-rolled reader this replaced returned false on anything but ASCII.
     inline bool LoadPly(const std::string &path, std::vector<Eigen::Vector3f> &pts,
                         std::vector<Eigen::Vector3f> &nrm) {
-        std::ifstream f(path);
-        if (!f) return false;
-        std::string line;
-        std::size_t count = 0;
-        bool ascii = false, hasN = false;
-        std::vector<std::string> props;
-        while (std::getline(f, line)) {
-            std::istringstream ss(line);
-            std::string tok;
-            ss >> tok;
-            if (tok == "format") {
-                std::string fmt;
-                ss >> fmt;
-                ascii = (fmt == "ascii");
-            } else if (tok == "element") {
-                std::string e;
-                ss >> e;
-                if (e == "vertex") ss >> count;
-            } else if (tok == "property") {
-                std::string t, name;
-                ss >> t >> name;
-                props.push_back(name);
-            } else if (tok == "end_header")
-                break;
-        }
-        if (!ascii) return false;
-        hasN = std::find(props.begin(), props.end(), "nx") != props.end();
-        const std::size_t stride = props.size();
+        PlyFormat ply;
+        if (!ply.Deserialize(path)) return false;
+
+        const std::vector<float> &flatPoints = ply.GetPoints();
+        const std::vector<float> &flatNormals = ply.GetNormals();
+        const std::size_t count = ply.GetPointCount();
+        if (count == 0) return false;
+
         pts.reserve(pts.size() + count);
-        for (std::size_t i = 0; i < count && std::getline(f, line); ++i) {
-            std::istringstream ss(line);
-            std::vector<float> vals(stride, 0.0f);
-            for (std::size_t j = 0; j < stride; ++j) ss >> vals[j];
-            pts.emplace_back(vals[0], vals[1], vals[2]);
-            if (hasN && stride >= 6) nrm.emplace_back(vals[3], vals[4], vals[5]);
+        for (std::size_t i = 0; i < count; ++i)
+            pts.emplace_back(flatPoints[3 * i], flatPoints[3 * i + 1], flatPoints[3 * i + 2]);
+
+        if (flatNormals.size() == flatPoints.size()) {
+            nrm.reserve(nrm.size() + count);
+            for (std::size_t i = 0; i < count; ++i)
+                nrm.emplace_back(flatNormals[3 * i], flatNormals[3 * i + 1], flatNormals[3 * i + 2]);
         }
-        return !pts.empty();
+        return true;
     }
 
-    // ASCII-PLY writer: x y z (+ nx ny nz when a normal per point is provided).
+    // ASCII, deliberately: this is what the repo's PLY assets are written as, and what a human
+    // opens to check a scan. Binary output goes through Common::PointCloud::Save.
     inline bool SavePly(const std::string &path, const std::vector<Eigen::Vector3f> &pts,
                         const std::vector<Eigen::Vector3f> &nrm) {
-        std::ofstream f(path);
-        if (!f) return false;
-        const bool hasN = !pts.empty() && nrm.size() == pts.size();
-        f << "ply\nformat ascii 1.0\nelement vertex " << pts.size()
-          << "\nproperty float x\nproperty float y\nproperty float z\n";
-        if (hasN) f << "property float nx\nproperty float ny\nproperty float nz\n";
-        f << "end_header\n";
+        PlyFormat ply;
+        ply.SetDataType(PlyFormat::EDataType::Ascii);
+        const bool hasNormals = !pts.empty() && nrm.size() == pts.size();
         for (std::size_t i = 0; i < pts.size(); ++i) {
-            f << pts[i].x() << ' ' << pts[i].y() << ' ' << pts[i].z();
-            if (hasN) f << ' ' << nrm[i].x() << ' ' << nrm[i].y() << ' ' << nrm[i].z();
-            f << '\n';
+            ply.AddPoint(pts[i].x(), pts[i].y(), pts[i].z());
+            if (hasNormals) ply.AddNormal(nrm[i].x(), nrm[i].y(), nrm[i].z());
         }
-        return bool(f);
+        return ply.Serialize(path);
     }
 
     // ---- OBJ (as a point cloud: v -> points, vn -> normals; faces ignored) ----

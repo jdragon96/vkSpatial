@@ -3,7 +3,7 @@
 > 32³ 블록마다 **half-voxel detail 레벨을 만들 가치가 있는지** 판정하고, 한 프레임의 점을
 > base/detail 두 인덱스 리스트로 쪼갠다. 전부 GPU에서, 프레임당 상수 크기 재사용 버퍼로.
 >
-> 코드: [`src/TSDF/Structure/DenseRegionClassifier.{h,cpp}`](../src/TSDF/Structure/) + 커널 4개
+> 코드: [`src/TSDF/Memory/RegionClassifier/DenseRegionClassifier.{h,cpp}`](../src/TSDF/Memory/RegionClassifier/) + 커널 4개
 > 설계 근거: [`docs/superpowers/specs/2026-08-15-dense-region-separation-design.md`](superpowers/specs/2026-08-15-dense-region-separation-design.md)
 > 관련: [`HASH_PROBING_AND_LOAD_FACTOR.md`](HASH_PROBING_AND_LOAD_FACTOR.md) §8 — 메모리를 지배하는 것은 해시가 아니라 레벨·타일의 개수와 용량
 
@@ -72,7 +72,7 @@ s     = v / √ratio
 
 ### `BlockRecord` — 4바이트 스칼라 10개, 40바이트
 
-GPU 정의는 [`DenseRegionClassifier.common.glsl`](../src/TSDF/Structure/DenseRegionClassifier.common.glsl)
+GPU 정의는 [`DenseRegionClassifier.common.glsl`](../src/TSDF/Memory/RegionClassifier/DenseRegionClassifier.common.glsl)
 **한 곳**뿐이고 세 패스가 공유한다. C++ 쪽 복사본은 헤더의 struct 하나이고,
 `static_assert(sizeof == 40)`이 드리프트를 잡는다.
 

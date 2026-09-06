@@ -2,7 +2,7 @@
 // CPU-only correctness. The GPU integration tests went with the TSDF backends they drove.
 
 #include "Engine/Core/Context.h"
-#include "Features/FpfhSignature.h"
+#include "Registration/Features/FpfhSignature.h"
 #include "BVH/NeighborQuery.h"
 #include "Engine/Core/OrientedPointCloud.h"
 

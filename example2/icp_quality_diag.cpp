@@ -1,27 +1,25 @@
 // Headless ICP-quality diagnostic: runs the REAL reconstruction Pipeline (integrate + track) over a
-// folder of frame_*.ply frames with a chosen tracker, then reports reconstruction + tracker stats.
+// depth recording with a chosen tracker, then reports reconstruction + tracker stats.
 //
-// Purpose: scan_out is pre-registered (frames already in world frame), so `identity` is the correct
-// tracker and its reconstruction is the ground-truth reference. This tool measures how far the `icp`
-// tracker's reconstruction DRIFTS from the `identity` reference (nearest-neighbour RMSE, both
-// directions) plus each tracker's average residual RMSE / align time -- a headless stand-in for the
-// GUI viewer's live quality, so icp-vs-identity (and clean-map-vs-WIP-map) can be A/B'd with numbers.
+// It measures how far the `icp` tracker's reconstruction DRIFTS from the `identity` one
+// (nearest-neighbour RMSE, both directions) plus each tracker's average residual RMSE / align time
+// -- a headless stand-in for the GUI viewer's live quality, so icp-vs-identity (and
+// clean-map-vs-WIP-map) can be A/B'd with numbers.
 //
-// Usage: icp_quality_diag --dir <folder of frame_*.ply> [--voxel v] [--trackers identity,icp]
-//        icp_quality_diag --replay <depth recording>   [--voxel v] [--trackers identity,icp] [--no-p2p]
+// Usage: icp_quality_diag --replay <depth recording> [--voxel v] [--trackers identity,icp] [--no-p2p]
 //
-// --replay drives the same comparison from a raw depth recording, so a real camera capture can be
-// scored the same way. Note what "identity" means there: a hand-held camera's frames are NOT
-// pre-registered, so identity is no longer ground truth -- it is the null hypothesis, the
-// reconstruction you get by pretending the sensor never moved. Drift away from it is the signal
-// that ICP found motion, not that ICP is wrong.
+// Note what "identity" means here: a hand-held camera's frames are NOT pre-registered, so identity
+// is not ground truth -- it is the null hypothesis, the reconstruction you get by pretending the
+// sensor never moved. Drift away from it is the signal that ICP found motion, not that ICP is wrong.
+//
+// The PLY-folder mode this tool used to have is gone with the acquisition axis' PLY source: the
+// pipeline takes depth images now. scan_out/ and scanData/ are still read by the offline tools that
+// own PLY (tsdf_folder_eval, isosurface_viewer).
 
 #include "Pipeline/Pipeline.h"
 #include "Pipeline/Registration/GpuIcpTracker.h"
 #include "Pipeline/Registration/Tracker.h"       // TrackerRegistry
-#include "Pipeline/Acquisition/DepthProvider.h"
-#include "Pipeline/Acquisition/DepthRecording.h"
-#include "Pipeline/Acquisition/FrameLoader.h" // LoadFrames / ComputeBounds
+#include "Realsense/RealSenseD435Recorder.h"
 #include "Engine/Eval/RmseMetrics.h"                     // NearestNeighbourRMSE
 #include "utilities/ArgParser.h"
 
@@ -61,19 +59,6 @@ namespace {
     // Shared so the counters survive every per-tracker rebuild and can be reported after the runs.
     std::shared_ptr<ep::GpuFrontEndStats> g_frontEndStats;
 
-
-    std::vector<std::string> collectFramePaths(const std::string &dir) {
-        std::vector<std::string> paths;
-        for (const auto &e: fs::directory_iterator(dir)) {
-            if (!e.is_regular_file()) continue;
-            const std::string name = e.path().filename().string();
-            if (name.rfind("ground_truth", 0) == 0) continue;
-            if (e.path().extension() == ".ply" && name.rfind("frame_", 0) == 0)
-                paths.push_back(e.path().string());
-        }
-        std::sort(paths.begin(), paths.end());
-        return paths;
-    }
 
     // Fusion gate settings from the CLI; off unless the caller asks for them.
     ep::FusionGateConfig g_fusion;
@@ -231,12 +216,9 @@ int main(int argc, char **argv) {
         g_gpuScoreThreshold = float(arg.ValueFloat("--gpu-threshold"));
         g_gpuDownsampleVoxel = float(arg.ValueFloat("--gpu-downsample"));
 
-        const std::string dir = arg.Value("--dir");
         const std::string replayDirectory = arg.Value("--replay");
-        if (dir.empty() == replayDirectory.empty()) {
-            std::printf("usage: icp_quality_diag --dir <folder of frame_*.ply> [--voxel v] "
-                        "[--trackers identity,icp]\n"
-                        "       icp_quality_diag --replay <depth recording> [--voxel v] "
+        if (replayDirectory.empty()) {
+            std::printf("usage: icp_quality_diag --replay <depth recording> [--voxel v] "
                         "[--truncation t] [--trackers identity,icp]\n");
             return 2;
         }
@@ -251,26 +233,9 @@ int main(int argc, char **argv) {
         float truncation = arg.ValueFloat("--truncation", 0.0f);
         std::string label;
 
-        if (!dir.empty()) {
-            const std::vector<std::string> framePaths = collectFramePaths(dir);
-            if (framePaths.empty()) {
-                std::printf("no frame_*.ply found in %s\n", dir.c_str());
-                return 1;
-            }
-            const ep::FrameBounds bounds = ep::ComputeBounds(ep::LoadFrames(framePaths));
-            voxel = arg.ValueFloat("--voxel", bounds.Extent() / 200.0f);
-            acquisition.source = ep::EAcquisitionSource::PlyFolder;
-            acquisition.framePaths = framePaths;
-            acquisition.intervalMs = 0.0; // as fast as the stages allow
-            acquisition.loop = false;
-            lastFrame = int(framePaths.size()) - 1;
-            char buf[512];
-            std::snprintf(buf, sizeof buf, "%s  (%zu frames, extent %.4f)", dir.c_str(),
-                          framePaths.size(), bounds.Extent());
-            label = buf;
-        } else {
+        {
             // Opened once here for its frame count and intrinsics; each run builds its own.
-            const ep::RecordedDepthProvider probe(replayDirectory);
+            const Realsense::RealSenseD435Recorder probe(replayDirectory);
             const ep::CameraIntrinsics k = probe.Intrinsics();
             lastFrame = probe.FrameCount() - 1;
             voxel = arg.ValueFloat("--voxel", 0.01f); // indoor scale, not the 190 m synthetic default

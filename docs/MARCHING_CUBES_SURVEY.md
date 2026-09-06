@@ -4,11 +4,9 @@ Isosurface(등가면) 추출의 표준 알고리즘인 **Marching Cubes(MC)**를
 특징 보존/dual → 적응·다중해상도 → 고성능/GPU → 학습기반**의 순서로 정리하고, 마지막에
 **서로 다른 voxel 크기(submap)에 MC를 적용할 수 있는가**(이 저장소의 실제 구현 포함)를 다룬다.
 
-- **관련 코드:** `src/Engine/Spatial/AdaptiveVoxelGrid.{h,cpp}`(다중해상도 MC 메시),
-  `src/TSDF/Backends/SubmapAdvancedTSDF.h`(2-레벨 detail submap, point-cloud 추출),
-  `src/Engine/Spatial/MarchingCubesTables.h`
-- **관련 문서:** [ADAPTIVE_VOXEL_GRID_VS_COMPACT_DIRECTIONAL.md](ADAPTIVE_VOXEL_GRID_VS_COMPACT_DIRECTIONAL.md),
-  [VARIANCE_ADAPTIVE_VOXEL_GRID.md](VARIANCE_ADAPTIVE_VOXEL_GRID.md), [TSDF_IMPLEMENTATION.md](TSDF_IMPLEMENTATION.md)
+- **관련 코드:** `src/TSDF/Backends/SubmapAdvancedTSDF.h`(2-레벨 detail submap, point-cloud 추출),
+  `src/Mesh/MarchingCubesTables.h`
+- **관련 문서:** [TSDF_IMPLEMENTATION.md](TSDF_IMPLEMENTATION.md)
 
 ---
 
@@ -85,7 +83,7 @@ MC의 세 가지 근본 한계가 이후 모든 후속 연구의 축이 된다: 
 | 1996 | Shekhar, Fayyad, Yagel, Cornhill — *Octree-based decimation of MC surfaces* (IEEE Vis ’96) | octree로 평탄 영역 병합(decimation), 경계 patching 수반. |
 | — | (일반형) **restricted/balanced octree (2:1)** | 인접 셀 해상도 차이를 1단계로 제한 → crack 케이스를 유한한 **transition 패턴**으로 축소. |
 | 2009/10 | **Lengyel — Transvoxel Algorithm** (박사논문, UC Davis; transvoxel.org) | 게임의 **LOD 복셀 지형**용 표준 해법. 고해상도 블록의 경계면에 **transition cell**(전이 셀) 전용 테이블을 두어 저해상도 이웃 메시와 **이음매 없이(seamless)** 접합. 512 케이스 룩업. → **“voxel 크기가 다른 두 블록”의 정답 격**. |
-| 2025 | **“Resolution Where It Counts: Hash-based GPU-Accelerated 3D Reconstruction via Variance-Adaptive Voxel Grids”** (MrHash, arXiv:2511.21459) — *본 저장소 `AdaptiveVoxelGrid`의 근거 논문* | 분산이 큰(디테일) 영역만 fine, 나머지는 coarse로 저장하는 **variance-adaptive 다중해상도 TSDF** + 다중해상도 MC. |
+| 2025 | **“Resolution Where It Counts: Hash-based GPU-Accelerated 3D Reconstruction via Variance-Adaptive Voxel Grids”** (MrHash, arXiv:2511.21459) | 분산이 큰(디테일) 영역만 fine, 나머지는 coarse로 저장하는 **variance-adaptive 다중해상도 TSDF** + 다중해상도 MC. |
 
 Dual 계열(§3의 DC/DMC/CMS)은 애초에 **octree 적응에서 crack-free**라, 다중해상도 문제의 또 다른
 정공법이다.
@@ -143,29 +141,19 @@ adaptive-MC crack 문제(Shu 1995)다. 핵심은 crack이 **메시 연결성(con
 
 ### 7.3 이 저장소의 실제 사례 (핵심)
 
-이 프로젝트에는 “서로 다른 voxel”을 다루는 **두 경로**가 이미 있고, 서로 다른 답을 준다.
+이 프로젝트에서 “서로 다른 voxel”을 다루는 경로는 하나다.
 
-**(a) `AdaptiveVoxelGrid::ExtractMesh()` — 진짜 다중해상도 MC(메시).**
-2-레벨(fine `h` / coarse `2h`) variance-adaptive TSDF에서 삼각형 메시를 뽑는다. 여기서는 crack이
-실제 문제였다: 계획의 단순한 *truncate + collapse* 방식은 경계에서 **1-fine-cell 균열**을 남긴다
-(해석적으로 확인됨). 채택한 해법은 위 **(4)번** 계열 —
-
-> **BFS 경계 세분화**: fine 블록에 면-인접(face-adjacent)한 coarse 블록을 8개 fine sub-cell로
-> 세분 → fine-pass와 coarse-pass가 **서로소(disjoint) 볼륨**에서 동작하고, 마지막에 `0.25h`
-> 격자에서 **한 번만 vertex weld** → **crack-free**.
-
-즉 “다른 voxel 크기에 MC 적용”은 **이미 구현·검증**되어 있다(GPU MC와 bit-exact).
-
-**(b) `SubmapAdvancedTSDF::ExtractPointCloud()` — point cloud(메시 아님).**
+**`SubmapAdvancedTSDF::ExtractPointCloud()` — point cloud(메시 아님).**
 base(`baseVoxel`, 전체) + detail(`baseVoxel/2`, dense 블록)을 **precedence dedup**(dense 영역은
 detail이 이기고 base는 드롭)으로 합쳐 **oriented point cloud**를 낸다. **삼각형 연결성이 없으므로
 위상적 crack 자체가 성립하지 않는다** — 경계에는 국소적인 **점 밀도 불연속(seam)**만 남고, 이는
 v1에서 의도적으로 허용됐다(“seamless transitional boundary(MrHash-style)”는 v2로 유예).
 
 ### 7.4 결론(실무 지침)
-- **메시가 목표**라면: 다른 voxel 크기에 MC는 가능하지만 **경계 처리 필수**. 이 저장소 패턴을
-  따르면 **경계 세분화 + 단일 weld**(AdaptiveVoxelGrid 방식)가 간단·견고하고, 더 큰 해상도 격차나
-  LOD 스트리밍이면 **Transvoxel 전이 셀**, 특징 보존까지 원하면 **Dual Marching Cubes**가 정공법이다.
+- **메시가 목표**라면: 다른 voxel 크기에 MC는 가능하지만 **경계 처리 필수**. **경계 세분화 +
+  단일 weld**가 간단·견고하고, 더 큰 해상도 격차나 LOD 스트리밍이면 **Transvoxel 전이 셀**,
+  특징 보존까지 원하면 **Dual Marching Cubes**가 정공법이다. (이 저장소에 다중해상도 MC 메시
+  경로는 현재 없다.)
 - **point cloud가 목표**라면(현재 Submap/AdvancedTSDF 추출): crack은 비적용. precedence dedup으로
   충분하며, 필요 시 경계 seam을 부드럽게 하려면 detail/base 겹침대(overlap band) blending을 v2로.
 - 공통 함정(측정됨): detail(half-voxel) 레벨은 타일당 엔트리가 4–8× 많아 **detail 해시가 작으면

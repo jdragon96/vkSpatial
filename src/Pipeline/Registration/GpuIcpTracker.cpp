@@ -1,4 +1,7 @@
 #include "Pipeline/Registration/GpuIcpTracker.h"
+#include "Common/PointCloud.h"
+#include "Registration/RegistrationParam.h"
+#include "Registration/RegistrationResult.h"
 
 #include <cstddef>
 
@@ -29,7 +32,7 @@ namespace Pipeline {
         Registration::RegistrationParam params = m_params;
         if (params.minFitness <= 0.0f) params.minFitness = 0.4f;
         if (params.maxStepMeters <= 0.0f) {
-            // Default gate scales with the map resolution (see kDefaultTrackerMaxStepVoxels);
+            // Default gate scales with the map resolution (see Registration::kDefaultTrackerMaxStepVoxels);
             // an explicit SetMaxStepMeters is absolute and skips this.
             params.maxStepMeters = std::max(Registration::kDefaultTrackerMaxStepMeters,
                                             Registration::kDefaultTrackerMaxStepVoxels * model->voxel);
@@ -44,7 +47,7 @@ namespace Pipeline {
         minBound.array() -= margin;
         maxBound.array() += margin;
         const float truncationDistance = model->truncationDistance > 0.0f ? model->truncationDistance : 0.0f;
-        Registration::PointCloud target;
+        Common::PointCloud target;
         target.points.reserve(model->entries.size());
         target.normals.reserve(model->entries.size());
 
@@ -60,7 +63,7 @@ namespace Pipeline {
         }
 
         // 5. Sort canonical order
-        SortTargetIntoCanonicalOrder(target);
+        target.SortTargetIntoCanonicalOrder();
 
         // 6. Do ICP
         const Registration::RegistrationResult icp = m_gpu->Solve(

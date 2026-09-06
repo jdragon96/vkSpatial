@@ -4,18 +4,18 @@
 // "synthetic drift -> backend recovers" test the backend exists to pass.
 #include <gtest/gtest.h>
 
-#include "Engine/Backend/Lie.h"
-#include "Engine/Backend/PoseGraph.h"
+#include "Registration/Backend/Lie.h"
+#include "Registration/Backend/PoseGraph.h"
 
 #include <random>
 #include <vector>
 
-using Engine::Backend::Mat6;
-using Engine::Backend::PoseGraph;
-using Engine::Backend::SE3;
-using Engine::Backend::SE3Exp;
-using Engine::Backend::SE3Log;
-using Engine::Backend::Vec6;
+using Registration::Backend::Mat6;
+using Registration::Backend::PoseGraph;
+using Registration::Backend::SE3;
+using Registration::Backend::SE3Exp;
+using Registration::Backend::SE3Log;
+using Registration::Backend::Vec6;
 
 namespace {
 

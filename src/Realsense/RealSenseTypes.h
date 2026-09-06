@@ -115,8 +115,9 @@ namespace Realsense {
     // in its own class header would make the two headers include each other.
     ///////////////////////////////////////////////////////////////////////////////////////////////
 
-    // The four numbers back-projection needs, as one argument. Not D435Calibration: that carries
-    // depthScale and the baseline too, and a replayed recording has intrinsics without a device.
+    // The four numbers back-projection needs, as one argument. Not CameraIntrinsics: that carries
+    // the image size, depthScale and the baseline too, and the kernels that back-project want none
+    // of them -- passing the whole thing would let a kernel read a field nothing filled.
     struct PinholeIntrinsics {
         float fx = 0.0f;
         float fy = 0.0f;
@@ -151,8 +152,8 @@ namespace Realsense {
     // emitted flag. Less downsampling costs throughput; dropping it would punch a hole in the
     // surface, and a hole is the failure that shows no symptom until the mesh is wrong.
     struct DownSampleCounters {
-        std::uint32_t insertFailures = 0;      // the probe budget ran out
-        std::uint32_t outOfPackableRange = 0;  // the voxel sits outside the 11/11/10-bit key
+        std::uint32_t insertFailures = 0;     // the probe budget ran out
+        std::uint32_t outOfPackableRange = 0; // the voxel sits outside the 11/11/10-bit key
     };
 
     static_assert(sizeof(DownSampleCounters) == 8, "the GLSL mirror is two 4-byte scalars");
@@ -195,5 +196,33 @@ namespace Realsense {
         // the normal stencil costs a border of pixels, so a test pinning an exact point count has
         // to be able to ask for the chain without it.
         bool enabled = true;
+    };
+
+
+    struct CameraIntrinsics {
+        float fx = 0.0f;
+        float fy = 0.0f;
+        float cx = 0.0f;
+        float cy = 0.0f;
+        int width = 0;
+        int height = 0;
+        float depthScale = 0.0f;
+        float stereoBaselineMeters = 0.0f;
+    };
+
+    struct DepthFrame {
+        const std::uint16_t *rawZ16 = nullptr;
+        const std::uint8_t *infraredY8 = nullptr;
+    };
+
+    class IDepthProvider {
+    public:
+        virtual ~IDepthProvider() = default;
+
+        virtual const CameraIntrinsics &Intrinsics() const = 0;
+
+        virtual bool Grab(DepthFrame &out) = 0;
+
+        virtual void Close() {}
     };
 } // namespace Realsense

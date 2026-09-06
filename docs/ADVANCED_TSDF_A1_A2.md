@@ -4,7 +4,7 @@
 > - **A1 — 불확실성 가중(uncertainty weighting):** 관측을 신뢰도로 가중해 다중관측·노이즈에서 표면을 sharpen.
 > - **A2 — Hermite(gradient-augmented) 위치 보간:** 저장된 gradient로 zero-crossing을 선형→3차 Hermite로 올려 **곡면 서브복셀 위치** 개선.
 
-> 대상: [`AdvancedTSDF`](../src/TSDF/Backends/AdvancedTSDF.h), 셰이더 [`advanced_tsdf_{integrate,extract}.vert.glsl`](../src/shader/advanced_tsdf_integrate.vert.glsl). 배경: [`ADVANCED_TSDF.md`](ADVANCED_TSDF.md).
+> 대상: [`AdvancedTSDF`](../src/TSDF/Backends/AdvancedTSDF.h), 셰이더 [`kernel_AdvancedTSDF.{integrate,extract}.comp.glsl`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl). 배경: [`ADVANCED_TSDF.md`](ADVANCED_TSDF.md).
 
 ---
 

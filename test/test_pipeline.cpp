@@ -1,16 +1,19 @@
 #include "Pipeline/CommunicationModule.h" // Pipeline::CommunicationModule
 #include "Pipeline/Pipeline.h"            // Pipeline::Pipeline / Config / EAcquisitionSource
-#include "Pipeline/Acquisition/DepthProvider.h"
-#include "Pipeline/Acquisition/DepthRecording.h"
-#include "Pipeline/Acquisition/AcquisitionThread.h" // MakeDepthProvider
+#include "Pipeline/Acquisition/AcquisitionThread.h" // MakeDepthProvider, IDepthProvider
+#include "Realsense/RealSenseD435Recorder.h"
 #include "Pipeline/Registration/GpuIcpTracker.h"
-#include "LocalRegistration/Algorithm/GpuPointToPlaneIcp.h"
+#include "Registration/Frontend/GpuPointToPlaneIcp.h"
 #include "Pipeline/Registration/PointToPlaneIcpTracker.h"
 #include "Pipeline/Registration/RegistrationThread.h"
 #include "Pipeline/Registration/RelocalizingIcpTracker.h"
 #include "Pipeline/Registration/Tracker.h" // Pipeline::TrackerRegistry
 
 #include "utilities/PointCloudIO.h"
+#include "Common/PointCloud.h"
+#include "Registration/RegistrationConfig.h"
+#include "Registration/RegistrationParam.h"
+#include "Registration/RegistrationResult.h"
 
 #include <gtest/gtest.h>
 
@@ -33,50 +36,52 @@ using Eigen::Vector3f;
 
 namespace {
 
-    // Write a +Z plane patch as an ASCII PLY (with normals) so the File source can load it.
-    void writePlanePly(const std::string &path, float z) {
-        std::vector<Vector3f> pts, nrm;
-        for (int i = -20; i <= 20; ++i)
-            for (int j = -20; j <= 20; ++j) {
-                pts.emplace_back(i * 0.02f, j * 0.02f, z);
-                nrm.emplace_back(0.0f, 0.0f, 1.0f);
-            }
-        ASSERT_TRUE(util::SavePly(path, pts, nrm));
-    }
+    // A depth image of a plane 1 m away, in Z16 -- the only pixel format the acquisition axis
+    // carries, so a test source hands out exactly what a D400 does. 48x48 at fx 60 back-projects
+    // to a 0.8 m patch, the same size the retired PLY fixture wrote.
+    class PlaneDepthProvider : public ep::IDepthProvider {
+    public:
+        explicit PlaneDepthProvider(int frames, double frameIntervalMs = 0.0)
+            : m_left(frames), m_frameIntervalMs(frameIntervalMs) {
+            m_intrinsics.width = 48;
+            m_intrinsics.height = 48;
+            m_intrinsics.fx = m_intrinsics.fy = 60.0f;
+            m_intrinsics.cx = m_intrinsics.cy = 24.0f;
+            m_intrinsics.depthScale = 0.001f;
+            m_intrinsics.stereoBaselineMeters = 0.05f; // ValidationMask refuses a zero baseline
+            m_frame.assign(std::size_t(m_intrinsics.width) * m_intrinsics.height,
+                           std::uint16_t(1.0f / m_intrinsics.depthScale));
+        }
 
-    // A unique temp dir holding N frame_%04d.ply files (removed by the fixture dtor). `files` is the
-    // created path list, in order — exactly what a config-driven File source replays.
-    struct FrameDir {
-        fs::path dir;
-        std::vector<std::string> files;
-        explicit FrameDir(int n) {
-            dir = fs::temp_directory_path() /
-                  ("pipe_test_" + std::string(::testing::UnitTest::GetInstance()
-                                                      ->current_test_info()
-                                                      ->name()));
-            fs::create_directories(dir);
-            for (int k = 0; k < n; ++k) {
-                char name[32];
-                std::snprintf(name, sizeof name, "frame_%04d.ply", k);
-                const std::string path = (dir / name).string();
-                writePlanePly(path, 0.0f);
-                files.push_back(path);
-            }
+        const ep::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
+
+        bool Grab(ep::DepthFrame &out) override {
+            if (m_left-- <= 0) return false;
+            // Paced in the device, not in the config: a camera is what has a frame rate, and the
+            // acquisition stage no longer owns a clock.
+            if (m_frameIntervalMs > 0.0)
+                std::this_thread::sleep_for(
+                        std::chrono::microseconds(std::int64_t(m_frameIntervalMs * 1000.0)));
+            out.rawZ16 = m_frame.data();
+            return true;
         }
-        ~FrameDir() {
-            std::error_code ec;
-            fs::remove_all(dir, ec);
-        }
+
+    private:
+        int m_left;
+        double m_frameIntervalMs;
+        ep::CameraIntrinsics m_intrinsics;
+        std::vector<std::uint16_t> m_frame;
     };
 
-    // Config-driven File source over `files`, paced at `intervalMs` (0 = as fast as consumed).
-    ep::Pipeline::Config makeConfig(const std::vector<std::string> &files, double intervalMs) {
+    // Config-driven depth source: `frames` identical plane images through the real GPU front end.
+    ep::Pipeline::Config makeConfig(int frames, double frameIntervalMs = 0.0) {
         ep::Pipeline::Config cfg;
         cfg.map.baseVoxel = 0.05f;
         cfg.map.truncation = 0.15f;
-        cfg.acquisition.source = ep::EAcquisitionSource::PlyFolder;
-        cfg.acquisition.framePaths = files;
-        cfg.acquisition.intervalMs = intervalMs;
+        cfg.acquisition.source = ep::EAcquisitionSource::Realsense;
+        cfg.acquisition.makeProvider = [frames, frameIntervalMs] {
+            return std::make_unique<PlaneDepthProvider>(frames, frameIntervalMs);
+        };
         return cfg; // no densityFrames -> base-only integration (still yields entries)
     }
 
@@ -116,13 +121,11 @@ namespace {
 
 } // namespace
 
-// End-to-end: a config-driven File source streams PLYs through Reconstruction -> ICP(identity) ->
+// End-to-end: a config-driven depth source streams frames through Acquisition -> ICP(identity) ->
 // Integration, and the pipeline publishes a non-empty model. Proves the module works off the render
-// thread and that Config::source builds the File strategy.
-TEST(Pipeline, FileSourceProducesModel) {
-    const FrameDir frames(3);
-
-    ep::Pipeline pipe(makeConfig(frames.files, 0.0), identity());
+// thread, and that the whole GPU front end runs on whatever the provider hands it.
+TEST(Pipeline, DepthSourceProducesModel) {
+    ep::Pipeline pipe(makeConfig(3), identity());
     pipe.Start();
 
     ASSERT_TRUE(waitProcessed(pipe, 2)) << "pipeline did not integrate all frames";
@@ -140,12 +143,10 @@ TEST(Pipeline, FileSourceProducesModel) {
     pipe.Stop();
 }
 
-// The paced PlyFolder source (intervalMs) still delivers every frame; Source() reports it.
-TEST(Pipeline, PacedFileSourceDeliversAllFrames) {
-    const FrameDir frames(3);
-
-    ep::Pipeline pipe(makeConfig(frames.files, 15.0), identity()); // ~66 fps pacing
-    EXPECT_EQ(pipe.Source(), ep::EAcquisitionSource::PlyFolder);
+// A device that paces itself still delivers every frame; Source() reports what was configured.
+TEST(Pipeline, PacedDeviceDeliversAllFrames) {
+    ep::Pipeline pipe(makeConfig(3, 15.0), identity()); // ~66 fps pacing
+    EXPECT_EQ(pipe.Source(), ep::EAcquisitionSource::Realsense);
     pipe.Start();
 
     ASSERT_TRUE(waitProcessed(pipe, 2));
@@ -159,14 +160,18 @@ TEST(Pipeline, PacedFileSourceDeliversAllFrames) {
 // so the old stages MUST be destroyed before the comm they reference -- rebuilding comm-first was a
 // use-after-free that crashed on the first toggle. Repeated to exercise back-to-back rebuilds.
 TEST(Pipeline, ReconfigureRebuildsCleanly) {
-    const FrameDir frames(5);
-    ep::Pipeline pipe(makeConfig(frames.files, 0.0), identity());
+    ep::Pipeline pipe(makeConfig(5), identity());
     pipe.Start();
     ASSERT_TRUE(waitProcessed(pipe, 1)) << "pipeline did not start";
 
     for (int i = 0; i < 3; ++i) {
-        ep::Pipeline::Config cfg = makeConfig(frames.files, 0.0);
+        ep::Pipeline::Config cfg = makeConfig(5);
         cfg.map.submap = (i % 2 == 0); // flip an option, as a UI toggle would
+        // An ACQUISITION option too, not just a map one: realsense_scan's option panel edits both,
+        // and rebuilding the map stage while reusing a front end configured for the old settings
+        // would produce frames that silently disagree with the config the caller just applied.
+        cfg.acquisition.scoreThreshold = (i % 2 == 0) ? 0.5f : 0.95f;
+        cfg.acquisition.normal.planeFitRadius = 2 + i;
         pipe.Reconfigure(std::move(cfg), identity());
         ASSERT_TRUE(waitProcessed(pipe, 1)) << "no model after Reconfigure #" << i;
         pipe.CheckErrors(); // rethrow any worker exception from the rebuild
@@ -179,8 +184,7 @@ TEST(Pipeline, ReconfigureRebuildsCleanly) {
 // Context inside the ICP thread, alongside the Integration thread's Context -- two live GPU contexts at
 // once. Also proves "icp-cpu" (the pre-existing CPU tracker) is still registered under its new name.
 TEST(Pipeline, GpuIcpTrackerRuns) {
-    const FrameDir frames(3);
-    ep::Pipeline::Config cfg = makeConfig(frames.files, 0.0);
+    ep::Pipeline::Config cfg = makeConfig(3);
     ep::Pipeline pipe(std::move(cfg), ep::TrackerRegistry::Default().Create("icp"));
     ASSERT_NE(ep::TrackerRegistry::Default().Create("icp"), nullptr);
     ASSERT_NE(ep::TrackerRegistry::Default().Create("icp-cpu"), nullptr);
@@ -339,9 +343,7 @@ TEST(Pipeline, GpuIcpTrackerRecoversMovingCameraPose) {
 
 // Stop() before the source is exhausted must not hang or crash (interruptible shutdown).
 TEST(Pipeline, StopIsCleanMidStream) {
-    const FrameDir frames(50);
-
-    ep::Pipeline pipe(makeConfig(frames.files, 50.0), identity()); // slow pacing -> Stop mid-stream
+    ep::Pipeline pipe(makeConfig(50, 50.0), identity()); // slow pacing -> Stop mid-stream
     pipe.Start();
     std::this_thread::sleep_for(std::chrono::milliseconds(80)); // let a couple frames through
     pipe.Stop();                                                // must return promptly (no hang)
@@ -452,19 +454,23 @@ namespace {
             m_intrinsics.height = 32;
             m_intrinsics.fx = m_intrinsics.fy = 40.0f;
             m_intrinsics.cx = m_intrinsics.cy = 16.0f;
+            m_intrinsics.depthScale = 0.001f;
+            m_intrinsics.stereoBaselineMeters = 0.05f;
+            m_frame.assign(std::size_t(m_intrinsics.width) * m_intrinsics.height, 1000);
         }
 
         const ep::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
 
         bool Grab(ep::DepthFrame &out) override {
             if (m_left-- <= 0) return false;
-            out.depth.assign(std::size_t(m_intrinsics.width) * m_intrinsics.height, 1.0f);
+            out.rawZ16 = m_frame.data();
             return true;
         }
 
     private:
         int m_left;
         ep::CameraIntrinsics m_intrinsics;
+        std::vector<std::uint16_t> m_frame;
     };
 
 } // namespace
@@ -494,26 +500,27 @@ TEST(PipelineSource, RealsenseFileWithoutARecordingIsRejected) {
     EXPECT_THROW(ep::MakeDepthProvider(acquisition), std::invalid_argument);
 }
 
-// A factory that returns nothing must be caught where it is called. Handing a null provider to
-// AcquisitionThread makes it read the PLY path instead, which has no files -- so Run() exits
-// immediately and the pipeline looks merely empty.
+// A factory that returns nothing must be caught where it is called: AcquisitionThread would
+// dereference the null provider on its first Grab, inside the worker thread, where the failure is
+// a crash rather than a rejected configuration.
 TEST(PipelineSource, FactoryReturningNullIsRejected) {
     ep::AcquisitionConfig acquisition;
     acquisition.makeProvider = [] { return std::unique_ptr<ep::IDepthProvider>(); };
     EXPECT_THROW(ep::MakeDepthProvider(acquisition), std::invalid_argument);
 }
 
-// PlyFolder is the one source with no device, so it is the one that would quietly ignore an
-// injected provider. The factory wins there too.
-TEST(PipelineSource, FactoryOverridesTheFileDescription) {
+// An injected provider outranks the source enum, and must do so even where the enum names a
+// source that would itself have succeeded -- otherwise a tool that wraps a device (realsense_scan
+// wrapping it in a DepthRecorder) silently gets the bare device instead of its chain.
+TEST(PipelineSource, FactoryOverridesTheConfiguredSource) {
     int buildCount = 0;
     ep::AcquisitionConfig acquisition;
-    acquisition.source = ep::EAcquisitionSource::PlyFolder;
-    acquisition.framePaths = {"/no/such/frame.ply"};
+    acquisition.source = ep::EAcquisitionSource::RealsenseFile;
+    acquisition.recordingDirectory = "/no/such/recording";
     acquisition.makeProvider = [&] { return std::make_unique<CountingDepthProvider>(1, &buildCount); };
 
     std::unique_ptr<ep::IDepthProvider> provider = ep::MakeDepthProvider(acquisition);
-    ASSERT_NE(provider, nullptr) << "the PLY path returned null instead of the injected device";
+    ASSERT_NE(provider, nullptr) << "the configured source ran instead of the injected device";
     EXPECT_EQ(buildCount, 1);
 }
 
@@ -532,27 +539,33 @@ namespace {
             m_intrinsics.fx = m_intrinsics.fy = 40.0f;
             m_intrinsics.cx = 32.0f;
             m_intrinsics.cy = 24.0f;
-        }
+            m_intrinsics.depthScale = 0.001f;
+            m_intrinsics.stereoBaselineMeters = 0.05f;
 
-        const ep::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
-
-        bool Grab(ep::DepthFrame &out) override {
-            if (m_left-- <= 0) return false;
-            out.depth.assign(std::size_t(m_intrinsics.width) * m_intrinsics.height, 0.0f);
+            m_frame.assign(std::size_t(m_intrinsics.width) * m_intrinsics.height, 0);
             for (int v = 0; v < m_intrinsics.height; ++v)
                 for (int u = 0; u < m_intrinsics.width; ++u) {
                     const float x = (float(u) - m_intrinsics.cx) / m_intrinsics.fx;
                     const float y = (float(v) - m_intrinsics.cy) / m_intrinsics.fy;
                     float z = 1.20f + 0.25f * x;
                     if (std::abs(x) < 0.20f && std::abs(y) < 0.20f) z = 0.85f;
-                    out.depth[std::size_t(v) * m_intrinsics.width + u] = z;
+                    m_frame[std::size_t(v) * m_intrinsics.width + u] =
+                            std::uint16_t(std::lround(z / m_intrinsics.depthScale));
                 }
+        }
+
+        const ep::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
+
+        bool Grab(ep::DepthFrame &out) override {
+            if (m_left-- <= 0) return false;
+            out.rawZ16 = m_frame.data();
             return true;
         }
 
     private:
         int m_left;
         ep::CameraIntrinsics m_intrinsics;
+        std::vector<std::uint16_t> m_frame;
     };
 
 } // namespace
@@ -654,13 +667,16 @@ namespace {
             m_intrinsics.fx = m_intrinsics.fy = 10.0f;
             m_intrinsics.cx = 4.0f;
             m_intrinsics.cy = 3.0f;
+            m_intrinsics.depthScale = 0.001f;
+            m_intrinsics.stereoBaselineMeters = 0.05f;
+            m_frame.assign(std::size_t(m_intrinsics.width) * m_intrinsics.height, 1000);
         }
 
         const ep::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
 
         bool Grab(ep::DepthFrame &out) override {
             if (m_left-- <= 0) return false;
-            out.depth.assign(std::size_t(m_intrinsics.width) * m_intrinsics.height, 1.0f);
+            out.rawZ16 = m_frame.data();
             return true;
         }
 
@@ -670,11 +686,12 @@ namespace {
         int m_left;
         int *m_closeCount;
         ep::CameraIntrinsics m_intrinsics;
+        std::vector<std::uint16_t> m_frame;
     };
 
 } // namespace
 
-// DepthRecorder decorates a provider. A decorator that swallows Close() leaves the wrapped camera
+// Recording decorates a provider. A decorator that swallows Close() leaves the wrapped camera
 // streaming while looking perfectly correct at the call site.
 TEST(DepthFrontend, RecorderForwardsCloseToTheWrappedDevice) {
     int closeCount = 0;
@@ -682,10 +699,140 @@ TEST(DepthFrontend, RecorderForwardsCloseToTheWrappedDevice) {
             std::filesystem::temp_directory_path() / "vkbvh_depth_close_forward";
     std::filesystem::remove_all(dir);
 
-    ep::DepthRecorder recorder(std::make_unique<CloseCountingDepthProvider>(1, &closeCount),
-                               dir.string());
+    Realsense::RealSenseD435Recorder recorder(
+            std::make_unique<CloseCountingDepthProvider>(1, &closeCount), dir.string());
     recorder.Close();
     EXPECT_EQ(closeCount, 1);
+    std::filesystem::remove_all(dir);
+}
+
+namespace {
+
+    // A ramp, so a frame written at the wrong stride or byte width reads back visibly wrong rather
+    // than accidentally matching a constant image.
+    class RampDepthProvider : public ep::IDepthProvider {
+    public:
+        explicit RampDepthProvider(int frames) : m_left(frames) {
+            m_intrinsics.width = 7; // deliberately not a power of two: a stride bug shows up
+            m_intrinsics.height = 5;
+            m_intrinsics.fx = m_intrinsics.fy = 9.0f;
+            m_intrinsics.cx = 3.5f;
+            m_intrinsics.cy = 2.5f;
+            m_intrinsics.depthScale = 0.00025f; // NOT the 0.001 default: proves it is stored
+            m_intrinsics.stereoBaselineMeters = 0.0499f;
+        }
+
+        const ep::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
+
+        bool Grab(ep::DepthFrame &out) override {
+            if (m_left-- <= 0) return false;
+            const std::size_t pixels = std::size_t(m_intrinsics.width) * m_intrinsics.height;
+            m_frame.resize(pixels);
+            for (std::size_t i = 0; i < pixels; ++i)
+                m_frame[i] = std::uint16_t(1000 + m_emitted * 100 + i);
+            ++m_emitted;
+            out.rawZ16 = m_frame.data();
+            return true;
+        }
+
+        int Emitted() const { return m_emitted; }
+
+    private:
+        int m_left;
+        int m_emitted = 0;
+        ep::CameraIntrinsics m_intrinsics;
+        std::vector<std::uint16_t> m_frame;
+    };
+
+} // namespace
+
+// The recording format's whole job: what the device produced is what comes back. Asserted per
+// pixel, not per frame count -- a wrong element width or a wrong stride still writes the right
+// NUMBER of frames, and the tools downstream would report a plausible-looking depth range from
+// them. depthScale and the baseline ride along because a replay that loses them scores every
+// frame with a silently different sigma_z.
+TEST(DepthFrontend, ARecordingReplaysTheExactZ16TheDeviceProduced) {
+    constexpr int kFrames = 3;
+    const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() / "vkbvh_depth_roundtrip";
+    std::filesystem::remove_all(dir);
+
+    RampDepthProvider reference(kFrames); // an independent copy of what was recorded
+    std::vector<std::vector<std::uint16_t>> written;
+    {
+        auto device = std::make_unique<RampDepthProvider>(kFrames);
+        Realsense::RealSenseD435Recorder recorder(std::move(device), dir.string());
+        const std::size_t pixels = std::size_t(reference.Intrinsics().width) *
+                                   reference.Intrinsics().height;
+        ep::DepthFrame frame;
+        while (recorder.Grab(frame)) written.emplace_back(frame.rawZ16, frame.rawZ16 + pixels);
+        EXPECT_EQ(recorder.FrameCount(), kFrames);
+    }
+    ASSERT_EQ(int(written.size()), kFrames);
+
+    Realsense::RealSenseD435Recorder replay(dir.string());
+    const ep::CameraIntrinsics &back = replay.Intrinsics();
+    const ep::CameraIntrinsics &original = reference.Intrinsics();
+    EXPECT_EQ(replay.FrameCount(), kFrames);
+    EXPECT_EQ(back.width, original.width);
+    EXPECT_EQ(back.height, original.height);
+    EXPECT_FLOAT_EQ(back.fx, original.fx);
+    EXPECT_FLOAT_EQ(back.cy, original.cy);
+    EXPECT_FLOAT_EQ(back.depthScale, original.depthScale);
+    EXPECT_FLOAT_EQ(back.stereoBaselineMeters, original.stereoBaselineMeters);
+
+    const std::size_t pixels = std::size_t(back.width) * back.height;
+    ep::DepthFrame frame;
+    for (int k = 0; k < kFrames; ++k) {
+        ASSERT_TRUE(replay.Grab(frame)) << "recording ended at frame " << k;
+        ASSERT_NE(frame.rawZ16, nullptr);
+        for (std::size_t i = 0; i < pixels; ++i)
+            ASSERT_EQ(frame.rawZ16[i], written[std::size_t(k)][i])
+                    << "frame " << k << " pixel " << i;
+    }
+    EXPECT_FALSE(replay.Grab(frame)) << "replay ran past the end of the recording";
+
+    std::filesystem::remove_all(dir);
+}
+
+// A truncated depth_*.bin must be refused at construction, not handed back as a partial image:
+// short frames corrupt a reconstruction with no symptom at all. This is also the check that
+// catches a recording left in the retired float32-metres format.
+TEST(DepthFrontend, ATruncatedRecordingIsRefused) {
+    const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() / "vkbvh_depth_truncated";
+    std::filesystem::remove_all(dir);
+    {
+        Realsense::RealSenseD435Recorder recorder(std::make_unique<RampDepthProvider>(1),
+                                                  dir.string());
+        ep::DepthFrame frame;
+        ASSERT_TRUE(recorder.Grab(frame));
+    }
+    ASSERT_NO_THROW(Realsense::RealSenseD435Recorder{dir.string()});
+
+    std::filesystem::resize_file(dir / "depth_0000.bin", 4);
+    EXPECT_THROW(Realsense::RealSenseD435Recorder{dir.string()}, std::runtime_error);
+
+    std::filesystem::remove_all(dir);
+}
+
+// Recording over a directory that already holds one would replay as a single capture with a
+// teleport where the shorter take ended, and no size check downstream can see that.
+TEST(DepthFrontend, RecordingIntoADirectoryThatAlreadyHoldsOneIsRefused) {
+    const std::filesystem::path dir =
+            std::filesystem::temp_directory_path() / "vkbvh_depth_overwrite";
+    std::filesystem::remove_all(dir);
+    {
+        Realsense::RealSenseD435Recorder recorder(std::make_unique<RampDepthProvider>(1),
+                                                  dir.string());
+        ep::DepthFrame frame;
+        ASSERT_TRUE(recorder.Grab(frame));
+    }
+
+    EXPECT_THROW(Realsense::RealSenseD435Recorder(std::make_unique<RampDepthProvider>(1),
+                                                  dir.string()),
+                 std::runtime_error);
+
     std::filesystem::remove_all(dir);
 }
 
@@ -723,19 +870,23 @@ TEST(Pipeline, AcquisitionReducesFramesToTheMapsFinestVoxel) {
                 m_intrinsics.width = m_intrinsics.height = 200;
                 m_intrinsics.fx = m_intrinsics.fy = 200.0f;
                 m_intrinsics.cx = m_intrinsics.cy = 100.0f;
+                m_intrinsics.depthScale = 0.001f;
+                m_intrinsics.stereoBaselineMeters = 0.05f;
+                m_frame.assign(std::size_t(m_intrinsics.width) * m_intrinsics.height, 1000);
             }
 
             const ep::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
 
             bool Grab(ep::DepthFrame &out) override {
                 if (m_left-- <= 0) return false;
-                out.depth.assign(std::size_t(m_intrinsics.width) * m_intrinsics.height, 1.0f);
+                out.rawZ16 = m_frame.data();
                 return true;
             }
 
         private:
             int m_left = 1;
             ep::CameraIntrinsics m_intrinsics;
+            std::vector<std::uint16_t> m_frame;
         };
         return std::make_unique<DenseDepthProvider>();
     };
@@ -858,7 +1009,7 @@ TEST(Pipeline, OfflineSourceProcessesEveryFrame) {
 // as good, and -- through the constant-velocity prior, which doubles whatever the last frame did --
 // run away: 10.78 m of claimed motion in a single frame at 30 fps.
 TEST(Registration, FitnessGateRejectsASolveBackedByAlmostNoOverlap) {
-    Registration::PointCloud target;
+    Common::PointCloud target;
     for (int i = -20; i <= 20; ++i)
         for (int j = -20; j <= 20; ++j) {
             target.points.emplace_back(float(i) * 0.01f, float(j) * 0.01f, 0.0f);
@@ -955,8 +1106,7 @@ namespace {
 TEST(Pipeline, AFrameWhoseOverlapGateFailedIsNotFusedIntoTheMap) {
     constexpr int kFrames = 6;
     constexpr float kStrayMetres = 5.0f;
-    FrameDir frames(kFrames);
-    ep::Pipeline::Config cfg = makeConfig(frames.files, 0.0);
+    ep::Pipeline::Config cfg = makeConfig(kFrames);
     cfg.acquisition.realTime = false;
 
     auto tracker = std::make_unique<ScriptedVerdictTracker>(
@@ -991,8 +1141,7 @@ TEST(Pipeline, AFrameWhoseOverlapGateFailedIsNotFusedIntoTheMap) {
 // the tracker rejected".
 TEST(Pipeline, AFrameWithNoMapYetIsStillFused) {
     constexpr int kFrames = 4;
-    FrameDir frames(kFrames);
-    ep::Pipeline::Config cfg = makeConfig(frames.files, 0.0);
+    ep::Pipeline::Config cfg = makeConfig(kFrames);
     cfg.acquisition.realTime = false;
 
     auto tracker = std::make_unique<ScriptedVerdictTracker>(
@@ -1021,8 +1170,7 @@ TEST(Pipeline, AFrameWithNoMapYetIsStillFused) {
 // can make two runs agree by luck; -1, 0, 1, 2, ... can only hold if every frame really did wait.
 TEST(Pipeline, ALosslessReplayAlignsEachFrameAgainstEveryEarlierFrame) {
     constexpr int kFrames = 8;
-    FrameDir frames(kFrames);
-    ep::Pipeline::Config cfg = makeConfig(frames.files, 0.0);
+    ep::Pipeline::Config cfg = makeConfig(kFrames);
     cfg.acquisition.realTime = false; // a recording: lossless AND lock-stepped
 
     auto observed = std::make_shared<std::vector<int>>();
@@ -1284,7 +1432,7 @@ TEST(Pipeline, TrackerRegistryHasIcpPlusGlobal) {
 }
 
 // The standalone "global" tracker must scale its pipeline to the MAP resolution (model->voxel),
-// exactly as GpuIcpTracker scales maxCorrDist. The default RegistrationConfig is mm-scale
+// exactly as GpuIcpTracker scales maxCorrDist. The default Registration::RegistrationConfig is mm-scale
 // (voxelSize 5.0); on a metre-scale scene that collapses each cloud to a handful of octant blobs,
 // which cannot express a real sensor transform. The frame is therefore the model surface expressed
 // in a NON-trivial sensor pose (an identical frame would let even blob-level matching recover
@@ -1410,7 +1558,7 @@ TEST(Pipeline, RelocalizingTrackerDoesNotFireGlobalWhileBootstrapping) {
 }
 
 // The DEFAULT step gate must scale with the map resolution, like maxCorrDist/huberScale already
-// do. kDefaultTrackerMaxStepMeters (0.08) encodes "hand-held 30 fps, metres" — on a map whose
+// do. Registration::kDefaultTrackerMaxStepMeters (0.08) encodes "hand-held 30 fps, metres" — on a map whose
 // units make the voxel comparable to or larger than 0.08 (scanData ~mm units: voxel 5.7;
 // scan_out: voxel 0.5), solve jitter alone exceeds it and the gate rejects nearly every frame
 // (measured: scanData 59/60, scan_out 76/90 ImplausibleMotion). The tuned capture/ behaviour is
@@ -1576,8 +1724,7 @@ namespace {
 // fallback is silently firing every N frames". The pipeline must surface whatever the tracker's
 // Stats() reports.
 TEST(Pipeline, StatsSurfaceTheTrackersRelocalizationCounters) {
-    const FrameDir frames(1);
-    ep::Pipeline pipe(makeConfig(frames.files, 0.0), std::make_unique<FixedStatsTracker>());
+    ep::Pipeline pipe(makeConfig(1), std::make_unique<FixedStatsTracker>());
 
     const ep::PipelineStats stats = pipe.GetStats();
 
@@ -1674,8 +1821,7 @@ TEST(Pipeline, GpuIcpTrackerConsultsTheSnapshotEntryIndex) {
 // The pipeline's published snapshots must carry the index (built on the integration thread), and
 // it must cover every entry exactly once -- a partial index would silently shrink every crop.
 TEST(Pipeline, PublishedSnapshotsCarryAFullEntryIndex) {
-    const FrameDir frames(3);
-    ep::Pipeline pipe(makeConfig(frames.files, 0.0), identity());
+    ep::Pipeline pipe(makeConfig(3), identity());
     pipe.Start();
     ASSERT_TRUE(waitProcessed(pipe, 2));
     pipe.CheckErrors();

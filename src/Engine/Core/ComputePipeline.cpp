@@ -284,16 +284,46 @@ namespace Engine::Core {
         destroyShaderResources();
     }
 
+    // Rebinding a slot REPLACES it wholesale, type included: the same binding number can carry a
+    // buffer in one configuration of a kernel and a sampler in another, and leaving stale fields
+    // behind would write a descriptor of the old type into the new layout.
     ComputePipeline &ComputePipeline::Bind(uint32_t binding, VkBuffer buffer, VkDeviceSize sizeBytes) {
-        for (auto &b: m_bindings) {
-            if (b.binding == binding) {
-                b.buffer = buffer;
-                b.size = sizeBytes;
+        ResourceBinding entry{};
+        entry.binding = binding;
+        entry.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        entry.buffer = buffer;
+        entry.size = sizeBytes;
+        return bindResource(entry);
+    }
+
+    ComputePipeline &ComputePipeline::Bind(uint32_t binding, VkImageView view, VkSampler sampler,
+                                           VkImageLayout layout) {
+        if (view == VK_NULL_HANDLE || sampler == VK_NULL_HANDLE)
+            throw std::runtime_error("ComputePipeline::Bind: binding " + std::to_string(binding) +
+                                     " was given a null image view or sampler; an Image created "
+                                     "with createView=false has no view to bind");
+
+        ResourceBinding entry{};
+        entry.binding = binding;
+        entry.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        entry.view = view;
+        entry.sampler = sampler;
+        entry.layout = layout;
+        return bindResource(entry);
+    }
+
+    ComputePipeline &ComputePipeline::bindResource(const ResourceBinding &entry) {
+        for (auto &existing: m_bindings) {
+            if (existing.binding == entry.binding) {
+                // The descriptor set layout is built from the types, so a slot that changed type
+                // needs a new layout, not just a new descriptor write.
+                if (existing.type != entry.type) destroyShaderResources();
+                existing = entry;
                 m_dirty = true;
                 return *this;
             }
         }
-        m_bindings.push_back({binding, buffer, sizeBytes});
+        m_bindings.push_back(entry);
         m_dirty = true;
         return *this;
     }
@@ -330,7 +360,7 @@ namespace Engine::Core {
         for (auto &b: m_bindings) {
             VkDescriptorSetLayoutBinding lb{};
             lb.binding = b.binding;
-            lb.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            lb.descriptorType = b.type;
             lb.descriptorCount = 1;
             lb.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             bindings.push_back(lb);
@@ -343,15 +373,29 @@ namespace Engine::Core {
         if (vkCreateDescriptorSetLayout(m_context.device, &dlci, nullptr, &m_descLayout) != VK_SUCCESS)
             throw std::runtime_error("ensurePipeline: vkCreateDescriptorSetLayout failed");
 
-        VkDescriptorPoolSize poolSize{};
-        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSize.descriptorCount = static_cast<uint32_t>(bindings.size());
+        // One pool size PER TYPE, as the spec requires: a pool offering only storage-buffer
+        // descriptors cannot satisfy a set that contains a sampler.
+        //
+        // No test guards this. MoltenVK does not enforce the pool's type accounting and never
+        // returns VK_ERROR_OUT_OF_POOL_MEMORY, so collapsing this back to a single pool size runs
+        // fine on this machine and fails on a driver that checks. Verified by mutation.
+        std::vector<VkDescriptorPoolSize> poolSizes;
+        for (auto &b: m_bindings) {
+            bool counted = false;
+            for (auto &size: poolSizes) {
+                if (size.type != b.type) continue;
+                size.descriptorCount += 1;
+                counted = true;
+                break;
+            }
+            if (!counted) poolSizes.push_back({b.type, 1});
+        }
 
         VkDescriptorPoolCreateInfo dpci{};
         dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         dpci.maxSets = 1;
-        dpci.poolSizeCount = 1;
-        dpci.pPoolSizes = &poolSize;
+        dpci.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+        dpci.pPoolSizes = poolSizes.data();
         if (vkCreateDescriptorPool(m_context.device, &dpci, nullptr, &m_descPool) != VK_SUCCESS)
             throw std::runtime_error("ensurePipeline: vkCreateDescriptorPool failed");
 
@@ -393,21 +437,33 @@ namespace Engine::Core {
 
     void ComputePipeline::updateDescriptors() {
         std::vector<VkWriteDescriptorSet> writes;
-        std::vector<VkDescriptorBufferInfo> bufInfos(m_bindings.size());
+
+        // Both info arrays are sized UP FRONT and never grown. Each write below stores a pointer
+        // into them, so a push_back that reallocated would leave every earlier write pointing at
+        // freed memory -- and vkUpdateDescriptorSets would read it.
+        std::vector<VkDescriptorBufferInfo> bufferInfos(m_bindings.size());
+        std::vector<VkDescriptorImageInfo> imageInfos(m_bindings.size());
 
         for (size_t i = 0; i < m_bindings.size(); i++) {
-            bufInfos[i].buffer = m_bindings[i].buffer;
-            bufInfos[i].offset = 0;
-            bufInfos[i].range = m_bindings[i].size;
-
             VkWriteDescriptorSet w{};
             w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w.dstSet = m_descSet;
             w.dstBinding = m_bindings[i].binding;
             w.dstArrayElement = 0;
             w.descriptorCount = 1;
-            w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            w.pBufferInfo = &bufInfos[i];
+            w.descriptorType = m_bindings[i].type;
+
+            if (m_bindings[i].type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+                imageInfos[i].imageView = m_bindings[i].view;
+                imageInfos[i].sampler = m_bindings[i].sampler;
+                imageInfos[i].imageLayout = m_bindings[i].layout;
+                w.pImageInfo = &imageInfos[i];
+            } else {
+                bufferInfos[i].buffer = m_bindings[i].buffer;
+                bufferInfos[i].offset = 0;
+                bufferInfos[i].range = m_bindings[i].size;
+                w.pBufferInfo = &bufferInfos[i];
+            }
             writes.push_back(w);
         }
 

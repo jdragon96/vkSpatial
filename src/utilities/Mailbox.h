@@ -5,10 +5,6 @@
 
 namespace util {
 
-    // Single-slot "latest value" mailbox for one producer and one-or-more consumers. Publish() swaps
-    // in a new immutable value (shared_ptr<const T>); Latest() returns the most recently published
-    // value, or nullptr before the first Publish. Thread-safe; consumers never block the producer
-    // beyond a short critical section, and a held snapshot stays valid after newer ones arrive.
     template<typename T>
     class Mailbox {
     public:

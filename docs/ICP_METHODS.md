@@ -131,8 +131,8 @@ ICP odometry만으로는 drift가 남는다. **Full SLAM**이 추가하는 것:
 ## 6. 이 저장소(VkLBVH)에 매핑 — 점진적 구현 경로
 
 **이미 있는 재료:**
-- **Correspondence 가속** — `Engine::Spatial::SpatialIndex`(`BinaryLBVH`/`WideBVH`)의 GPU `KNN(cx,cy,cz,k)` / `RadiusSearch`. ICP nearest-neighbor 탐색을 GPU로.
-- **Normal 있는 point cloud + frame-to-model model** — `Engine::Spatial::DirectionalTSDF`:
+- **Correspondence 가속** — `BVH`(`binary`/`wide` 백엔드)의 GPU `KNN(cx,cy,cz,k)` / `RadiusSearch`. ICP nearest-neighbor 탐색을 GPU로.
+- **Normal 있는 point cloud + frame-to-model model** — `TSDF::DirectionalTSDF`:
   `Integrate(points, normals, cameraPos)`로 프레임을 누적, `PointCloud()`(normal 포함) / `ExportPointCloud()`로 표면 추출, overlap ratio 추적. point-to-plane frame-to-model의 "model" 쪽.
 - **합성 스캔 + 정확도 평가 하네스** — `Engine::Eval`(`ScanSampler`, `SyntheticSurface`, `RmseMetrics`).
   ground-truth pose로 registration 정확도를 RMSE 회귀 테스트로 검증 가능.

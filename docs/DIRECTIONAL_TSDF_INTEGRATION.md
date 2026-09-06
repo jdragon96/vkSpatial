@@ -1,6 +1,6 @@
 # DirectionalTSDF Integration — 수학 정리
 
-실제 구현(`src/shader/compact_directional_integrate.comp`)을 그대로 수식화한 것입니다.
+실제 구현(`src/TSDF/Backends/kernel_compact_directional_integrate.comp.glsl`)을 그대로 수식화한 것입니다.
 기호는 코드 변수와 1:1 대응됩니다.
 
 > 수식은 GitHub / 마크다운 뷰어에서 렌더됩니다. 터미널에서는 `$…$` 가 원문으로 보일 수 있습니다.
@@ -210,5 +210,5 @@ $$
 
 ## 참조
 - Splietker & Behnke, *Directional TSDF: Modeling Surface Orientation for Coherent Meshes* (2019)
-- 구현: `src/shader/compact_directional_integrate.comp`, `src/TSDF/Backends/CompactDirectionalTSDF.{h,cpp}`
+- 구현: `src/TSDF/Backends/kernel_compact_directional_integrate.comp.glsl`, `src/TSDF/Backends/CompactDirectionalTSDF.{h,cpp}`
 - 관련 문서: `docs/TSDF_IMPLEMENTATION.md`, `docs/MRHASH_VS_DIRECTIONAL_TSDF.md`

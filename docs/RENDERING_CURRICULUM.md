@@ -10,10 +10,7 @@ Radiance Cascades, 3D Gaussian Splatting)까지 이어진다.
 **사용법:** 레벨은 순차적이다. 각 모듈의 **완료 기준**을 통과하면 다음으로. 실습은
 `Engine::Render`와 `example2/`의 예제(`cube_render2`, `shadow_map`, `blinn_phong`)를 뼈대로 삼는다.
 
-> 관련 문서: [ENGINE_CORE_RENDER](ENGINE_CORE_RENDER.md) · [VK_RENDER](VK_RENDER.md) ·
-> [GRAPHICS_PIPELINE_BUILD](GRAPHICS_PIPELINE_BUILD.md) · [VULKAN_PIPELINE_STAGES](VULKAN_PIPELINE_STAGES.md) ·
-> [SHADOW_RENDERING](SHADOW_RENDERING.md) · [REALTIME_SHADOW](REALTIME_SHADOW.md) ·
-> [REALTIME_SHADOW_VULKAN_PIPELINE](REALTIME_SHADOW_VULKAN_PIPELINE.md)
+> 관련 문서: [ENGINE_CORE_RENDER](ENGINE_CORE_RENDER.md) · [VULKAN_PIPELINE_STAGES](VULKAN_PIPELINE_STAGES.md)
 
 ---
 
@@ -67,7 +64,7 @@ Radiance Cascades, 3D Gaussian Splatting)까지 이어진다.
 - 텍스처링: UV, 밉맵, 필터링(bilinear/trilinear/anisotropic), sRGB vs linear.
 - 컬링(back-face), 클리핑, viewport/scissor, 블렌딩.
 
-**자료:** *Real-Time Rendering* Ch.5–6, LearnOpenGL(개념 이식용), [GRAPHICS_PIPELINE_BUILD](GRAPHICS_PIPELINE_BUILD.md).
+**자료:** *Real-Time Rendering* Ch.5–6, LearnOpenGL(개념 이식용), `Engine::Render::GraphicsPipeline::Build()`.
 
 **VkLBVH 실습**
 - `blinn_phong` 예제의 `Shaders/BlinnPhong.vert.glsl` / `.frag.glsl`을 분석.
@@ -89,15 +86,14 @@ Radiance Cascades, 3D Gaussian Splatting)까지 이어진다.
   metallic-roughness 워크플로. **IBL**(irradiance map + prefiltered env + BRDF LUT).
 - 노멀 매핑, 탄젠트 공간, 감마/톤매핑, HDR, 노출.
 - **그림자 매핑:** depth from light, PCF, 바이어스(peter-panning/acne), 캐스케이드(CSM),
-  분산/모멘트 섀도(VSM/ESM). ([SHADOW_RENDERING](SHADOW_RENDERING.md), [REALTIME_SHADOW](REALTIME_SHADOW.md).)
+  분산/모멘트 섀도(VSM/ESM).
 
 **자료:** *Real-Time Rendering* Ch.9(셰이딩)·Ch.7(그림자), *Physically Based Rendering* (pbr-book.org, 오프라인이지만 이론의 정본),
 Google **Filament** 문서(실시간 PBR의 실전 정본), *moving-frostbite-to-pbr* (SIGGRAPH 코스).
 
 **VkLBVH 실습**
 - `blinn_phong`을 **Cook-Torrance GGX PBR**로 확장(metallic/roughness 파라미터).
-- `shadow_map` 예제([REALTIME_SHADOW_VULKAN_PIPELINE](REALTIME_SHADOW_VULKAN_PIPELINE.md))로
-  방향광 그림자를 켜고, PCF 커널 크기·바이어스를 튜닝.
+- `shadow_map` 예제(`example2/ShadowMap.cpp`)로 방향광 그림자를 켜고, PCF 커널 크기·바이어스를 튜닝.
 - 여러 광원 + 노멀맵을 추가.
 
 **완료 기준:** metallic/roughness를 바꾸며 물리적으로 그럴듯한 재질을 렌더하고, GGX·프레넬·기하 항 각각의 역할을 설명한다.
@@ -154,7 +150,7 @@ Bitterli et al. **ReSTIR**(SIGGRAPH 2020) 및 후속(ReSTIR GI/PT), NVIDIA **RTX
 Alexander Sannikov **Radiance Cascades** 논문, [NVIDIA RTX Kit](https://developer.nvidia.com/rtx-kit).
 
 **VkLBVH 실습**
-- 이 저장소의 CPU/GPU **BVH**([BVH.md](BVH.md), `Engine::Spatial::SpatialIndex`)를 RT 가속구조의 축소판으로 보고,
+- 이 저장소의 CPU/GPU **BVH**([BVH.md](BVH.md), `src/BVH/`)를 RT 가속구조의 축소판으로 보고,
   ray-triangle 교차로 **간단한 경로추적기**(오프라인, ground-truth 용)를 작성 — L5 뉴럴 기법의 레퍼런스로 활용.
 - (HW RT 지원 환경) `VK_KHR_ray_query`로 인라인 RT 그림자/AO를 래스터 패스에 얹기.
 

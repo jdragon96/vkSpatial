@@ -14,7 +14,7 @@ target_link_libraries(vkspatial_tests
         BVH
         Engine::Compute
         Engine::Render
-        Engine::Backend
+        Registration
         Pipeline
         Realsense
         TSDF::TSDF
@@ -27,8 +27,11 @@ target_include_directories(vkspatial_tests PRIVATE
         # reused by test_simpletsdf_variance.cpp to avoid duplicating the cube/cylinder sampler.
         ${CMAKE_SOURCE_DIR}/example2)
 
+# VKBVH_SOURCE_DIR lets a test read the repo's real PLY/scan assets, which is the only way to
+# check a reader against the files actually on disk rather than against its own writer.
 target_compile_definitions(vkspatial_tests PRIVATE
-        VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\")
+        VKBVH_SHADER_DIR=\"${VKBVH_SHADER_DIR}\"
+        VKBVH_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\")
 
 set_target_properties(vkspatial_tests PROPERTIES
         BUILD_RPATH "$<TARGET_FILE_DIR:GTest::gtest>;$<TARGET_FILE_DIR:GTest::gtest_main>"

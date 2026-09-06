@@ -56,6 +56,13 @@ target_link_libraries(icp_quality_diag PRIVATE Pipeline Engine::Core)
 add_spatial_example(depth_capture depth_capture.cpp)
 target_link_libraries(depth_capture PRIVATE Pipeline)
 
+# Voxel-fill debugger: integrate a folder of frame PLYs into AdvancedTSDF frame by frame and report
+# per-frame fill stats (voxels below a weight threshold predict the holes). Headless, so it sits
+# outside the glslc block: its live viewer drove the reconstruction Pipeline from a PLY folder, and
+# the acquisition axis takes depth images now.
+add_spatial_example(voxel_fill_debugger voxel_fill_debugger.cpp)
+target_link_libraries(voxel_fill_debugger PRIVATE Pipeline Engine::Core)
+
 find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/bin")
 if (GLSLC_EXECUTABLE)
     function(add_compiled_shaders target define)
@@ -128,15 +135,6 @@ if (GLSLC_EXECUTABLE)
     add_spatial_example(object_scan_viewer object_scan_viewer.cpp PointCloudPass.cpp ImGuiPass.cpp)
     target_link_libraries(object_scan_viewer PRIVATE Engine::Render imgui Engine::Core)
     add_compiled_shaders(object_scan_viewer SCAN_VIEWER_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag)
-
-    # Voxel-fill debugger: integrate a folder of frame PLYs into AdvancedTSDF frame by frame and
-    # render the filling voxels (colored by tsdf/weight/fill-frame/direction, weight-thresholded)
-    # to debug coverage/holes. --dump = headless per-frame stats.
-    add_spatial_example(voxel_fill_debugger voxel_fill_debugger.cpp VoxelFillRenderStrategy.cpp PointCloudPass.cpp IsosurfaceMeshPass.cpp EdgeOverlayPass.cpp ImGuiPass.cpp)
-    target_link_libraries(voxel_fill_debugger PRIVATE Engine::Render imgui Engine::Core Pipeline)
-    add_compiled_shaders(voxel_fill_debugger VOXDBG_SHADER_DIR Shaders/pointcloud.vert Shaders/pointcloud.frag
-        Shaders/IsosurfaceMesh.vert.glsl Shaders/IsosurfaceMesh.frag.glsl
-        Shaders/EdgeOverlay.vert.glsl Shaders/EdgeOverlay.frag.glsl)
 
     # Confidence viewer for the D400 score kernel: drag a knob, watch WHERE the score moves.
     # --sweep turns it headless and prints a table instead. --replay needs neither a camera nor

@@ -41,10 +41,12 @@
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
 #include "Pipeline/Pipeline.h"
-#include "Pipeline/Acquisition/DepthProvider.h"
-#include "Pipeline/Acquisition/DepthRecording.h"
-#include "Pipeline/Acquisition/D435DepthProvider.h"
+#include "Pipeline/Acquisition/AcquisitionThread.h"
+#include "Realsense/RealSenseD435.h"
+#include "Realsense/RealSenseD435Recorder.h"
+#include "Pipeline/Registration/GpuIcpTracker.h"
 #include "Pipeline/Registration/Tracker.h"
+#include "Registration/RegistrationParam.h"
 #include "utilities/ArgParser.h"
 
 #include "imgui.h"
@@ -200,10 +202,12 @@ namespace {
         }
     }
 
-    // No VKBVH_HAS_REALSENSE guard: D435DepthProvider builds either way, and without the SDK the
-    // camera underneath throws with its own message when this is actually called.
+    // No VKBVH_HAS_REALSENSE guard: RealSenseD435 builds either way, and without the SDK Open
+    // throws with its own message when this is actually called.
     std::unique_ptr<ep::IDepthProvider> OpenDevice(const Realsense::D435StreamOptions &stream) {
-        return std::make_unique<ep::D435DepthProvider>(stream);
+        auto camera = std::make_unique<Realsense::RealSenseD435>();
+        camera->Open(stream);
+        return camera;
     }
 
 } // namespace
@@ -335,14 +339,12 @@ int main(int argc, char **argv) {
                                              : ep::EAcquisitionSource::RealsenseFile;
             config.acquisition.recordingDirectory = replayDirectory;
         } else {
-            // Recording needs a DepthRecorder in the chain, and the enum describes a device, not a
-            // chain. So this one case builds it -- and pays for it: the recorder's file format is
-            // float metres, so the frame is unpacked on the way out and re-quantised on the way
-            // into the kernels. Exact (the floats came from Z16 at this scale), but two host passes
-            // the plain live path does not make.
+            // Recording needs a recorder in the chain, and the enum describes a device, not a
+            // chain. So this one case builds it. It costs nothing beyond the write: the recorder's
+            // file format is the device's own Z16, so the frame reaches the kernels untouched.
             config.acquisition.makeProvider = [=]() -> std::unique_ptr<ep::IDepthProvider> {
-                return std::make_unique<ep::DepthRecorder>(
-                        std::make_unique<ep::D435DepthProvider>(stream), recordDirectory);
+                return std::make_unique<Realsense::RealSenseD435Recorder>(OpenDevice(stream),
+                                                                          recordDirectory);
             };
         }
 
@@ -355,8 +357,31 @@ int main(int argc, char **argv) {
         // which opens the device synchronously. A missing camera or an occupied recording
         // directory therefore reports as one CLI line, with no window ever appearing -- and the
         // device is opened exactly once, which a separate pre-flight probe would not manage.
-        std::unique_ptr<ep::Tracker> tracker = registry.Create(trackerName);
-        if (!tracker) throw std::runtime_error("realsense_scan: unknown tracker '" + trackerName + "'");
+        // The gates below only reach the tracker through GpuIcpTracker's concrete setters --
+        // TrackerRegistry::Factory takes no arguments and Tracker has no parameter interface -- so
+        // building one is a create-then-configure pair, kept here so the option panel's rebuild and
+        // the initial construction cannot drift.
+        Registration::RegistrationParam trackerParam;
+        trackerParam.maxCorrDist = 0.0f;   // 0 = leave Track's own voxel-derived value alone
+        trackerParam.minFitness = 0.0f;
+        trackerParam.maxStepMeters = 0.0f; // 0 = the tracker's voxel-scaled default
+        trackerParam.minInliers = 0;       // 0 = leave the solver default
+
+        const auto makeTracker = [&registry](const std::string &name,
+                                             const Registration::RegistrationParam &param)
+                -> std::unique_ptr<ep::Tracker> {
+            std::unique_ptr<ep::Tracker> made = registry.Create(name);
+            if (!made) throw std::runtime_error("realsense_scan: unknown tracker '" + name + "'");
+            if (auto *gpu = dynamic_cast<ep::GpuIcpTracker *>(made.get())) {
+                if (param.maxCorrDist > 0.0f) gpu->SetMaxCorrespondenceDistance(param.maxCorrDist);
+                if (param.minFitness > 0.0f) gpu->SetMinFitness(param.minFitness);
+                if (param.maxStepMeters > 0.0f) gpu->SetMaxStepMeters(param.maxStepMeters);
+                if (param.minInliers > 0) gpu->SetMinInliers(param.minInliers);
+            }
+            return made;
+        };
+
+        std::unique_ptr<ep::Tracker> tracker = makeTracker(trackerName, trackerParam);
         std::printf("depth     : score >=%.2f, normals %s r%d, downsample %s%s\n",
                     config.acquisition.scoreThreshold,
                     config.acquisition.normal.estimator.c_str(),
@@ -367,6 +392,21 @@ int main(int argc, char **argv) {
                     arg.Has("--behind-dropoff") ? "on" : "off", arg.ValueFloat("--band-sigma"));
 
         ep::Pipeline pipeline(config, std::move(tracker));
+
+        // Options are edited into `pending` and only reach the pipeline on Apply. Reconfigure
+        // replays from frame 0 by design -- an accumulating map cannot be retro-changed -- and
+        // that is also what makes a comparison meaningful: a map that is half one setting and half
+        // another measures nothing.
+        struct PendingOptions {
+            ep::Pipeline::Config config;
+            std::string trackerName;
+            Registration::RegistrationParam trackerParam;
+            bool dirty = false;
+        };
+        PendingOptions pending{config, trackerName, trackerParam, false};
+        PendingOptions applied = pending;
+        std::vector<std::string> trackerNames = registry.Names();
+
 
         if (!pipeline.VisualPresetRefusal().empty())
             std::printf("preset    : NOT applied -- %s\n", pipeline.VisualPresetRefusal().c_str());
@@ -406,6 +446,17 @@ int main(int argc, char **argv) {
             bool paused = false;
         } state;
 
+        // Reconfigure rebuilds every worker stage in place and replays from frame 0. The viewer's
+        // own accumulators are reset with it, or the next frame's counters read as a continuation
+        // of a run that no longer exists.
+        const auto applyPending = [&] {
+            pipeline.Reconfigure(pending.config, makeTracker(pending.trackerName, pending.trackerParam));
+            applied = pending;
+            applied.dirty = false;
+            pending.dirty = false;
+            pipeline.SetPaused(state.paused);
+        };
+
         auto applyVisibility = [&] {
             points->SetVisible(kSetSurface, state.showSurface);
             points->SetVisible(kSetNew, state.showNew);
@@ -420,17 +471,37 @@ int main(int argc, char **argv) {
         std::shared_ptr<const ep::ModelSnapshot> snapshot;
         std::string workerError;
 
+        // Three panels, matching the agreed layout:
+        //   left top     visualisation options -- what is DRAWN, applied immediately
+        //   left bottom  per-stage statistics  -- read-only, all stages at once
+        //   right        per-stage OPTIONS in tabs -- what is COMPUTED, applied on Apply
+        //
+        // The split is by when a control takes effect, not by subject. Anything on the left is a
+        // view change and lands on the next frame; anything on the right rebuilds the pipeline and
+        // restarts from frame 0, which is why they must not sit in the same panel.
         imgui->SetUi([&] {
+            const ep::PipelineStats stats = pipeline.GetStats();
+            const float columnWidth = 320.0f;
+            const float logicalHeight = float(app.GetWindow().FramebufferSize().height) /
+                                        ImGui::GetIO().DisplayFramebufferScale.y;
+            const float logicalWidth = float(app.GetWindow().FramebufferSize().width) /
+                                       ImGui::GetIO().DisplayFramebufferScale.x;
+            constexpr ImGuiWindowFlags kPanelFlags =
+                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse;
+
+            ///////////////////////////////////////////////////////////////////////////////////////
+            // Left top -- visualisation
+            ///////////////////////////////////////////////////////////////////////////////////////
             ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
-            ImGui::SetNextWindowSize(ImVec2(330.0f, 0.0f), ImGuiCond_Always);
-            ImGui::Begin("Scan", nullptr,
-                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                                 ImGuiWindowFlags_NoCollapse);
-            if (!workerError.empty()) ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "%s", workerError.c_str());
+            ImGui::SetNextWindowSize(ImVec2(columnWidth, 0.0f), ImGuiCond_Always);
+            ImGui::Begin("Visualize", nullptr, kPanelFlags);
+            if (!workerError.empty())
+                ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "%s", workerError.c_str());
             if (ImGui::Button(state.paused ? "resume" : "pause")) {
                 state.paused = !state.paused;
                 pipeline.SetPaused(state.paused);
             }
+
             ImGui::SeparatorText("Layers");
             if (ImGui::Checkbox("surface", &state.showSurface)) applyVisibility();
             if (ImGui::Checkbox("new this frame", &state.showNew)) applyVisibility();
@@ -456,20 +527,20 @@ int main(int argc, char **argv) {
             if (state.colorMode == EColorMode::Weight)
                 ImGui::InputFloat("weight ramp", &state.weightRampMax, 0.0f, 0.0f, "%.4f");
             ImGui::PopItemWidth();
+            const float visualizeBottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y;
             ImGui::End();
 
-            // Stage stats live in their own panel on the right, one section per pipeline stage.
-            const ep::PipelineStats stats = pipeline.GetStats();
-            const float panelWidth = 330.0f;
-            ImGui::SetNextWindowPos(ImVec2(float(app.GetWindow().FramebufferSize().width) /
-                                                   ImGui::GetIO().DisplayFramebufferScale.x -
-                                                   panelWidth - 10.0f,
-                                           10.0f),
-                                    ImGuiCond_Always);
-            ImGui::SetNextWindowSize(ImVec2(panelWidth, 0.0f), ImGuiCond_Always);
-            ImGui::Begin("Pipeline", nullptr,
-                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                                 ImGuiWindowFlags_NoCollapse);
+            ///////////////////////////////////////////////////////////////////////////////////////
+            // Left bottom -- statistics, every stage at once
+            ///////////////////////////////////////////////////////////////////////////////////////
+            ImGui::SetNextWindowPos(ImVec2(10.0f, visualizeBottom + 10.0f), ImGuiCond_Always);
+            // Clamped: Visualize sizes itself to its content, so on a short window it can reach
+            // past where Statistics would start, and a negative height is a broken window rather
+            // than a small one.
+            ImGui::SetNextWindowSize(ImVec2(columnWidth,
+                                            std::max(120.0f, logicalHeight - visualizeBottom - 20.0f)),
+                                     ImGuiCond_Always);
+            ImGui::Begin("Statistics", nullptr, kPanelFlags);
 
             ImGui::SeparatorText("Acquire");
             ImGui::Text("frames        %llu", (unsigned long long) stats.acquiredFrames);
@@ -494,8 +565,8 @@ int main(int argc, char **argv) {
                                        insertFailures, outOfRange);
             }
 
-            ImGui::SeparatorText("Track");
-            ImGui::Text("tracker       %s", trackerName.c_str());
+            ImGui::SeparatorText("Register");
+            ImGui::Text("tracker       %s", applied.trackerName.c_str());
             ImGui::Text("frames        %llu", (unsigned long long) stats.alignedFrames);
             ImGui::Text("per frame     %.2f ms", stats.alignMsAvg);
             // The number that says whether tracking is working. It is a real residual here, unlike
@@ -536,6 +607,119 @@ int main(int argc, char **argv) {
                 ImGui::TextDisabled("no model yet");
             }
             ImGui::Text("display       %.1f fps", double(ImGui::GetIO().Framerate));
+            ImGui::End();
+
+            ///////////////////////////////////////////////////////////////////////////////////////
+            // Right -- per-stage options, one tab per stage
+            ///////////////////////////////////////////////////////////////////////////////////////
+            ImGui::SetNextWindowPos(ImVec2(logicalWidth - columnWidth - 10.0f, 10.0f), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(columnWidth, logicalHeight - 20.0f), ImGuiCond_Always);
+            ImGui::Begin("Options", nullptr, kPanelFlags);
+
+            // Edited into `pending`; nothing reaches the pipeline until Apply. Apply is shared by
+            // every tab rather than per-tab because Reconfigure rebuilds the whole pipeline from
+            // one Config -- a per-tab Apply would imply the stages can be restarted independently,
+            // which they cannot.
+            bool changed = false;
+
+            // Tab content scrolls inside a child sized to leave the Apply row its space. Without
+            // the child, a tall tab simply grows past the bottom of the window and Apply -- the one
+            // control that makes any of it take effect -- becomes unreachable.
+            const float applyRowHeight = ImGui::GetFrameHeightWithSpacing() +
+                                         ImGui::GetStyle().ItemSpacing.y * 2.0f;
+            ImGui::BeginChild("stage options", ImVec2(0.0f, -applyRowHeight), false);
+
+            if (ImGui::BeginTabBar("stages")) {
+                if (ImGui::BeginTabItem("Acq")) {
+                    changed |= ImGui::SliderFloat("score >=", &pending.config.acquisition.scoreThreshold, 0.0f, 1.0f, "%.2f");
+                    changed |= ImGui::Checkbox("normals", &pending.config.acquisition.normal.enabled);
+                    if (pending.config.acquisition.normal.enabled)
+                        changed |= ImGui::SliderInt("plane-fit r", &pending.config.acquisition.normal.planeFitRadius, 1, 8);
+                    changed |= ImGui::Checkbox("downsample", &pending.config.acquisition.downSample.enabled);
+                    if (pending.config.acquisition.downSample.enabled)
+                        changed |= ImGui::InputFloat("detail voxel", &pending.config.acquisition.downSample.detailVoxelMeters, 0.0f, 0.0f, "%.4f");
+                    ImGui::EndTabItem();
+                }
+
+                if (ImGui::BeginTabItem("Reg")) {
+                    {
+                        int current = 0;
+                        for (std::size_t i = 0; i < trackerNames.size(); ++i)
+                            if (trackerNames[i] == pending.trackerName) current = int(i);
+                        std::vector<const char *> labels;
+                        labels.reserve(trackerNames.size());
+                        for (const std::string &name: trackerNames) labels.push_back(name.c_str());
+                        if (ImGui::Combo("tracker", &current, labels.data(), int(labels.size()))) {
+                            pending.trackerName = trackerNames[std::size_t(current)];
+                            changed = true;
+                        }
+                    }
+                    // 0 on any of these means "leave the tracker's own default", which for
+                    // maxCorrDist and maxStepMeters is derived from the map voxel -- so a
+                    // hard-coded value here is usually worse than none. Widening maxCorrDist grows
+                    // the GPU LocalGrid cell count cubically.
+                    changed |= ImGui::InputFloat("max corr dist", &pending.trackerParam.maxCorrDist, 0.0f, 0.0f, "%.4f");
+                    changed |= ImGui::SliderFloat("min fitness", &pending.trackerParam.minFitness, 0.0f, 1.0f, "%.2f");
+                    changed |= ImGui::InputFloat("max step [m]", &pending.trackerParam.maxStepMeters, 0.0f, 0.0f, "%.4f");
+                    changed |= ImGui::InputInt("min inliers", &pending.trackerParam.minInliers);
+                    ImGui::EndTabItem();
+                }
+
+                if (ImGui::BeginTabItem("Map")) {
+                    changed |= ImGui::InputFloat("base voxel", &pending.config.map.baseVoxel, 0.0f, 0.0f, "%.4f");
+                    changed |= ImGui::InputFloat("truncation", &pending.config.map.truncation, 0.0f, 0.0f, "%.4f");
+                    changed |= ImGui::Checkbox("submap", &pending.config.map.submap);
+                    changed |= ImGui::Checkbox("point-to-plane", &pending.config.map.pointToPlane);
+                    changed |= ImGui::SliderFloat("confidence", &pending.config.map.confidence, 0.0f, 1.0f, "%.2f");
+                    changed |= ImGui::Checkbox("hermite", &pending.config.map.hermite);
+                    ImGui::EndTabItem();
+                }
+
+                if (ImGui::BeginTabItem("Fuse")) {
+                    // The gates that decide whether a TRACKED frame is allowed into the map at all,
+                    // layered on top of ShouldFuse's per-cause policy. 0 disables each.
+                    changed |= ImGui::InputInt("bootstrap frames", &pending.config.fusion.bootstrapConsecutiveFrames);
+                    changed |= ImGui::SliderFloat("bootstrap fitness", &pending.config.fusion.bootstrapMinFitness, 0.0f, 1.0f, "%.2f");
+                    changed |= ImGui::SliderFloat("min fuse fitness", &pending.config.fusion.minimumFusionFitness, 0.0f, 1.0f, "%.2f");
+                    changed |= ImGui::InputFloat("max fuse rmse", &pending.config.fusion.maximumFusionRmse, 0.0f, 0.0f, "%.4f");
+                    ImGui::EndTabItem();
+                }
+                ImGui::EndTabBar();
+            }
+            ImGui::EndChild();
+
+            pending.dirty = pending.dirty || changed;
+
+            // Outside the child, so it stays put whichever tab is open and however far that tab
+            // has been scrolled. It acts on the whole Config, not on the visible tab.
+            ImGui::Separator();
+            if (!pending.dirty) ImGui::BeginDisabled();
+            if (ImGui::Button("Apply & restart")) {
+                // On a live camera the accumulated map is discarded and cannot be recovered, so
+                // that case asks first. A replay just plays again.
+                if (live) ImGui::OpenPopup("confirm restart");
+                else applyPending();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Revert")) {
+                pending = applied;
+                pending.dirty = false;
+            }
+            if (!pending.dirty) ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (pending.dirty) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "unapplied");
+            else ImGui::TextDisabled("applied");
+
+            if (ImGui::BeginPopupModal("confirm restart", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::TextUnformatted("This restarts acquisition and DISCARDS the current map.");
+                if (ImGui::Button("Restart")) {
+                    applyPending();
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
             ImGui::End();
         });
 

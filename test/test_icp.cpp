@@ -1,5 +1,7 @@
-#include "LocalRegistration/Algorithm/PointToPlaneIcp.h"
-#include "Features/RegistrationTypes.h"
+#include "Registration/Frontend/PointToPlaneIcp.h"
+#include "Registration/RegistrationTypes.h"
+#include "Common/PointCloud.h"
+#include "Registration/RegistrationParam.h"
 
 #include <gtest/gtest.h>
 
@@ -10,14 +12,14 @@
 
 using Eigen::Vector3f;
 using Registration::AlignPointToPlaneIcp;
-using Registration::PointCloud;
+using Common::PointCloud;
 using Registration::RegistrationParam;
 
 namespace {
 
     // A 3-plane box corner (constrains all 6 DoF for point-to-plane); target carries face normals.
-    PointCloud makeCorner() {
-        PointCloud c;
+    Common::PointCloud makeCorner() {
+        Common::PointCloud c;
         const int half = 12;
         const float step = 0.02f;
         for (int i = 0; i <= half; ++i)
@@ -36,7 +38,7 @@ namespace {
 
 // ICP recovers the transform mapping a perturbed source cloud back onto the target surface.
 TEST(Icp, RecoversKnownTransform) {
-    const PointCloud tgt = makeCorner();
+    const Common::PointCloud tgt = makeCorner();
 
     // Known small SE(3): ~4 deg about a tilted axis + a small translation.
     Eigen::Matrix4f known = Eigen::Matrix4f::Identity();
@@ -50,7 +52,7 @@ TEST(Icp, RecoversKnownTransform) {
     for (const Vector3f &p: tgt.points)
         src.push_back((known * p.homogeneous()).head<3>());
 
-    RegistrationParam params;
+    Registration::RegistrationParam params;
     params.maxCorrDist = 0.1f;
     params.maxIters = 30;
     params.minInliers = 20;
@@ -77,7 +79,7 @@ TEST(Icp, RecoversKnownTransform) {
 // Empty / normal-less target is rejected (valid=false, prior returned unchanged).
 TEST(Icp, RejectsBadTarget) {
     std::vector<Vector3f> src{{0, 0, 0}, {1, 0, 0}};
-    PointCloud tgt; // no points
+    Common::PointCloud tgt; // no points
     const auto res = AlignPointToPlaneIcp(src, {}, tgt, Eigen::Matrix4f::Identity());
     EXPECT_FALSE(res.valid);
     EXPECT_TRUE(res.T.isApprox(Eigen::Matrix4f::Identity()));

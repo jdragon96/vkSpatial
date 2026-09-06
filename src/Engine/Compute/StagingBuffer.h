@@ -13,8 +13,6 @@ namespace Engine::Compute {
     // batched copies without re-allocating each frame.
     class StagingBuffer {
     public:
-        // usage must include the transfer direction(s) you need
-        // (VK_BUFFER_USAGE_TRANSFER_SRC_BIT and/or VK_BUFFER_USAGE_TRANSFER_DST_BIT).
         StagingBuffer(Engine::Core::Context &context, VkDeviceSize bytes, VkBufferUsageFlags usage);
         ~StagingBuffer();
 

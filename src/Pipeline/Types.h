@@ -230,7 +230,7 @@ namespace Pipeline {
         int processedFrame = -1;
         std::size_t captureDepth = 0, trackDepth = 0, trackDropped = 0;
 
-        // AcquisitionThread: acquire one frame (PlyFolder: dominated by the --interval pacing).
+        // AcquisitionThread: grab one depth image and run the GPU front end over it.
         double acquireMsAvg = 0.0;
         std::uint64_t acquiredFrames = 0;
         // ICPThread: align one frame to the model (0 for identity; real cost for icp/global).

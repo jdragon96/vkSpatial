@@ -148,7 +148,7 @@ $$ slot = rowOffset[row] + \left| \{\, c < column : emitted(row, c) \,\} \right|
 
 `Pipeline::AcquisitionThread`(`src/Pipeline/Acquisition/`)가 이 프론트엔드를 직접 돌린다. 감싸는
 클래스는 없다 — depth 이미지에서 `Frame`을 만드는 방법이 이것 하나뿐이라 인터페이스로 뺄 축이 아니다.
-`AcquisitionConfig::source`가 `Realsense`(라이브 D435) / `RealsenseFile`(녹화) / `PlyFolder`를 고른다.
+`AcquisitionConfig::source`가 `Realsense`(라이브 D435) / `RealsenseFile`(녹화 재생)를 고른다.
 
 ## 무엇을 대체했나
 
@@ -160,15 +160,18 @@ CPU 경로는 아래 A/B로 근거를 남기고 삭제됐다.
 그래서 `AcquisitionConfig::downsampleVoxel`은 0으로 둔다. 그건 readback **후**에 도는 CPU 축소이고,
 여기 `DownSampleOptions`는 readback **전**에 솎으므로 전송량까지 준다.
 
-입력은 두 갈래이고 손실이 붙는 것은 한쪽뿐이다.
+입력은 두 갈래지만 **픽셀 포맷은 하나뿐이다 — Z16.** 어느 쪽도 float을 거치지 않으므로 왕복 손실이
+붙을 자리가 없다.
 
-- **라이브(`Realsense`)** — `D435DepthProvider`가 드라이버의 Z16 버퍼를 `DepthFrame::rawZ16`에 **그대로**
-  실어 넘긴다. float을 거치지 않으므로 왕복 손실이 없고, `focalLengthPixels`/`baselineMeters`/`depthScale`도
-  장치의 실제 캘리브레이션에서 온다(`MakeScoreOptions`) — 호출자가 그 숫자를 알 필요도, 조용히 틀릴
-  방법도 없다.
-- **녹화·테스트(`RealsenseFile`)** — `IDepthProvider`가 float 미터를 주므로 소스가 Z16으로
-  재양자화한다. RealSense 녹화에서는 그 float이 애초에 같은 스케일의 Z16에서 나왔으므로 왕복이
-  정확하고, 테스트가 한 양자 이내임을 고정한다.
+- **라이브(`Realsense`)** — `RealSenseD435`가 곧 `IDepthProvider`이고, 드라이버의 Z16 버퍼를
+  `DepthFrame::rawZ16`에 **그대로** 실어 넘긴다.
+- **녹화·재생(`RealsenseFile`)** — `RealSenseD435Recorder`가 장치가 준 Z16을 그대로 파일에 쓰고 그대로
+  읽는다. 한때 이 포맷이 float 미터였고 그래서 소스가 재양자화를 했는데, 그건 장치가 시작한 자리로
+  돌아오는 데 호스트 전체 패스를 두 번 쓰는 일이었다.
+
+`focalLengthPixels`/`baselineMeters`/`depthScale`은 어느 쪽이든 `IDepthProvider::Intrinsics()`가 답한다.
+녹화는 그 셋을 `intrinsics.txt`에 함께 싣는다 — 예전에는 provider를 구현 타입으로 `dynamic_cast`해서
+캐냈고, 캐스트가 빗나가는 재생 경로가 조용히 기본값 sigma_z로 점수를 매겼다.
 
 ## A/B — 같은 녹화, 같은 하류 (`capture/` 476프레임, `--trackers icp`)
 

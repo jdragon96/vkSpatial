@@ -1,6 +1,6 @@
 # VkLBVH 분석 및 Wide BVH 개선안
 
-> 기준 코드: [`vkBVH.cpp`](../src/vkSpatial/vkBVH.cpp) 및 관련 compute shader
+> 기준 코드: [`BinaryLBVH.cpp`](../src/BVH/BinaryLBVH/BinaryLBVH.cpp) 및 관련 compute shader
 >
 > 조사 기준일: 2026-06-13
 
@@ -35,15 +35,15 @@ Wide BVH의 첫 구현은 **binary LBVH를 유지한 채 후처리로 BVH8을 �
 
 ### 2.1 빌드 파이프라인
 
-[`vkBVH::buildBVH`](../src/vkSpatial/vkBVH.cpp)은 다음 단계를 수행한다.
+[`BinaryLBVH::Build`](../src/BVH/BinaryLBVH/BinaryLBVH.cpp)는 다음 단계를 수행한다.
 
 | 단계             | 구현                     | 출력                       |
 | ---------------- | ------------------------ | -------------------------- |
 | Primitive upload | CPU `Primitive[]` 업로드 | 28 B/primitive             |
-| Morton encoding  | `bvh_mortonCode.comp`    | 30-bit Morton code + index |
+| Morton encoding  | `kernel_bvh_mortonCode.comp.glsl` | 30-bit Morton code + index |
 | Radix sort       | 4-bit radix, 8 pass      | Morton 순서                |
-| Binary hierarchy | `bvh_hierarchy.comp`     | Karras binary radix tree   |
-| AABB propagation | `bvh_boundingBox.comp`   | 내부 노드 AABB             |
+| Binary hierarchy | `kernel_bvh_hierarchy.comp.glsl`  | Karras binary radix tree   |
+| AABB propagation | `kernel_bvh_boundingBox.comp.glsl`| 내부 노드 AABB             |
 
 노드 배열은 다음 규칙을 사용한다.
 
@@ -82,7 +82,7 @@ centroid Morton encoding
 
 ### 2.3 쿼리
 
-`cmd_radiusSearch.comp`와 `cmd_knn.comp`는 모두 `local_size_x = 1`이며,
+`kernel_cmd_radiusSearch.comp.glsl`과 `kernel_cmd_knn.comp.glsl`은 모두 `local_size_x = 1`이며,
 C++에서도 `Dispatch(1)`을 호출한다. 즉 GPU 전체를 사용하지 않고 단일 invocation이 전체 트리를 순회한다.
 
 - Radius: sphere-AABB test 후 겹치는 모든 leaf를 반환한다.
@@ -104,7 +104,7 @@ Wide BVH 작업 전에 아래 항목을 먼저 해결해야 올바른 기준 성
 
 ### 3.1 Scene maximum 초기화
 
-[`MortonConstant`](../src/vkSpatial/types.h)의 `g_maxX/Y/Z`가
+[`MortonConstant`](../src/BVH/BVHTypes.h)의 `g_maxX/Y/Z`가
 `std::numeric_limits<float>::max()`로 초기화되어 있다.
 
 ```cpp
@@ -422,7 +422,7 @@ subgroup path는 다음을 런타임 확인해야 한다.
 - ballot 및 shuffle 지원
 - required subgroup size 제어 가능 여부
 
-현재 `VkContext`는 optional feature chain을 구성하지 않으므로 capability query와 feature enable 코드가 먼저 필요하다.
+현재 `Engine::Core::Context`는 optional feature chain을 구성하지 않으므로 capability query와 feature enable 코드가 먼저 필요하다.
 
 ### 7.2 Radius Search
 
@@ -657,39 +657,7 @@ ray traversal용 opaque 구조다.
 단일 장면의 최고 수치보다 여러 분포의 geometric mean과 최악 회귀를 함께 봐야 한다.
 Wide/quantized path는 binary baseline보다 메모리는 줄었지만 특정 workload에서 child test가 크게 늘 수 있다.
 
-## 13. 권장 파일 구조
-
-```text
-src/vkSpatial/bvh/
-  BinaryBuilder.cpp
-  WideBuilder.cpp
-  BVHQuery.cpp
-
-src/shader/
-  bvh_binary_hierarchy.comp
-  bvh_binary_bounds.comp
-  bvh_wide_dp.comp
-  bvh_wide_scan.comp
-  bvh_wide_emit.comp
-  bvh_wide_quantize.comp
-  cmd_radiusSearch_wide.comp
-  cmd_knn_wide.comp
-```
-
-공통 CPU/GLSL layout에는 명시적인 이름을 사용한다.
-
-```text
-BinaryNodeF32
-WideNode4F32
-WideNode8F32
-WideNode8Q8
-LeafRange
-```
-
-`NODES * 36` 같은 literal allocation은 제거하고 CPU mirror struct의 `sizeof`와
-`static_assert(offsetof(...))`를 사용해야 한다.
-
-## 14. 참고 자료
+## 13. 참고 자료
 
 1. Tero Karras, **Maximizing Parallelism in the Construction of BVHs, Octrees, and k-d Trees**, HPG 2012.
    현재 binary radix tree 생성 방식의 기반.

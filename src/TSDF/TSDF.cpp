@@ -10,17 +10,6 @@ namespace {
         return static_cast<int>(std::floor(coordinate / windowWorld));
     }
 
-    // Every window the point's TRUNCATION BAND touches, not just the one holding the point.
-    //
-    // A point writes a band of radius `truncation` around itself, and each backend discards voxels
-    // outside its own 512^3 range. Routing by the point alone therefore left the part of the band
-    // that crosses a window boundary written by nobody: the owning window clipped it away and the
-    // neighbour never saw the point. That is a shell of thickness `truncation` under-integrated on
-    // every window face -- about 12*truncation/(voxel*512) of the volume, ~4.7% at the default
-    // 2-voxel band -- and it extracts as a seam.
-    //
-    // Handing the point to both windows is NOT double counting: the two windows own disjoint voxel
-    // sets, so each voxel is still updated exactly once.
     template<typename Fn>
     void ForEachTouchedWindow(const Eigen::Vector3f &p, float windowWorld, float truncation, Fn &&fn) {
         const Eigen::Vector3f low = p - Eigen::Vector3f::Constant(truncation);
@@ -28,9 +17,13 @@ namespace {
         const int x0 = WindowAxis(low.x(), windowWorld), x1 = WindowAxis(high.x(), windowWorld);
         const int y0 = WindowAxis(low.y(), windowWorld), y1 = WindowAxis(high.y(), windowWorld);
         const int z0 = WindowAxis(low.z(), windowWorld), z1 = WindowAxis(high.z(), windowWorld);
-        for (int x = x0; x <= x1; ++x)
-            for (int y = y0; y <= y1; ++y)
-                for (int z = z0; z <= z1; ++z) fn(VoxelKey{x, y, z});
+        for (int x = x0; x <= x1; ++x) {
+            for (int y = y0; y <= y1; ++y) {
+                for (int z = z0; z <= z1; ++z) {
+                    fn(VoxelKey{x, y, z});
+                }
+            }
+        }
     }
 
 } // namespace

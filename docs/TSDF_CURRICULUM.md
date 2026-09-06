@@ -2,14 +2,14 @@
 
 **목적:** TSDF(Truncated Signed Distance Function) 기반 3D 재구성을 **기초 → KinectFusion
 파이프라인 → 확장성(해싱/VDB/옥트리) → 표면 추출 → 뉴럴 암시적 → 가우시안/파운데이션 프론티어**로
-학습하는 로드맵. 각 레벨은 이 저장소(VkLBVH)의 `Engine::Spatial` TSDF(`SimpleTSDF`/`DirectionalTSDF`),
+학습하는 로드맵. 각 레벨은 이 저장소(VkLBVH)의 `TSDF` 네임스페이스의 TSDF(`SimpleTSDF`/`DirectionalTSDF`),
 marching cubes 추출(`SimpleTSDF::ExportMC`), `Engine::Eval` 스캔/평가 하네스와 연결된 실습을 포함한다. 2025 최신
 (variance-adaptive grid, GS+SDF 하이브리드, 뉴럴 SLAM 매핑)까지 이어진다.
 
 **대상:** 3D 기하/카메라 기본이 있고, dense 재구성 파이프라인을 밑바닥부터 이해하려는 사람.
 **선수지식:** 선형대수, 카메라 모델(intrinsics/extrinsics), C++/GPU 기본. 정합(ICP) 부분은
 [ICP_CURRICULUM](ICP_CURRICULUM.md)와 병행 권장.
-**사용법:** 레벨 순차 진행. 실습은 `Engine::Spatial`/`Engine::Eval`을 뼈대로 삼는다.
+**사용법:** 레벨 순차 진행. 실습은 `src/TSDF/`와 `Engine::Eval`을 뼈대로 삼는다.
 
 > 관련 문서: [BVH](BVH.md) · [ENGINE_CORE_RENDER](ENGINE_CORE_RENDER.md) ·
 > [ICP_METHODS](ICP_METHODS.md) · [ICP_LOCAL_VS_GLOBAL](ICP_LOCAL_VS_GLOBAL.md) ·
@@ -48,7 +48,7 @@ marching cubes 추출(`SimpleTSDF::ExportMC`), `Engine::Eval` 스캔/평가 하�
 [TSDF 개관](https://www.emergentmind.com/topics/truncated-signed-distance-field-tsdf), Open3D TSDF 튜토리얼.
 
 **VkLBVH 실습**
-- `Engine::Spatial::DirectionalTSDF`의 `Integrate(points, normals, cameraPos, aabbCenterHint)` 시그니처와
+- `TSDF::DirectionalTSDF`의 `Integrate(points, normals, cameraPos, aabbCenterHint)` 시그니처와
   내부 복셀 업데이트를 읽는다. 단일 프레임만 통합해 볼륨을 관찰.
 - `Engine::Eval`의 `SyntheticSurface`(sphere/plane/box/torus)로 **정확한 depth**를 만들고 한 뷰를 통합.
 
@@ -124,7 +124,7 @@ Oleynikova et al., *Voxblox*, IROS 2017. Vizzo et al., *VDBFusion*, Sensors 2022
 - 품질 이슈: truncation·해상도·정합 정확도가 메시 품질에 미치는 영향, 홀 채우기.
 
 **자료:** Lorensen & Cline, *Marching Cubes*, SIGGRAPH 1987. Ju et al., *Dual Contouring of Hermite Data*, SIGGRAPH 2002.
-이 저장소 소스: `Engine::Spatial::SimpleTSDF`(`ExportMC` 마칭큐브 메시) · `DirectionalTSDF`(`ExportPointCloud` 노멀 포인트).
+이 저장소 소스: `TSDF::SimpleTSDF`(`ExportMC` 마칭큐브 메시) · `DirectionalTSDF`(`ExportPointCloud` 노멀 포인트).
 
 **VkLBVH 실습**
 - `ObjectScanner`/`scan_dataset_gen`으로 스캔한 메시(예: `data/chair.ply`)를 `SimpleTSDF`로 재구성 →
@@ -201,7 +201,7 @@ Zhu et al. **NICE-SLAM**(CVPR 2022), **SplaTAM**(CVPR 2024). Wang et al. **DUSt3
 
 | 커리큘럼 단계 | 저장소 컴포넌트 |
 |---|---|
-| L0–L1 통합/파이프라인 | `Engine::Spatial::DirectionalTSDF::Integrate` |
+| L0–L1 통합/파이프라인 | `TSDF::DirectionalTSDF::Integrate` |
 | L1 tracking(ICP) | `SpatialIndex::KNN` + [ICP_CURRICULUM](ICP_CURRICULUM.md) |
 | L3 추출/평가 | `SimpleTSDF::ExportMC`(MC 메시) · `DirectionalTSDF::ExportPointCloud`, `RmseMetrics.h`(`AccuracyRMSE`/`CompletenessRMSE`) |
 | 데이터 생성 | `ObjectScanner`, `scan_dataset_gen`, `SyntheticSurface` |

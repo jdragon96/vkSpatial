@@ -5,7 +5,10 @@
 #include "Engine/Core/Context.h"
 #include "Engine/Core/Image.h"
 #include "Engine/Core/OneShotCommands.h"
+#include "Engine/Core/Sampler.h"
+#include "Engine/Compute/StagingBuffer.h"
 
+#include <cstring>
 #include <numeric>
 #include <vector>
 
@@ -176,4 +179,145 @@ TEST(ComputePipelineTest, RecordDispatchIntoExternalCommandBufferProducesSameRes
     std::vector<uint32_t> result(N, 0u);
     inputBuffer.Download(result.data(), N * sizeof(uint32_t));
     for (uint32_t i = 0; i < N; ++i) EXPECT_EQ(result[i], 6u) << "index " << i;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Combined image samplers in a compute pipeline. Every kernel in this repository read its inputs
+// from storage buffers until kernel_ValidationScore, which samples a RealSense Z16 depth image
+// directly -- half the upload of an unpacked float buffer, and no unpacking arithmetic per pixel.
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+namespace {
+
+    // Stages `texels` into a fresh sampled image and leaves it in SHADER_READ_ONLY_OPTIMAL.
+    // There is no Engine::Core helper for this yet; a kernel that samples its input every frame
+    // will want one, but a test that runs the copy once should not be what defines its shape.
+    void UploadSampledImage(Context &context, Image &image, uint32_t width, uint32_t height,
+                            const std::vector<uint16_t> &texels) {
+        ImageDescriptor descriptor = ImageDescriptor::Color2D(
+                VkExtent2D{width, height}, VK_FORMAT_R16_UINT,
+                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        descriptor.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        image.Create(descriptor);
+
+        const VkDeviceSize bytes = VkDeviceSize(texels.size() * sizeof(uint16_t));
+        Engine::Compute::StagingBuffer staging(context, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        std::memcpy(staging.Mapped(), texels.data(), std::size_t(bytes));
+
+        SubmitOneShot(context, QueueRole::Compute, [&](VkCommandBuffer cmd) {
+            image.TransitionLayout(cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0, VK_ACCESS_TRANSFER_WRITE_BIT);
+
+            VkBufferImageCopy region{};
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.layerCount = 1;
+            region.imageExtent = {width, height, 1};
+            vkCmdCopyBufferToImage(cmd, staging.Handle(), image.Handle(),
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+            image.TransitionLayout(cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                   VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+        });
+    }
+
+} // namespace
+
+// A texel-for-texel copy out of a usampler2D. The fixture is 5x3 rather than square, and the
+// values encode row * 100 + column, so a kernel that transposed its coordinates or walked the
+// image with the wrong row stride cannot produce the expected buffer.
+TEST(ComputePipelineTest, SamplesAUsampler2DAlongsideAStorageBuffer) {
+    Context context;
+
+    const uint32_t width = 5, height = 3;
+    std::vector<uint16_t> texels(std::size_t(width) * height);
+    for (uint32_t row = 0; row < height; ++row)
+        for (uint32_t column = 0; column < width; ++column)
+            texels[std::size_t(row) * width + column] = uint16_t(row * 100 + column);
+
+    Image image(context);
+    UploadSampledImage(context, image, width, height, texels);
+
+    Sampler sampler(context, SamplerDescriptor{});
+
+    Buffer output(context, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    output.Allocate(uint32_t(texels.size() * sizeof(uint32_t)));
+
+    static const char *kShader = R"(
+        #version 450
+        layout(local_size_x = 8, local_size_y = 8) in;
+        layout(set = 0, binding = 0) uniform usampler2D source;
+        layout(std430, set = 0, binding = 1) writeonly buffer Output { uint values[]; };
+        layout(push_constant) uniform PC { int width; int height; };
+        void main() {
+            ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+            if (pixel.x >= width || pixel.y >= height) return;
+            values[pixel.y * width + pixel.x] = texelFetch(source, pixel, 0).x;
+        }
+    )";
+
+    struct PushConstants { int32_t width; int32_t height; };
+
+    ComputePipeline pipeline(context);
+    pipeline.Build(kShader, ShaderInput::GlslSrc)
+            .Bind(0, image, sampler)
+            .Bind(1, output)
+            .Args(PushConstants{int32_t(width), int32_t(height)})
+            .Dispatch(1, 1, 1);
+
+    std::vector<uint32_t> readback(texels.size());
+    output.Download(readback.data(), uint32_t(readback.size() * sizeof(uint32_t)));
+
+    for (std::size_t i = 0; i < texels.size(); ++i)
+        EXPECT_EQ(readback[i], uint32_t(texels[i])) << "texel " << i;
+}
+
+// Two samplers and a buffer in one descriptor set, which is the shape kernel_ValidationScore uses.
+//
+// It does NOT pin the per-type descriptor pool sizing, though that is what the code does and what
+// the spec requires: mutating updateDescriptors() to request a pool of storage-buffer descriptors
+// only leaves this test green, because MoltenVK does not enforce the pool's type accounting and
+// never returns VK_ERROR_OUT_OF_POOL_MEMORY. A driver that does -- or a validation layer, which
+// this Context cannot enable -- would reject it. The sizing stays correct on purpose; there is
+// simply no local test that would go red if it regressed.
+TEST(ComputePipelineTest, TwoSamplersAndABufferShareOneDescriptorSet) {
+    Context context;
+
+    const uint32_t width = 2, height = 2;
+    const std::vector<uint16_t> texels{7, 7, 7, 7};
+
+    Image first(context), second(context);
+    UploadSampledImage(context, first, width, height, texels);
+    UploadSampledImage(context, second, width, height, texels);
+
+    Sampler sampler(context, SamplerDescriptor{});
+
+    Buffer output(context, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    output.Allocate(uint32_t(texels.size() * sizeof(uint32_t)));
+
+    static const char *kShader = R"(
+        #version 450
+        layout(local_size_x = 2, local_size_y = 2) in;
+        layout(set = 0, binding = 0) uniform usampler2D first;
+        layout(set = 0, binding = 1) uniform usampler2D second;
+        layout(std430, set = 0, binding = 2) writeonly buffer Output { uint values[]; };
+        void main() {
+            ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+            values[pixel.y * 2 + pixel.x] =
+                texelFetch(first, pixel, 0).x + texelFetch(second, pixel, 0).x;
+        }
+    )";
+
+    ComputePipeline pipeline(context);
+    pipeline.Build(kShader, ShaderInput::GlslSrc)
+            .Bind(0, first, sampler)
+            .Bind(1, second, sampler)
+            .Bind(2, output)
+            .Dispatch(1, 1, 1);
+
+    std::vector<uint32_t> readback(texels.size());
+    output.Download(readback.data(), uint32_t(readback.size() * sizeof(uint32_t)));
+    for (std::size_t i = 0; i < readback.size(); ++i) EXPECT_EQ(readback[i], 14u) << "texel " << i;
 }

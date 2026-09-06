@@ -1,15 +1,12 @@
 #include "VoxelFillDebug.h"          // voxdbg::belowThreshold
-#include "VoxelFillRenderStrategy.h" // VoxelFillRenderStrategy
 
 #include "Engine/Core/Context.h"
-#include "Pipeline/Pipeline.h"                   // Pipeline / Config / MapConfig / Frame
+#include "Pipeline/Pipeline.h"                   // MapConfig / Frame
 #include "Pipeline/Acquisition/FrameLoader.h" // LoadFrames / ComputeBounds
-#include "Pipeline/Registration/Tracker.h"       // TrackerRegistry / Tracker
-#include "Pipeline/Render/RenderThread.h"        // RenderThread
 #include "Mesh/ExtractorRegistry.h"
 #include "Mesh/MeshConnectivity.h"
 #include "Mesh/VoxelField.h"
-#include "TSDF/TSDF.h"                           // headless --dump map
+#include "TSDF/TSDF.h"                           // the map this tool builds
 
 #include "utilities/ArgParser.h"
 #include "utilities/StageProfiler.h"
@@ -31,6 +28,12 @@ namespace ep = Pipeline;
 using Eigen::Vector3f;
 
 namespace {
+
+    // The map-shape toggles this tool sweeps. Small enough to live here now that the render
+    // strategy that used to own them is gone with the viewer.
+    struct Opts {
+        bool submap = true, pointToPlane = true, confidence = true, hermite = false, downsample = false;
+    };
 
     uint32_t nextPow2(uint32_t v) {
         if (v <= 1) return 1;
@@ -61,7 +64,7 @@ namespace {
     // Apply the per-stage integration toggles onto a MapConfig. Shared by the initial config build and
     // every live toggle-rebuild, so the two paths can never drift. `confWeight` is the confidence weight
     // used when confidence is enabled (0 disables the confidence term).
-    void applyOpts(ep::MapConfig &m, const VoxelFillRenderStrategy::Opts &o, float confWeight) {
+    void applyOpts(ep::MapConfig &m, const Opts &o, float confWeight) {
         m.submap = o.submap;
         m.pointToPlane = o.pointToPlane;
         m.confidence = o.confidence ? confWeight : 0.0f;
@@ -198,58 +201,6 @@ namespace {
         return 0;
     }
 
-    int runViewer(std::shared_ptr<const std::vector<ep::Frame>> frames,
-                  const ep::MapConfig &baseMap,
-                  const std::vector<std::string> &framePaths,
-                  const ep::FrameBounds &bounds,
-                  float wThresh,
-                  const std::string &trackerName,
-                  double intervalMs,
-                  bool loop,
-                  const VoxelFillRenderStrategy::Opts &initOpts) {
-        ep::TrackerRegistry registry = ep::TrackerRegistry::Default();
-        const float confValue = baseMap.confidence > 0.0f ? baseMap.confidence : 0.5f;
-
-        auto makeConfig = [&](const VoxelFillRenderStrategy::Opts &o, const ep::MapConfig &base) {
-            ep::MapConfig m = base;
-            applyOpts(m, o, confValue);
-            ep::Pipeline::Config config;
-            config.map = m;
-            config.acquisition.source = ep::EAcquisitionSource::PlyFolder;
-            config.acquisition.framePaths = framePaths;
-            config.acquisition.intervalMs = intervalMs;
-            config.acquisition.loop = loop;
-            return config;
-        };
-
-        ep::Pipeline pipe(makeConfig(initOpts, baseMap), registry.Create(trackerName));
-        pipe.SetPaused(true);
-        pipe.Start();
-
-        VoxelFillRenderStrategy::Params params;
-        params.frames = frames;
-        params.voxel = baseMap.baseVoxel;
-        params.trunc = baseMap.truncation;
-        params.nFrames = int(frames->size());
-        params.center = bounds.Center();
-        params.extent = bounds.Extent();
-        params.wThresh = wThresh;
-        params.trackerName = trackerName;
-        params.map = baseMap;
-        params.intervalMs = intervalMs;
-        params.loop = loop;
-        params.opts = initOpts;
-        params.onRebuild = [&](const VoxelFillRenderStrategy::Opts &o, const ep::MapConfig &m) {
-            pipe.Reconfigure(makeConfig(o, m), registry.Create(trackerName));
-            pipe.SetPaused(false); // resume playing so the effect of the toggle is visible
-        };
-        VoxelFillRenderStrategy strategy(std::move(params));
-
-        ep::RenderThread rt({1280, 800, "Voxel Fill Debugger"});
-        rt.Run(pipe, strategy); // blocks on the main thread until the window closes; stops the pipe
-        return 0;
-    }
-
     // Collect sorted frame_*.ply paths from `dir` (skipping ground_truth_*). Directory listing only --
     // the clouds themselves are read by the Reconstruction loader (ep::LoadFrames), not here.
     std::vector<std::string> collectFramePaths(const std::string &dir) {
@@ -275,7 +226,7 @@ int main(int argc, char **argv) {
                                        "[--trunc t] [--submap] [--downsample] [--no-p2p] [--conf L] "
                                        "[--hermite] [--wthresh w] [--tile-hash N] [--block V] "
                                        "[--detail-k K] [--detail-trunc-vox R] [--max-points N] "
-                                       "[--tracker a] [--interval ms] [--loop] [--dump] [--probe-stats]")
+                                       "[--probe-stats]")
                         .Option("--voxel") // default runtime-computed (extent / 200)
                         .Option("--trunc") // default runtime-computed (voxel * 2, real-time band)
                         .Option("--conf", 0.5)
@@ -284,18 +235,16 @@ int main(int argc, char **argv) {
                         .Option("--block", 32)
                         .Option("--detail-k", 4.0)
                         .Option("--detail-trunc-vox", 3.0) // detail band radius in detail voxels
-                        .Option("--max-points")            // default = largest loaded frame
-                        .Option("--tracker", "identity")
-                        .Option("--interval", 33.0); // ~30 fps pacing; 0 = as fast as consumed
+                        .Option("--max-points");           // default = largest loaded frame
         if (!arg) return 2;
 
         // ---- Reconstruction reads the clouds (shared loader), main only lists + configures ----
         const std::string dir = arg.Value("--dir");
         const std::vector<std::string> framePaths = collectFramePaths(dir);
         if (framePaths.empty()) throw std::runtime_error("no frame_*.ply found in " + dir);
-        auto frames = std::make_shared<std::vector<ep::Frame>>(ep::LoadFrames(framePaths));
-        if (frames->empty()) throw std::runtime_error("no usable frames (need per-point normals)");
-        const ep::FrameBounds bounds = ep::ComputeBounds(*frames);
+        const std::vector<ep::Frame> frames = ep::LoadFrames(framePaths);
+        if (frames.empty()) throw std::runtime_error("no usable frames (need per-point normals)");
+        const ep::FrameBounds bounds = ep::ComputeBounds(frames);
 
         // ---- Config: derive voxel/trunc/max-points from the data + flags, fill the MapConfig ----
         const float voxel = arg.ValueFloat("--voxel", bounds.Extent() / 200.0f);
@@ -310,7 +259,7 @@ int main(int argc, char **argv) {
                         ? nextPow2(uint32_t(arg.ValueFloat("--max-points")))
                         : nextPow2(uint32_t(std::max<std::size_t>(bounds.maxFramePoints, 1u << 15)));
 
-        VoxelFillRenderStrategy::Opts opts;
+        Opts opts;
         opts.submap = arg.Has("--submap");         // off by default; opt in with --submap
         opts.downsample = arg.Has("--downsample"); // off by default (no-op on sparse scans)
         opts.pointToPlane = !arg.Has("--no-p2p");
@@ -328,7 +277,7 @@ int main(int argc, char **argv) {
         cfg.probeStats = arg.Has("--probe-stats");
         applyOpts(cfg, opts, arg.ValueFloat("--conf"));
 
-        std::printf("dir       : %s  (%d frames, extent %.4f)\n", dir.c_str(), int(frames->size()),
+        std::printf("dir       : %s  (%d frames, extent %.4f)\n", dir.c_str(), int(frames.size()),
                     bounds.Extent());
         std::printf("map       : base %.4f + detail %.4f (band %.0f detail-vox), block %d vox, "
                     "detail-k %.1f, per-tile hash %u, submap %s\n",
@@ -338,10 +287,9 @@ int main(int argc, char **argv) {
                     cfg.pointToPlane ? "on" : "off", cfg.confidence, cfg.hermite ? "on" : "off",
                     cfg.downsample ? "on" : "off");
 
-        // ---- Run: headless benchmark or the live viewer ----
-        if (arg.Has("--dump") || arg.Has("--no-view")) return runDump(cfg, *frames, wThresh, arg.Has("--probe-stats"));
-        return runViewer(frames, cfg, framePaths, bounds, wThresh, arg.Value("--tracker"),
-                         arg.ValueFloat("--interval"), arg.Has("--loop"), opts);
+        // Headless only. The live viewer drove the reconstruction Pipeline from a PLY folder, and
+        // the acquisition axis takes depth images now -- realsense_scan is the viewer that remains.
+        return runDump(cfg, frames, wThresh, arg.Has("--probe-stats"));
     } catch (const std::exception &e) {
         std::cerr << e.what() << "\n";
         return 1;

@@ -1,11 +1,11 @@
 # Engine::Core / Engine::Render 사용법
 
-`Engine::Core`와 `Engine::Render`는 `vkCommon`/`vkSpatial`/`vkRender`를 대체하기 위해 새로 만든 모듈이다. Filament를 참고해 두 축으로 설계했다.
+`Engine::Core`와 `Engine::Render`는 이 저장소의 Vulkan 기반 계층이다. Filament를 참고해 두 축으로 설계했다.
 
 1. **GPU 알고리즘 개발용**: 창(window) 없이 compute만 돌리는 헤드리스 워크로드 (BVH 빌드, 이미지 처리 등).
 2. **랜더링 엔진용**: swapchain, graphics pipeline, dynamic rendering을 갖춘 실시간 렌더링.
 
-두 축은 `Engine::Core`가 공통 기반이고, `Engine::Render`는 그 위에 선택적으로 얹는 계층이다. 기존 `vkCommon`/`vkSpatial`/`vkRender`는 아직 그대로 남아 있고 (`example/`, `test/test_bvh*.cpp` 등이 계속 사용 중), `Engine::*`는 새 코드가 우선 채택할 방향이다. 기존 모듈을 `Engine::*`로 옮기는 작업은 아직 시작하지 않았다.
+두 축은 `Engine::Core`가 공통 기반이고, `Engine::Render`는 그 위에 선택적으로 얹는 계층이다.
 
 ## 계층
 
@@ -31,12 +31,12 @@ Engine::Core::Context
 
 ## 설계 원칙
 
-- **`Context`는 RAII다.** 생성자에서 vk-bootstrap으로 instance/device를 만들고 VMA allocator까지 준비하며, 소멸자가 역순으로 전부 정리한다. `vkRender::VkContext`처럼 별도 `shutdown()`을 호출할 필요가 없다.
+- **`Context`는 RAII다.** 생성자에서 vk-bootstrap으로 instance/device를 만들고 VMA allocator까지 준비하며, 소멸자가 역순으로 전부 정리한다. 별도 `shutdown()`을 호출할 필요가 없다.
 - **자원을 소유하는 모든 객체는 `Context&`를 참조로 받는다.** 포인터도 아니고 `VkDevice`를 따로 저장하지도 않는다 — `Buffer`, `Image`, `ComputePipeline`, `SwapChain`, `GraphicsPipeline` 모두 자신을 만든 `Context`보다 오래 살아남으면 안 된다.
 - **`Context` 생성 모드가 두 가지다.**
   - `Context()` 또는 `Context(false)` — headless/compute 전용. 창도, surface도, graphics queue도 만들지 않는다. `graphicsQueue`/`graphicsCmdPool`/`surface`는 `VK_NULL_HANDLE`로 남는다. GPU 알고리즘 개발은 이 모드로 충분하다.
   - `Context(true, instanceExtensions, surfaceFactory)` — presentation 지원. `graphicsQueue`/`graphicsFamily`/`graphicsCmdPool`/`surface`까지 채운다. `Engine::Render`를 쓰려면 이 모드가 필요하다.
-- **`Engine::Render`는 `Engine::Core`에만 의존한다.** `vkCommon`/`vkSpatial`/`vkRender`를 include하지 않는다 — 두 시스템은 CMake 타겟, 네임스페이스, 전역 상태 어느 쪽도 충돌하지 않고 나란히 존재한다.
+- **`Engine::Render`는 `Engine::Core`에만 의존한다.**
 
 ## Engine::Core — GPU 알고리즘 개발용 (헤드리스)
 
@@ -262,4 +262,3 @@ try {
 
 - [`example2/cube_render.cpp`](../example2/cube_render.cpp) — `Engine::Core` + `Engine::Render`를 함께 쓰는 첫 실사용 예제. 회전하는 큐브를 그린다.
 - [`test/test_engineCore.cpp`](../test/test_engineCore.cpp) — `Engine::Core`(Context/Buffer/Image/ComputePipeline)만 쓰는 헤드리스 사용 예제 겸 단위 테스트.
-- [`docs/VK_RENDER.md`](VK_RENDER.md) — 이 문서가 대체해나갈 기존 `vkRender` 구조. `Renderer`/`Scene`/`View`/`Camera`/`RenderGraph`/`MouseInput`처럼 `Engine::Render`에는 아직 없는 상위 오케스트레이션 개념이 필요하면 당분간 `vkRender`를 계속 참고한다.

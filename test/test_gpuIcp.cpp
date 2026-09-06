@@ -1,4 +1,5 @@
-#include "LocalRegistration/Algorithm/GpuPointToPlaneIcp.h"
+#include "Registration/Frontend/GpuPointToPlaneIcp.h"
+#include "Registration/LocalGrid.h"
 #include <Eigen/Core>
 #include <gtest/gtest.h>
 #include <random>
@@ -42,11 +43,11 @@ TEST(LocalGrid, NearestMatchesBruteForce) {
 }
 
 #include "Engine/Core/Context.h"
-#include "LocalRegistration/Algorithm/GpuPointToPlaneIcp.h"
-#include "Features/RegistrationTypes.h"
+#include "Registration/Frontend/GpuPointToPlaneIcp.h"
+#include "Registration/RegistrationTypes.h"
 
 // CPU reference: point-to-plane H,b in T's frame, over grid-NN correspondences, CENTRED on tgt centroid.
-static void cpuAccumulate(const std::vector<Vector3f> &src, const Registration::PointCloud &tgt,
+static void cpuAccumulate(const std::vector<Vector3f> &src, const Common::PointCloud &tgt,
                           const Eigen::Matrix4f &T, float maxCorr,
                           Eigen::Matrix<double, 6, 6> &H, Eigen::Matrix<double, 6, 1> &b, int &inliers) {
     Vector3f c = Vector3f::Zero();
@@ -80,7 +81,7 @@ TEST(GpuIcp, AccumulateMatchesCpu) {
     Engine::Core::Context ctx;
     // A small +Z plane patch as source; a matching plane as target (with +Z normals).
     std::vector<Vector3f> src;
-    Registration::PointCloud tgt;
+    Common::PointCloud tgt;
     for (int i = -15; i <= 15; ++i)
         for (int j = -15; j <= 15; ++j) {
             src.emplace_back(i * 0.02f, j * 0.02f, 0.01f); // 1 cm above the target plane
@@ -113,7 +114,7 @@ TEST(GpuIcp, AccumulateMatchesCpu) {
 TEST(GpuIcp, AccumulateResidualSumHasNoFixedPointFloor) {
     Engine::Core::Context ctx;
     std::vector<Vector3f> src;
-    Registration::PointCloud tgt;
+    Common::PointCloud tgt;
     for (int i = -15; i <= 15; ++i)
         for (int j = -15; j <= 15; ++j) {
             src.emplace_back(i * 0.02f, j * 0.02f, 0.003f); // 3 mm: below the historical ~7 mm floor
@@ -130,13 +131,13 @@ TEST(GpuIcp, AccumulateResidualSumHasNoFixedPointFloor) {
             << "sum " << out.sumOfSquaredResiduals << " for " << src.size() << " 3 mm residuals";
 }
 
-#include "LocalRegistration/Algorithm/PointToPlaneIcp.h"
+#include "Registration/Frontend/PointToPlaneIcp.h"
 #include <Eigen/Geometry>
 
 TEST(GpuIcp, SolveMatchesCpuOnCorner) {
     Engine::Core::Context ctx;
     // A 3-plane corner target (constrains all 6 DoF); source = target perturbed by a small transform.
-    Registration::PointCloud tgt;
+    Common::PointCloud tgt;
     std::vector<Vector3f> src, srcNormals;
     auto addPlane = [&](const Vector3f &o, const Vector3f &u, const Vector3f &v, const Vector3f &n) {
         for (int i = -10; i <= 10; ++i)
@@ -178,7 +179,7 @@ TEST(GpuIcp, SolveMatchesCpuOnCorner) {
 TEST(GpuIcp, ResidualRmseMatchesCpu) {
     Engine::Core::Context ctx;
     // Same 3-plane corner fixture as SolveMatchesCpuOnCorner (constrains all 6 DoF).
-    Registration::PointCloud tgt;
+    Common::PointCloud tgt;
     std::vector<Vector3f> src;
     auto addPlane = [&](const Vector3f &o, const Vector3f &u, const Vector3f &v, const Vector3f &n) {
         for (int i = -10; i <= 10; ++i)
@@ -241,7 +242,7 @@ namespace {
     // Dense 3-plane corner target, apex off-origin, extent held ~0.6m across sizes (spacing shrinks as
     // point count grows, per plane count = 3*(2M+1)^2). Normals point along +X/+Y/+Z respectively, so
     // the corner constrains all 6 DoF (matches SolveMatchesCpuOnCorner's fixture, just parameterised).
-    void buildCorner(Registration::PointCloud &tgt, int M, float spacing) {
+    void buildCorner(Common::PointCloud &tgt, int M, float spacing) {
         const Vector3f apex(0.3f, 0.3f, 0.3f);
         auto addPlane = [&](const Vector3f &u, const Vector3f &v, const Vector3f &n) {
             for (int i = -M; i <= M; ++i)
@@ -293,7 +294,7 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
     fflush(stdout);
 
     for (const auto &sz: sizes) {
-        Registration::PointCloud tgt;
+        Common::PointCloud tgt;
         buildCorner(tgt, sz.M, sz.spacing);
         std::vector<Vector3f> src;
         src.reserve(tgt.points.size());
@@ -354,6 +355,9 @@ TEST(GpuIcp, DISABLED_BenchmarkVsCpu) {
 // so it never asserted on residual rmse; the NN metric remains the primary signal regardless.)
 #include "Engine/Eval/RmseMetrics.h"
 #include "Pipeline/Registration/Tracker.h"
+#include "Common/PointCloud.h"
+#include "Registration/RegistrationParam.h"
+#include "Registration/RegistrationResult.h"
 
 #include <cmath>
 
@@ -548,7 +552,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessNoisyRobustness) {
 
     // Same target construction the real trackers use (uncropped -- the model here is small enough
     // that cropping is unnecessary): sub-voxel surface point per entry.
-    Registration::PointCloud tgt;
+    Common::PointCloud tgt;
     tgt.points.reserve(model.entries.size());
     tgt.normals.reserve(model.entries.size());
     for (const auto &entry: model.entries) {
@@ -658,7 +662,7 @@ TEST(GpuIcp, RobustPathMatchesCpuOnNoisyFixture) {
 
     // Same target construction the real trackers use (GpuIcpTracker.cpp / PointToPlaneIcpTracker.cpp):
     // sub-voxel surface point per entry.
-    Registration::PointCloud tgt;
+    Common::PointCloud tgt;
     tgt.points.reserve(model.entries.size());
     tgt.normals.reserve(model.entries.size());
     for (const auto &entry: model.entries) {
@@ -730,7 +734,7 @@ TEST(GpuIcp, DISABLED_RegistrationQualityHarnessAnnealing) {
     }
 
     // Same target construction the real trackers use: sub-voxel surface point per entry.
-    Registration::PointCloud tgt;
+    Common::PointCloud tgt;
     tgt.points.reserve(model.entries.size());
     tgt.normals.reserve(model.entries.size());
     for (const auto &entry: model.entries) {

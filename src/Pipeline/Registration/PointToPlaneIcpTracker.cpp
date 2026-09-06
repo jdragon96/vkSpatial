@@ -1,4 +1,7 @@
 #include "Pipeline/Registration/PointToPlaneIcpTracker.h"
+#include "Common/PointCloud.h"
+#include "Registration/RegistrationParam.h"
+#include "Registration/RegistrationResult.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -13,7 +16,7 @@ namespace Pipeline {
         if (model == nullptr || model->entries.empty() || frame.pts.empty()) return result;
 
         const float truncationDistance = model->truncationDistance > 0.0f ? model->truncationDistance : 0.0f;
-        Registration::PointCloud target;
+        Common::PointCloud target;
         target.points.reserve(model->entries.size());
         target.normals.reserve(model->entries.size());
         for (const TSDFVoxel &entry: model->entries) {
@@ -22,7 +25,7 @@ namespace Pipeline {
             target.normals.push_back(entry.normal);
         }
 
-        Registration::SortTargetIntoCanonicalOrder(target);
+        target.SortTargetIntoCanonicalOrder();
 
         // Defaults mirror GpuIcpTracker exactly -- the two trackers must judge a solve alike.
         Registration::RegistrationParam params = m_params;

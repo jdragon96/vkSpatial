@@ -153,6 +153,9 @@ int main(int argc, char **argv) {
                         .Option("--gt")
                         .Option("--out")
                         .Option("--conf", 0.5)
+                        // Range-adaptive truncation band: band = N * sigma_z(z), floored at 2
+                        // voxels and capped at --trunc. 0 = off (the fixed band).
+                        .Option("--band-sigma", 0.0)
                         .Option("--tile-hash", 1 << 21)
                         // No declared default: --tsdf defaults to flat/tile by scene size, decided
                         // once axisVox is known (see defaultTsdfName below).
@@ -305,6 +308,7 @@ int main(int argc, char **argv) {
         config.backendConfig.maxDirections = 3;
         config.backendConfig.directionExponent = 4;
         config.backendConfig.viewAngleWeight = true;
+        config.backendConfig.adaptiveBand.sigmaMultiplier = arg.ValueFloat("--band-sigma");
         config.splitterConfig.baseResolution = voxel;
         config.splitterConfig.maxPointPerFrame = int(maxPts);
 

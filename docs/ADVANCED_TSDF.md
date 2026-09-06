@@ -2,7 +2,7 @@
 
 > **한 줄 요약:** `AdvancedTSDF`는 이 저장소의 여러 TSDF 실험에서 **측정으로 검증된 최적 조합**만 뽑아 하나로 합친 정본(canonical) 클래스다. 핵심은 넷 — **① compact per-(voxel,direction) flat-hash 저장**(block 대비 ~11× 저메모리), **② 6축 방향 레이어링**(모서리·얇은 구조 보존), **③ point-to-plane 적분**(평면 거의 완벽, 모서리 개선), **④ stored-gradient mode-3 추출**(denoised 법선 + 서브복셀 위치). 결과: *block-DirectionalTSDF 급 정확도를 ~11× 적은 메모리로*.
 
-> 대상: [`src/TSDF/Backends/AdvancedTSDF.{h,cpp}`](../src/TSDF/Backends/AdvancedTSDF.h), 셰이더 [`src/shader/advanced_tsdf_{integrate,extract}.vert.glsl`](../src/shader/advanced_tsdf_integrate.vert.glsl).
+> 대상: [`src/TSDF/Backends/AdvancedTSDF.{h,cpp}`](../src/TSDF/Backends/AdvancedTSDF.h), 셰이더 [`src/TSDF/Backends/kernel_AdvancedTSDF.{integrate,extract}.comp.glsl`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl).
 > 수식은 GitHub/마크다운 뷰어에서 렌더됩니다.
 
 ---
@@ -25,7 +25,7 @@ point cloud (+normals, camera)
 
 ## 1. 저장 — compact per-(voxel,direction) flat hash
 
-**무엇:** 표면이 지나가는 **(voxel, 방향) 칸만** open-addressing 해시(`wangHash` + linear probing)에 낱개로 저장. voxel은 이동식 $512^3$ 창의 로컬 좌표(축 9-bit) + 방향 3-bit로 32-bit 키에 팩킹([`packDirKey`](../src/shader/advanced_tsdf_integrate.vert.glsl)).
+**무엇:** 표면이 지나가는 **(voxel, 방향) 칸만** open-addressing 해시(`wangHash` + linear probing)에 낱개로 저장. voxel은 이동식 $512^3$ 창의 로컬 좌표(축 9-bit) + 방향 3-bit로 32-bit 키에 팩킹([`packDirKey`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl)).
 
 **왜:** 대안인 **block(8³=512 voxel 그룹)** 저장은 얇은 표면이 뚱뚱한 블록을 지날 때 대부분의 칸이 비어 **~56× 낭비**(실측). flat-hash는 빈 칸을 저장하지 않아 낭비 ≈ 0.
 
@@ -48,7 +48,7 @@ struct AdvDirEntry { uint32_t key; int32_t sumDW; uint32_t sumW; int32_t sumNx, 
 
 ## 2. 방향 레이어링 (6 signed axes)
 
-**무엇:** 각 점의 법선을 6개 **부호축**($\pm X,\pm Y,\pm Z$) 중 정렬 강한 **최대 3개** 레이어로 나눠, 같은 voxel이라도 방향이 다르면 **다른 칸**에 적분([`selectDirections`](../src/shader/advanced_tsdf_integrate.vert.glsl); Splietker & Behnke 2019).
+**무엇:** 각 점의 법선을 6개 **부호축**($\pm X,\pm Y,\pm Z$) 중 정렬 강한 **최대 3개** 레이어로 나눠, 같은 voxel이라도 방향이 다르면 **다른 칸**에 적분([`selectDirections`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl); Splietker & Behnke 2019).
 
 **왜:** 서로 **반대/수직인 표면**(얇은 벽, 날카로운 모서리)이 한 voxel에서 부호가 상쇄되어 사라지는 것을 막는다(anti-aliasing). $\rho_i = (|n_i|/|n_{\max}|)^{p_e}$ 가 5% 미만인 약한 축은 버려 낭비를 줄인다. 실측상 voxel당 평균 **1.1–1.4 방향**만 실제로 채워진다.
 
@@ -127,7 +127,7 @@ projective 경로는 수정 전후 **byte-identical**(수정이 분기 밖으로
 
 ## 4. Extract — stored-gradient mode-3 hybrid
 
-추출은 두 부분을 **각각 최적 소스**에서 취한다([`main`](../src/shader/advanced_tsdf_extract.vert.glsl)):
+추출은 두 부분을 **각각 최적 소스**에서 취한다([`main`](../src/TSDF/Backends/kernel_AdvancedTSDF.extract.comp.glsl)):
 
 **위치 = legacy 축 zero-crossing 보간** (`estimateCrossingPosition`). 같은 방향 레이어의 +축 이웃과 부호가 바뀌는 지점을 선형 보간 → 서브복셀 위치. (실험상 저장 gradient로 위치를 투영하는 mode-2는 위치를 ~10× 악화시켜 **위치는 legacy가 최적**.)
 
@@ -154,7 +154,7 @@ $$
 
 ---
 
-## 6. 측정 결과 (tsdf_benchmark, 합성 analytic GT)
+## 6. 측정 결과 (2026-07, `tsdf_benchmark` 합성 analytic GT — 도구는 이후 삭제됨)
 
 | shape | method | mem_KB | acc_rmse | edge | flat | curved |
 |---|---|---:|---:|---:|---:|---:|
@@ -192,6 +192,6 @@ $$
 | 코너 보존 merge | extract | 중복 dedup·코너 유지 | ✅ (옵션) |
 
 ## 9. 참조
-- 구현: [`AdvancedTSDF.{h,cpp}`](../src/TSDF/Backends/AdvancedTSDF.h), [`advanced_tsdf_{integrate,extract}.vert.glsl`](../src/shader/advanced_tsdf_integrate.vert.glsl), 테스트 [`test/test_advancedTsdf.cpp`](../test/test_advancedTsdf.cpp).
+- 구현: [`AdvancedTSDF.{h,cpp}`](../src/TSDF/Backends/AdvancedTSDF.h), [`kernel_AdvancedTSDF.{integrate,extract}.comp.glsl`](../src/TSDF/Backends/kernel_AdvancedTSDF.integrate.comp.glsl), 테스트 [`test/test_advancedTsdf.cpp`](../test/test_advancedTsdf.cpp).
 - 관련 문서: [`COMPACT_VS_DIRECTIONAL_TSDF.md`](COMPACT_VS_DIRECTIONAL_TSDF.md)(compact vs block 메모리), [`DIRECTIONAL_TSDF_INTEGRATION.md`](DIRECTIONAL_TSDF_INTEGRATION.md)(방향 적분 수식), [`DB_TSDF_VS_COMPACT_DIRECTIONAL.md`](DB_TSDF_VS_COMPACT_DIRECTIONAL.md)(투영거리 편향·occlusion 대조), 설계 [`superpowers/specs/2026-07-27-compact-best-tsdf-v1-design.md`](superpowers/specs/2026-07-27-compact-best-tsdf-v1-design.md).
 - 문헌: Splietker & Behnke, *Directional TSDF* (2019); Sommer et al., *Gradient-SDF* (CVPR 2022); Newcombe et al., *KinectFusion* (ISMAR 2011).

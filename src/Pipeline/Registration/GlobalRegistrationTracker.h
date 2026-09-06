@@ -1,8 +1,9 @@
 #pragma once
 
-#include "GlobalRegistration/GlobalRegistrationPipeline.h"
-#include "Features/RegistrationTypes.h"
+#include "Registration/Frontend/GlobalRegistrationPipeline.h"
+#include "Registration/RegistrationTypes.h"
 #include "Pipeline/Registration/Tracker.h"
+#include "Registration/RegistrationConfig.h"
 #include "TSDF/Backends/TSDFBackend.h" // TSDFVoxel
 
 namespace Pipeline {

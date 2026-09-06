@@ -1,6 +1,6 @@
 # RESOLVED: Engine::Core compute correctness at scale / under load
 
-**Status:** ✅ **fixed 2026-07-23.** One-line correction in `src/shader/bvh_boundingBox.comp`
+**Status:** ✅ **fixed 2026-07-23.** One-line correction in `src/BVH/kernel_bvh_boundingBox.comp.glsl`
 (inverted bottom-up-refit arriver condition). Regression tests added to
 `test/test_spatialIndex.cpp` (`BinaryLBVHTest.LargeNKnnExactAcrossScales`,
 `RepeatedBuildsStayExactUnderLoad`). Kept for the record because the original diagnosis

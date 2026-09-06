@@ -158,14 +158,14 @@ per-iteration grid 재생성을 다시 만들지 않도록 hoist와 조화:
 
 | 파일 | 변경 |
 |---|---|
-| `src/Engine/Pipeline/Registration/RegistrationTypes.h` | `RegistrationResult.rmse`; `RegistrationParam`에 `huberScale`, `normalCompatibilityCosine`, `minCorrespondenceDistance`; 공유 `AnnealIcpIteration` |
-| `src/shader/kernel_icp_iterate.comp.glsl` | 29-slot 리덕션(Σe² slot 28); 소스 노멀 binding 6; `g_huberScale`/`g_normalCompatibilityCosine`/per-iter `g_maxCorr` push constant |
-| `src/Engine/Pipeline/Registration/GpuPointToPlaneIcp.{h,cpp}` | annealed 거리로 `dispatchCentred`; `IterOut.sumOfSquaredResiduals`; 소스 노멀 버퍼 |
-| `src/Engine/Pipeline/Registration/PointToPlaneIcp.h` | `AlignPointToPlaneIcp(src, sourceNormals, tgt, priorT, params)` — Huber + rejection + annealing; grid 1회 생성 |
-| `src/Engine/Pipeline/Registration/GpuIcpTracker.cpp`, `PointToPlaneIcpTracker.cpp` | sub-voxel 타깃 구성; `frame.nrm` 전달; `huberScale = model->voxel`; annealing opt-in 주석 |
-| `src/Engine/Pipeline/Types.h` | `ModelSnapshot.voxel`, `.truncationDistance`; `PipelineStats.trackerRmseAvg` |
-| `src/Engine/Pipeline/Integration/IntegrationThread.cpp` | `buildSnapshot`에서 `voxel`/`truncationDistance` 채움 |
-| `src/Engine/Pipeline/Registration/RegistrationThread.cpp` | 상수속도 모션 모델; `m_trackerRmse` 러닝 평균 |
+| `src/Pipeline/Registration/RegistrationTypes.h` | `RegistrationResult.rmse`; `RegistrationParam`에 `huberScale`, `normalCompatibilityCosine`, `minCorrespondenceDistance`; 공유 `AnnealIcpIteration` |
+| `src/Pipeline/Registration/kernel_icp_iterate.comp.glsl` | 29-slot 리덕션(Σe² slot 28); 소스 노멀 binding 6; `g_huberScale`/`g_normalCompatibilityCosine`/per-iter `g_maxCorr` push constant |
+| `src/Pipeline/Registration/GpuPointToPlaneIcp.{h,cpp}` | annealed 거리로 `dispatchCentred`; `IterOut.sumOfSquaredResiduals`; 소스 노멀 버퍼 |
+| `src/Pipeline/Registration/PointToPlaneIcp.h` | `AlignPointToPlaneIcp(src, sourceNormals, tgt, priorT, params)` — Huber + rejection + annealing; grid 1회 생성 |
+| `src/Pipeline/Registration/GpuIcpTracker.cpp`, `PointToPlaneIcpTracker.cpp` | sub-voxel 타깃 구성; `frame.nrm` 전달; `huberScale = model->voxel`; annealing opt-in 주석 |
+| `src/Pipeline/Types.h` | `ModelSnapshot.voxel`, `.truncationDistance`; `PipelineStats.trackerRmseAvg` |
+| `src/Pipeline/Integration/IntegrationThread.cpp` | `buildSnapshot`에서 `voxel`/`truncationDistance` 채움 |
+| `src/Pipeline/Registration/RegistrationThread.cpp` | 상수속도 모션 모델; `m_trackerRmse` 러닝 평균 |
 | `test/test_gpuIcp.cpp`, `test/test_pipeline.cpp` | perturbation 하네스(+노이즈/annealing 변형), GPU≡CPU 가드, 모션 모델 테스트 |
 
 ---
@@ -180,7 +180,8 @@ per-iteration grid 재생성을 다시 만들지 않도록 hoist와 조화:
   - **비용:** `maxCorrDist`를 넓히면 GPU `LocalGrid` 셀 수/메모리가 커진다(라이브 게이트를 2×voxel로
     유지하는 이유). scan_out 같은 대형 씬에서 게이트가 과도하면 셀 폭발로 수 GB 할당 → `LocalGrid`에
     방어적 셀 상한 존재.
-- 뷰어 예: `./build-rel/example2/voxel_fill_debugger --dir scan_out --voxel 0.5 --tracker icp`
+- 확인 예: `./build-rel/example2/voxel_fill_debugger --dir scan_out --voxel 0.5` (헤드리스; 트래커를
+  거는 뷰어 경로는 취득 축에서 PLY가 빠지면서 없어졌다 — 트래커 A/B는 `icp_quality_diag --replay`로)
 
 ---
 
@@ -272,7 +273,55 @@ step max가 30 fps 핸드헬드 물리 한계(0.05 m) 안으로 들어왔고, �
 **Local→Global fallback에 대한 판정**: 위 수정 후 이 데이터에는 구할 실패가 남지 않는다(거부 1 = 맵 없음).
 global 재정위가 의미 있는 것은 *건강한 맵에서 연속 N프레임 실패*(진짜 tracking lost)가 관측될 때이고,
 그때의 올바른 자리는 `TrackerRegistry`에 새 이름으로 등록하는 composite 트래커(local 시도 → 연속 실패 시
-global)다 — 파이프라인 구조 변경이 아니라 트래커 하나 추가. 그런 데이터가 생기기 전까지는 만들지 않는다.
+global)다 — 파이프라인 구조 변경이 아니라 트래커 하나 추가.
+
+### 9.7 composite 트래커 `icp+global` (구현됨)
+
+위 판정대로 `RelocalizingIcpTracker`(레지스트리 이름 `icp+global`)로 구현했다. 동작:
+
+- 평상시엔 내부 `GpuIcpTracker`에 위임. **건강한 맵 대비 실패**(`TooFewInliers`/`LowOverlap`/
+  `ImplausibleMotion`)만 연속 실패로 카운트한다 — `NoModel`/`NoLocalTarget`은 재정위할 맵이 없는
+  상태이므로 카운트하지 않는다(부트스트랩에서 global이 발동하면 안 됨,
+  `Pipeline.RelocalizingTrackerDoesNotFireGlobalWhileBootstrapping`).
+- 연속 `kDefaultFailuresBeforeGlobal`(=3)회 실패 시 prior-free global 정합
+  (`GlobalRegistrationTracker` = FPFH+RANSAC+Ceres, full-model 타깃)을 1회 시도하고, 그 포즈를
+  시드로 local ICP를 다시 돌려 **일반 local 게이트를 통과할 때만 채택**한다. step 게이트는 특별
+  취급이 필요 없다 — refine의 prior가 global 포즈 자체라서 큰 재정위 점프는 게이트에 보이지 않는다
+  (설계 초안의 "게이트 해제" 가정은 뮤테이션 테스트로 죽은 코드임이 확인되어 제거).
+- refine이 실패하면 **local의 실패 원인을 그대로 반환**한다(절대 fusible한 원인으로 위장하지 않음).
+  카운터는 시도 직전에 리셋되어 실패한 시도는 N회 실패를 새로 채워야 재시도된다(CPU 비용 스로틀,
+  `Pipeline.RelocalizingTrackerThrottlesFailedGlobalAttempts`).
+- 관측: `TrackerStats.relocalizationAttempts`/`.relocalizationSuccesses`.
+
+같은 작업에서 단독 `global` 트래커의 버그 3건도 수정: (1) 실패 시 `failure`를 안 채워 기본값
+`NoModel`로 보고 → `ShouldFuse`가 융합해버림(이제 `TooFewInliers`/`LowOverlap` 분류,
+`Pipeline.GlobalTrackerFailureIsNotFusible`), (2) mm-스케일 기본 `voxelSize`(5.0)를 `model->voxel`로
+스케일하지 않음(`Pipeline.GlobalTrackerScalesToModelVoxelAndRecovers`), (3) 타깃을 raw
+`entry.center`로 구성 → sub-voxel surface point로 교정.
+
+### 9.8 step 게이트의 복셀 스케일링 (실측 검증 포함)
+
+`kDefaultTrackerMaxStepMeters = 0.08`은 **절대 단위 상수**(미터, 30 fps 핸드헬드)라서 맵 단위가
+미터가 아니거나 복셀이 굵으면 solve 지터만으로도 게이트를 넘는다. 실측: scan_out(extent 247,
+voxel 0.5)에서 90프레임 중 76개, scanData(mm 단위, voxel 5.7)에서 60프레임 중 59개가
+`ImplausibleMotion`으로 거부되어 재구성이 부트스트랩 프레임 근처에서 멈췄다.
+
+수정: **기본 게이트를 `max(0.08, 1.6 × model->voxel)`로 스케일**(`kDefaultTrackerMaxStepVoxels
+= 1.6` = capture/ 튜닝비 0.08/0.05). 명시적 `SetMaxStepMeters`는 절대값 그대로 존중
+(`Pipeline.GpuIcpTrackerScalesDefaultStepGateToMapVoxel`).
+
+세 데이터셋 실측 검증 (icp 트래커, before → after):
+
+| 데이터셋 | 거부(implausible) | 판정 |
+|---|---|---|
+| capture/ (실캡처, m, voxel≤0.05) | 1(NoModel)/0 → 1/0, step max 0.0095 | **비트 동일** — 게이트 max(0.08, 1.6×0.05)=0.08, 튜닝 보존 |
+| scan_out (합성, 사전 정합, voxel 0.5) | 76 → 41, 융합 13→48프레임 | 게이트는 열렸지만 채택 포즈가 드리프트(path 10.9, 참값 0) — **애초에 identity가 정답인 데이터** |
+| scanData (실스캔, 사전 정합, mm, voxel 5.7) | 59 → 59 | solve가 9.2mm 게이트도 넘는 오수렴 — **게이트가 의도대로 가비지를 차단** |
+
+부수 발견 2건: (1) **scanData도 scan_out처럼 사전 정합돼 있다** — frame 간 NN 거리 중앙값
+0.00mm(p90 0.81), centroid 이동 10.9mm는 모션이 아니라 커버리지 차이다. 트래커 기준선은
+identity. (2) 사전 정합 데이터에 icp를 걸면 게이트가 "정지된 깨끗한 모델"과 "움직이는 드리프트
+모델" 중 하나를 고르게 될 뿐이다 — 게이트 문제가 아니라 도구 선택 문제.
 
 ## 10. 남은 후속 과제 (parked, 비차단)
 

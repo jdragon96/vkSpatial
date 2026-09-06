@@ -1,4 +1,7 @@
 #include "Pipeline/Registration/GlobalRegistrationTracker.h"
+#include "Common/PointCloud.h"
+#include "Registration/RegistrationConfig.h"
+#include "Registration/RegistrationResult.h"
 
 namespace Pipeline {
 
@@ -8,14 +11,14 @@ namespace Pipeline {
         r.pose = priorPose;
         if (model == nullptr || model->entries.empty() || frame.pts.empty()) return r;
 
-        // The default RegistrationConfig is mm-scale; every derived radius (downsample cell, FPFH,
+        // The default Registration::RegistrationConfig is mm-scale; every derived radius (downsample cell, FPFH,
         // RANSAC inlier threshold, Ceres loss) hangs off voxelSize, so on a metre-scale map the
         // whole pipeline collapses unless it is re-anchored to the map resolution — same reason
         // GpuIcpTracker scales maxCorrDist off model->voxel.
         Registration::RegistrationConfig cfg = m_cfg;
         if (model->voxel > 0.0f) cfg.voxelSize = model->voxel;
 
-        Registration::PointCloud src, tgt;
+        Common::PointCloud src, tgt;
         src.points = frame.pts;
         src.normals = frame.nrm;
         tgt.points.reserve(model->entries.size());

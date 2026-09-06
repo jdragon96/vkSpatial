@@ -64,7 +64,7 @@
 **자료:** [ICP_METHODS](ICP_METHODS.md) §2–3, Besl & McKay 1992, Chen & Medioni 1991, Open3D `registration_icp` 예제.
 
 **VkLBVH 실습 (핵심 트랙)**
-1. **CPU point-to-point ICP:** 대응은 `Engine::Spatial::SpatialIndex::KNN(cx,cy,cz,k=1)`,
+1. **CPU point-to-point ICP:** 대응은 `BVH::KNN(cx,cy,cz,k=1)`(`src/BVH/BVH.h`),
    변환은 Arun/SVD. `Engine::Eval`로 **알려진 변환**을 준 합성 점군에서 수렴·정확도 검증(RMSE).
 2. **Point-to-plane 확장:** target 노멀(스캔/TSDF에서) 사용 + 거리·노멀 rejection → 수렴 속도·정확도 개선.
 

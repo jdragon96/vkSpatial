@@ -8,14 +8,6 @@
 
 namespace util {
 
-    // Bounded producer/consumer channel (thread-safe FIFO). Two overflow policies:
-    //   * dropOldestWhenFull = true  -> Push never blocks; the oldest queued item is discarded to
-    //                                   make room (real-time backpressure — bounded latency), and
-    //                                   Dropped() counts the skips.
-    //   * dropOldestWhenFull = false -> Push blocks until a consumer frees a slot (or the channel
-    //                                   closes).
-    // Close() wakes all blocked Push/Pop; after close, Pop drains the remaining items then returns
-    // false. Single module for the pipeline's inter-thread links (Mailbox<T> is the latest-only kin).
     template<typename T>
     class Channel {
     public:
@@ -43,8 +35,6 @@ namespace util {
             return true;
         }
 
-        // Dequeue into `out`, blocking until an item is available. Returns false when the channel is
-        // closed AND drained.
         bool Pop(T &out) {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_notEmpty.wait(lock, [&] { return m_closed || !m_queue.empty(); });
@@ -55,7 +45,6 @@ namespace util {
             return true;
         }
 
-        // Non-blocking dequeue. Returns false if empty.
         bool TryPop(T &out) {
             std::lock_guard<std::mutex> lock(m_mutex);
             if (m_queue.empty()) return false;
@@ -65,7 +54,6 @@ namespace util {
             return true;
         }
 
-        // Drop all queued items (e.g. on a pipeline reset). Does not close the channel.
         void Clear() {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_queue.clear();

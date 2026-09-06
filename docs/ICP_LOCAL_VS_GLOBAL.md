@@ -151,7 +151,7 @@ SLAM = **local front-end(ICP) + global back-end(pose graph/loop closure).**
 ## Part 6. 이 저장소(VkLBVH)로의 매핑 & 구현 순서
 
 **먼저 Local part부터 (지금 가능):**
-- Correspondence: `Engine::Spatial::SpatialIndex`의 GPU `KNN`/`RadiusSearch`.
+- Correspondence: `BVH`(`src/BVH/BVH.h`)의 GPU `KNN`/`RadiusSearch`.
 - Error metric의 normal: `DirectionalTSDF`(point cloud + normal, frame-to-model model).
 - 검증: `Engine::Eval`(`SyntheticSurface`/`ScanSampler`로 알려진 변환 생성, `RmseMetrics`로 정확도 회귀).
 - 순서: point-to-point(SVD) → point-to-plane+robust → frame-to-model odometry.

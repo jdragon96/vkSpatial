@@ -34,8 +34,8 @@
 #include "Engine/Render/Camera.h"
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
-#include "Pipeline/Acquisition/DepthRecording.h"
 #include "Realsense/RealSenseD435.h"
+#include "Realsense/RealSenseD435Recorder.h"
 #include "Realsense/Algorithm/NormalEstimation.h"
 #include "Realsense/RealSensePipeline.h"
 #include "utilities/ArgParser.h"
@@ -66,23 +66,6 @@ namespace {
         double fractionAboveNine = 0.0; // trusted outright
         ValidationScoreCounters counters{};
     };
-
-    // Z16 is what the sensor produces and what the kernel samples; the recordings in capture/ hold
-    // the float metres Pipeline's front end unpacked them into. Re-quantising is lossless in
-    // practice because the original quantum WAS one Z16 unit -- but only if depthScale matches the
-    // scale the recording was made with, which is why it is a parameter and not a constant.
-    std::vector<std::uint16_t> QuantiseToZ16(const std::vector<float> &metres, float depthScale) {
-        std::vector<std::uint16_t> out(metres.size(), 0);
-        const float inverseScale = 1.0f / depthScale;
-        for (std::size_t i = 0; i < metres.size(); ++i) {
-            if (!(metres[i] > 0.0f)) continue;
-            const float units = std::round(metres[i] * inverseScale);
-            // Above 65535 the sensor could not have reported it either; clamping would invent a
-            // surface at 65.5 m, so the pixel becomes "no measurement" instead.
-            out[i] = units <= 65535.0f ? std::uint16_t(units) : std::uint16_t(0);
-        }
-        return out;
-    }
 
     SweepResult ScoreSequence(Realsense::RealSensePipeline &pipeline, Engine::Core::Context &context,
                               const std::vector<std::vector<std::uint16_t>> &frames,
@@ -391,7 +374,7 @@ namespace {
         // The source is opened before the window: a missing camera should print one clear line
         // rather than flash an empty window first.
         Realsense::RealSenseD435 camera;
-        std::unique_ptr<Pipeline::RecordedDepthProvider> recording;
+        std::unique_ptr<Realsense::RealSenseD435Recorder> recording;
         ValidationScoreOptions baseOptions;
         NormalEstimationOptions baseNormalOptions;
         int width = 0, height = 0;
@@ -402,7 +385,7 @@ namespace {
             streamOptions.visualPreset = presetName;
             streamOptions.enableInfrared = false; // the viewer scores depth only
             camera.Open(streamOptions);
-            const Realsense::D435Calibration &calibration = camera.Calibration();
+            const Realsense::CameraIntrinsics &calibration = camera.Intrinsics();
             width = calibration.width;
             height = calibration.height;
             fx = calibration.fx;
@@ -415,8 +398,8 @@ namespace {
             // patch it spans, so the camera picks it from its own focal length.
             baseNormalOptions = camera.MakeNormalOptions();
         } else {
-            recording = std::make_unique<Pipeline::RecordedDepthProvider>(replayDirectory);
-            const Pipeline::CameraIntrinsics intrinsics = recording->Intrinsics();
+            recording = std::make_unique<Realsense::RealSenseD435Recorder>(replayDirectory);
+            const Realsense::CameraIntrinsics intrinsics = recording->Intrinsics();
             width = intrinsics.width;
             height = intrinsics.height;
             fx = intrinsics.fx;
@@ -424,17 +407,17 @@ namespace {
             cx = intrinsics.cx;
             cy = intrinsics.cy;
             baseOptions.focalLengthPixels = intrinsics.fx;
-            baseOptions.baselineMeters = 0.05f; // the recording predates this module
-            baseOptions.depthScale = 0.001f;
+            baseOptions.baselineMeters = intrinsics.stereoBaselineMeters;
+            baseOptions.depthScale = intrinsics.depthScale;
         }
         baseOptions.countRejections = true;
 
         std::printf("source    : %s\n", live ? "live device" : replayDirectory.c_str());
         std::printf("intrinsics: %dx%d  fx %.2f fy %.2f  cx %.2f cy %.2f\n", width, height, fx, fy,
                     cx, cy);
-        std::printf("sigma_z   : subpixel %g px / f %g px / baseline %g m%s\n",
+        std::printf("sigma_z   : subpixel %g px / f %g px / baseline %g m\n",
                     double(baseOptions.subpixelRms), double(baseOptions.focalLengthPixels),
-                    double(baseOptions.baselineMeters), live ? "" : "  (baseline assumed)");
+                    double(baseOptions.baselineMeters));
 
         Engine::Render::ApplicationDescriptor descriptor;
         descriptor.window = {1360, 860, "Validation Score Lab"};
@@ -805,8 +788,8 @@ namespace {
         float appliedNormalLength = state.normalLengthMillimetres;
         int appliedNormalStride = state.normalStride;
         bool haveFrame = false;
-        Pipeline::DepthFrame depthFrame;
-        Realsense::D435Frame liveFrame;
+        Realsense::DepthFrame depthFrame;
+        Realsense::DepthFrame liveFrame;
 
         while (!app.GetWindow().ShouldClose()) {
             app.GetWindow().PollEvents();
@@ -818,17 +801,19 @@ namespace {
                 bool got = false;
                 if (live) {
                     got = camera.Grab(liveFrame);
-                    if (got) std::memcpy(depthZ16.data(), liveFrame.depthZ16,
+                    if (got) std::memcpy(depthZ16.data(), liveFrame.rawZ16,
                                          pixels * sizeof(std::uint16_t));
                 } else {
                     got = recording->Grab(depthFrame);
-                    if (got) depthZ16 = QuantiseToZ16(depthFrame.depth, state.options.depthScale);
+                    // The recording holds Z16, so this is the same copy the live path makes.
+                    if (got) std::memcpy(depthZ16.data(), depthFrame.rawZ16,
+                                         pixels * sizeof(std::uint16_t));
                 }
                 if (!got) {
                     // A recording runs out; a device does not. Looping keeps the window useful
                     // instead of freezing on the last frame.
                     if (!live && loopReplay) {
-                        recording = std::make_unique<Pipeline::RecordedDepthProvider>(replayDirectory);
+                        recording = std::make_unique<Realsense::RealSenseD435Recorder>(replayDirectory);
                         state.frameIndex = 0;
                         continue;
                     }
@@ -936,41 +921,41 @@ int main(int argc, char **argv) {
             streamOptions.enableInfrared = infrared;
             camera.Open(streamOptions);
 
-            const Realsense::D435Calibration &calibration = camera.Calibration();
+            const Realsense::CameraIntrinsics &calibration = camera.Intrinsics();
             width = calibration.width;
             height = calibration.height;
             baseOptions = camera.MakeScoreOptions();
             std::printf("live %dx%d, preset %s, fx %.2f px, baseline %.4f m, depth scale %g m/unit\n",
                         width, height, streamOptions.visualPreset.c_str(), calibration.fx,
-                        calibration.baselineMeters, double(calibration.depthScale));
+                        calibration.stereoBaselineMeters, double(calibration.depthScale));
 
             // The sweep replays the SAME frames for every configuration, so they are captured up
             // front. Comparing configurations against different frames would measure the scene.
             const int wanted = frameLimit > 0 ? frameLimit : 30;
             const std::size_t pixels = std::size_t(width) * height;
-            Realsense::D435Frame frame;
+            Realsense::DepthFrame frame;
             while (int(frames.size()) < wanted)
                 if (camera.Grab(frame))
-                    frames.emplace_back(frame.depthZ16, frame.depthZ16 + pixels);
+                    frames.emplace_back(frame.rawZ16, frame.rawZ16 + pixels);
         } else {
-            Pipeline::RecordedDepthProvider provider(replayDirectory);
-            const Pipeline::CameraIntrinsics intrinsics = provider.Intrinsics();
+            Realsense::RealSenseD435Recorder provider(replayDirectory);
+            const Realsense::CameraIntrinsics intrinsics = provider.Intrinsics();
             width = intrinsics.width;
             height = intrinsics.height;
 
-            // The recording carries no baseline -- it predates this module -- so the D435 datasheet
-            // value stands in, and the printout says so. Every sweep below is relative, so a
-            // baseline that is off by a few percent shifts the whole table, not its shape.
+            // sigma_z's constants come from the recording itself now, so a sweep over a replay
+            // uses the same numbers the live device would have.
             baseOptions.focalLengthPixels = intrinsics.fx;
-            baseOptions.baselineMeters = 0.05f;
-            baseOptions.depthScale = 0.001f;
+            baseOptions.baselineMeters = intrinsics.stereoBaselineMeters;
+            baseOptions.depthScale = intrinsics.depthScale;
 
-            Pipeline::DepthFrame depthFrame;
+            const std::size_t replayPixels = std::size_t(width) * std::size_t(height);
+            Realsense::DepthFrame depthFrame;
             while (provider.Grab(depthFrame)) {
-                frames.push_back(QuantiseToZ16(depthFrame.depth, baseOptions.depthScale));
+                frames.emplace_back(depthFrame.rawZ16, depthFrame.rawZ16 + replayPixels);
                 if (frameLimit > 0 && int(frames.size()) >= frameLimit) break;
             }
-            std::printf("replay %s: %d frames, %dx%d, fx %.2f px, baseline %.4f m (assumed D435)\n",
+            std::printf("replay %s: %d frames, %dx%d, fx %.2f px, baseline %.4f m\n",
                         replayDirectory.c_str(), int(frames.size()), width, height,
                         baseOptions.focalLengthPixels, baseOptions.baselineMeters);
         }

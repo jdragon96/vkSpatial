@@ -1,13 +1,13 @@
 # Isosurface Extraction 프레임워크 — 7개 전략 해설
 
-> `Engine::Spatial::Extraction`: 등가면(isosurface) 추출을 **교체 가능한 전략(strategy)**
-> 으로 다루는 프레임워크. 기존에 하나뿐이던(GPU `voxel_tsdf_mc.comp` + CPU
-> `AdaptiveVoxelGrid.cpp`의 15-case Marching Cubes) 추출 경로를, 고전 계보의 7개 알고리즘
+> `namespace Mesh`(`src/Mesh/`): 등가면(isosurface) 추출을 **교체 가능한 전략(strategy)**
+> 으로 다루는 프레임워크. 기존에 하나뿐이던(GPU `kernel_voxel_tsdf_mc.comp.glsl`의 15-case
+> Marching Cubes) 추출 경로를, 고전 계보의 7개 알고리즘
 > — **mc · mc33 · mtet · emc · dc · dmc · cms** — 을 이름으로 선택 가능한 독립 전략으로
-> 재구성했다. `Engine::Pipeline::Registration::Tracker` / `TrackerRegistry` 패턴을 그대로
+> 재구성했다. `Pipeline::Tracker` / `TrackerRegistry` 패턴을 그대로
 > 거울상으로 따른다(추상 전략 + `Name()` + 레지스트리 `Register`/`Create`/`Has`/`Default`).
 
-- **관련 코드:** `src/Engine/Spatial/Extraction/`(프레임워크·7개 전략), 각 전략의 헤더 주석에
+- **관련 코드:** `src/Mesh/`(프레임워크·7개 전략), 각 전략의 헤더 주석에
   전체 알고리즘 설명이 있다 — 이 문서는 7개를 **나란히 비교**하는 것이 목적이라 세부
   유도·증명은 각 `.cpp` 파일 헤더와 `.superpowers/sdd/2026-08-10-isosurface-extraction-
   strategies/task-*-report.md`(구현 기록)를 참조.
@@ -27,7 +27,7 @@
 푸는 전략을 이름으로 골라 쓸 수 있다**:
 
 ```cpp
-SurfaceMesh mesh = Engine::Spatial::Extraction::ExtractorRegistry::Default()
+Mesh::SurfaceMesh mesh = Mesh::ExtractorRegistry::Default()
                         .Create("dc")   // 또는 "mc", "mc33", "mtet", "emc", "dmc", "cms"
                         ->Extract(field, ExtractParams{});
 ```
@@ -41,7 +41,7 @@ SurfaceMesh mesh = Engine::Spatial::Extraction::ExtractorRegistry::Default()
 ## 1. 프레임워크 구조
 
 ```
-Engine::Spatial::Extraction
+Mesh (src/Mesh/)
  ├─ VoxelField           입력: signed 스칼라 + (선택) 저장된 gradient, cellSize, occupied 좌표
  ├─ SurfaceMesh          출력: vertices / triangles / normals
  ├─ IsoSurfaceExtractor  추상 전략: Name(), Extract(field, params)
@@ -117,9 +117,7 @@ public:
 
 ### `MarchingCubesCore` — 공유 코어
 
-`AdaptiveVoxelGrid.cpp`의 anonymous namespace에 있던 원시 함수들을 옮긴 것(rename-only
-move, 로직 불변 — `AdaptiveVoxelGrid`의 GPU-bit-exact 테스트가 그 회귀 가드)이다. 7개
-전략 전부가 최소한 `VertexInterpolate`(엣지 교점 선형 보간, GLSL `vertInterp`와 동일)와
+7개 전략 전부가 최소한 `VertexInterpolate`(엣지 교점 선형 보간, GLSL `vertInterp`와 동일)와
 `WeldAndComputeNormals`(용접 + area-weighted 법선)를 재사용하고, `mc`/`mc33`/`mtet`/
 `emc`/`dc`/`dmc`/`cms`는 추가로 `CandidateBases`(8-이웃 스윕으로 후보 큐브 열거)와
 `kEdgeCornerPairs`(12개 큐브 엣지 → 코너 쌍, `mc::CORNER` 순서)를 공유한다.
@@ -158,9 +156,9 @@ public:
 - **위상/특징 보장:** 없음 — trilinear 보간의 면/내부 모호성을 해소하지 않으므로 이론상
   구멍이 날 수 있다(매끄러운 필드에서는 실전에서 거의 안 걸림). 날카로운 특징은 항상
   선형보간으로 뭉갠다.
-- **언제 쓰는가:** 기본값. 가장 빠르고 가장 단순하며 이 저장소의 기존 GPU 경로
-  (`voxel_tsdf_mc.comp`)·`AdaptiveVoxelGrid` 다중해상도 추출과 **같은 로직**(공유 코어로
-  통합됨) — 매끄러운 TSDF/스캔 데이터, 위상·특징 보장이 굳이 필요 없을 때.
+- **언제 쓰는가:** 기본값. 가장 빠르고 가장 단순하며 이 저장소의 GPU 경로
+  (`kernel_voxel_tsdf_mc.comp.glsl`)와 **같은 로직**(공유 코어로 통합됨) — 매끄러운
+  TSDF/스캔 데이터, 위상·특징 보장이 굳이 필요 없을 때.
 - **한계:** 면/내부 모호성 미해결(→ 2.2), 특징 손실(→ 2.4/2.5/2.6/2.7).
 - **테스트:** `test_isosurface_mc.cpp` — 구 정확도(RMSE<cell)/edge-manifold/watertight.
 

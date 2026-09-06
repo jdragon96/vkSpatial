@@ -5,7 +5,7 @@
 > 인터랙티브(그림·수식 스타일링) 버전: <https://claude.ai/code/artifact/c0e7f214-0b01-4ba4-8a9e-faeb5331da7e>
 > 학습 경로/전체 계보는 [`TSDF_CURRICULUM.md`](TSDF_CURRICULUM.md) 참고.
 >
-> 근거: 수식·다이어그램은 실제 셰이더 `src/shader/voxel_tsdf_integrate.comp`, `voxel_tsdf_mc.comp`, `directional_tsdf_integrate.comp`, `directional_tsdf_extract.comp`에서 도출.
+> 근거: 수식·다이어그램은 실제 셰이더 `src/TSDF/Backends/kernel_voxel_tsdf_{integrate,mc}.comp.glsl`, `kernel_directional_tsdf_{integrate,extract}.comp.glsl`에서 도출.
 
 ---
 

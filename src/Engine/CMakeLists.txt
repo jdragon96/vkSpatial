@@ -56,19 +56,9 @@ target_include_directories(EngineCompute
 
 
 
-# SLAM backend (pose graph, loop closure, map correction). Pure Eigen math — no
-# Vulkan dependency — so it builds and unit-tests independently of the GPU stack.
-file(GLOB_RECURSE ENGINE_BACKEND_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/Backend/*.cpp")
-
-add_library(EngineBackend STATIC ${ENGINE_BACKEND_SOURCES})
-add_library(Engine::Backend ALIAS EngineBackend)
-
-target_include_directories(EngineBackend
-        PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/src>
-            /opt/homebrew/opt/eigen/include/eigen3)
-
-# Features moved to src/Features -- a sibling of Engine, not a layer under it. It depends on
-# nothing but Eigen, and both registration modules and Pipeline consume it.
+# The SLAM backend (pose graph, loop closure, Lie) moved to src/Registration/Backend, and Features
+# to src/Registration/Features. Both are registration, and Engine sits below registration rather
+# than beside it -- an Engine target owning either made the bottom layer the owner of the top's
+# vocabulary.
 
 
