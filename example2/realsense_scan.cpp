@@ -631,82 +631,70 @@ int main(int argc, char **argv) {
             ImGui::SetNextWindowSize(ImVec2(columnWidth, logicalHeight - 20.0f), ImGuiCond_Always);
             ImGui::Begin("Options", nullptr, kPanelFlags);
 
-            // Edited into `pending`; nothing reaches the pipeline until Apply. Apply is shared by
-            // every tab rather than per-tab because Reconfigure rebuilds the whole pipeline from
-            // one Config -- a per-tab Apply would imply the stages can be restarted independently,
-            // which they cannot.
+            // Edited into `pending`; nothing reaches the pipeline until Apply. One Apply for the
+            // whole list, because Reconfigure rebuilds the entire pipeline from one Config -- a
+            // per-section Apply would imply the stages restart independently, which they do not.
             bool changed = false;
 
-            // Tab content scrolls inside a child sized to leave the Apply row its space. Without
-            // the child, a tall tab simply grows past the bottom of the window and Apply -- the one
-            // control that makes any of it take effect -- becomes unreachable.
+            // Every stage listed top to bottom, sections only. The list scrolls inside a child
+            // sized to leave the Apply row its space; without the child it would simply grow past
+            // the bottom of the window and Apply -- the one control that makes any of it take
+            // effect -- would become unreachable.
             const float applyRowHeight = ImGui::GetFrameHeightWithSpacing() +
                                          ImGui::GetStyle().ItemSpacing.y * 2.0f;
-            ImGui::BeginChild("stage options", ImVec2(0.0f, -applyRowHeight), false);
+            ImGui::BeginChild("options", ImVec2(0.0f, -applyRowHeight), false);
 
-            if (ImGui::BeginTabBar("stages")) {
-                if (ImGui::BeginTabItem("Acq")) {
-                    changed |= ImGui::SliderFloat("score >=", &pending.config.acquisition.scoreThreshold, 0.0f, 1.0f, "%.2f");
-                    changed |= ImGui::Checkbox("normals", &pending.config.acquisition.normal.enabled);
-                    if (pending.config.acquisition.normal.enabled)
-                        changed |= ImGui::SliderInt("plane-fit r", &pending.config.acquisition.normal.planeFitRadius, 1, 8);
-                    changed |= ImGui::Checkbox("downsample", &pending.config.acquisition.downSample.enabled);
-                    if (pending.config.acquisition.downSample.enabled)
-                        changed |= ImGui::InputFloat("detail voxel", &pending.config.acquisition.downSample.detailVoxelMeters, 0.0f, 0.0f, "%.4f");
-                    ImGui::EndTabItem();
-                }
+            ImGui::SeparatorText("Acquire");
+            changed |= ImGui::SliderFloat("score >=", &pending.config.acquisition.scoreThreshold, 0.0f, 1.0f, "%.2f");
+            changed |= ImGui::Checkbox("normals", &pending.config.acquisition.normal.enabled);
+            if (pending.config.acquisition.normal.enabled)
+                changed |= ImGui::SliderInt("plane-fit r", &pending.config.acquisition.normal.planeFitRadius, 1, 8);
+            changed |= ImGui::Checkbox("downsample", &pending.config.acquisition.downSample.enabled);
+            if (pending.config.acquisition.downSample.enabled)
+                changed |= ImGui::InputFloat("detail voxel", &pending.config.acquisition.downSample.detailVoxelMeters, 0.0f, 0.0f, "%.4f");
 
-                if (ImGui::BeginTabItem("Reg")) {
-                    {
-                        int current = 0;
-                        for (std::size_t i = 0; i < trackerNames.size(); ++i)
-                            if (trackerNames[i] == pending.trackerName) current = int(i);
-                        std::vector<const char *> labels;
-                        labels.reserve(trackerNames.size());
-                        for (const std::string &name: trackerNames) labels.push_back(name.c_str());
-                        if (ImGui::Combo("tracker", &current, labels.data(), int(labels.size()))) {
-                            pending.trackerName = trackerNames[std::size_t(current)];
-                            changed = true;
-                        }
-                    }
-                    // 0 on any of these means "leave the tracker's own default", which for
-                    // maxCorrDist and maxStepMeters is derived from the map voxel -- so a
-                    // hard-coded value here is usually worse than none. Widening maxCorrDist grows
-                    // the GPU LocalGrid cell count cubically.
-                    changed |= ImGui::InputFloat("max corr dist", &pending.trackerParam.maxCorrDist, 0.0f, 0.0f, "%.4f");
-                    changed |= ImGui::SliderFloat("min fitness", &pending.trackerParam.minFitness, 0.0f, 1.0f, "%.2f");
-                    changed |= ImGui::InputFloat("max step [m]", &pending.trackerParam.maxStepMeters, 0.0f, 0.0f, "%.4f");
-                    changed |= ImGui::InputInt("min inliers", &pending.trackerParam.minInliers);
-                    ImGui::EndTabItem();
+            ImGui::SeparatorText("Register");
+            {
+                int current = 0;
+                for (std::size_t i = 0; i < trackerNames.size(); ++i)
+                    if (trackerNames[i] == pending.trackerName) current = int(i);
+                std::vector<const char *> labels;
+                labels.reserve(trackerNames.size());
+                for (const std::string &name: trackerNames) labels.push_back(name.c_str());
+                if (ImGui::Combo("tracker", &current, labels.data(), int(labels.size()))) {
+                    pending.trackerName = trackerNames[std::size_t(current)];
+                    changed = true;
                 }
-
-                if (ImGui::BeginTabItem("Map")) {
-                    changed |= ImGui::InputFloat("base voxel", &pending.config.map.baseVoxel, 0.0f, 0.0f, "%.4f");
-                    changed |= ImGui::InputFloat("truncation", &pending.config.map.truncation, 0.0f, 0.0f, "%.4f");
-                    changed |= ImGui::Checkbox("submap", &pending.config.map.submap);
-                    changed |= ImGui::Checkbox("point-to-plane", &pending.config.map.pointToPlane);
-                    changed |= ImGui::SliderFloat("confidence", &pending.config.map.confidence, 0.0f, 1.0f, "%.2f");
-                    changed |= ImGui::Checkbox("hermite", &pending.config.map.hermite);
-                    ImGui::EndTabItem();
-                }
-
-                if (ImGui::BeginTabItem("Fuse")) {
-                    // The gates that decide whether a TRACKED frame is allowed into the map at all,
-                    // layered on top of ShouldFuse's per-cause policy. 0 disables each.
-                    changed |= ImGui::InputInt("bootstrap frames", &pending.config.fusion.bootstrapConsecutiveFrames);
-                    changed |= ImGui::SliderFloat("bootstrap fitness", &pending.config.fusion.bootstrapMinFitness, 0.0f, 1.0f, "%.2f");
-                    changed |= ImGui::SliderFloat("min fuse fitness", &pending.config.fusion.minimumFusionFitness, 0.0f, 1.0f, "%.2f");
-                    changed |= ImGui::InputFloat("max fuse rmse", &pending.config.fusion.maximumFusionRmse, 0.0f, 0.0f, "%.4f");
-                    ImGui::EndTabItem();
-                }
-                ImGui::EndTabBar();
             }
+            // 0 on any of these means "leave the tracker's own default", which for maxCorrDist and
+            // maxStepMeters is derived from the map voxel -- so a hard-coded value here is usually
+            // worse than none. Widening maxCorrDist grows the GPU LocalGrid cell count cubically.
+            changed |= ImGui::InputFloat("max corr dist", &pending.trackerParam.maxCorrDist, 0.0f, 0.0f, "%.4f");
+            changed |= ImGui::SliderFloat("min fitness", &pending.trackerParam.minFitness, 0.0f, 1.0f, "%.2f");
+            changed |= ImGui::InputFloat("max step [m]", &pending.trackerParam.maxStepMeters, 0.0f, 0.0f, "%.4f");
+            changed |= ImGui::InputInt("min inliers", &pending.trackerParam.minInliers);
+
+            ImGui::SeparatorText("Map");
+            changed |= ImGui::InputFloat("base voxel", &pending.config.map.baseVoxel, 0.0f, 0.0f, "%.4f");
+            changed |= ImGui::InputFloat("truncation", &pending.config.map.truncation, 0.0f, 0.0f, "%.4f");
+            changed |= ImGui::Checkbox("submap", &pending.config.map.submap);
+            changed |= ImGui::Checkbox("point-to-plane", &pending.config.map.pointToPlane);
+            changed |= ImGui::SliderFloat("confidence", &pending.config.map.confidence, 0.0f, 1.0f, "%.2f");
+            changed |= ImGui::Checkbox("hermite", &pending.config.map.hermite);
+
+            ImGui::SeparatorText("Fusion gate");
+            // The gates that decide whether a TRACKED frame is allowed into the map at all,
+            // layered on top of ShouldFuse's per-cause policy. 0 disables each.
+            changed |= ImGui::InputInt("bootstrap frames", &pending.config.fusion.bootstrapConsecutiveFrames);
+            changed |= ImGui::SliderFloat("bootstrap fitness", &pending.config.fusion.bootstrapMinFitness, 0.0f, 1.0f, "%.2f");
+            changed |= ImGui::SliderFloat("min fuse fitness", &pending.config.fusion.minimumFusionFitness, 0.0f, 1.0f, "%.2f");
+            changed |= ImGui::InputFloat("max fuse rmse", &pending.config.fusion.maximumFusionRmse, 0.0f, 0.0f, "%.4f");
+
             ImGui::EndChild();
 
             pending.dirty = pending.dirty || changed;
 
-            // Outside the child, so it stays put whichever tab is open and however far that tab
-            // has been scrolled. It acts on the whole Config, not on the visible tab.
+            // Outside the child, so it stays put however far the list has been scrolled.
             ImGui::Separator();
             if (!pending.dirty) ImGui::BeginDisabled();
             if (ImGui::Button("Apply & restart")) {
