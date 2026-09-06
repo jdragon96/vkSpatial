@@ -23,7 +23,7 @@
 //        [--tracker icp|icp-cpu|identity|global] [--voxel 0.01] [--truncation 0.03]
 //        [--width 640] [--height 480] [--fps 30]
 //        [--score-threshold 0.9]                            confidence a pixel must reach
-//        [--gpu-downsample <m>]                             device-side thinning; default --voxel, 0 = off
+//        [--gpu-downsample 0]                               device-side thinning; default --voxel, 0 = off
 //        [--high-accuracy]                                  D435 High Accuracy visual preset (live only)
 //        [--bootstrap-frames 5] [--bootstrap-fitness 0.70]  hold fusion until tracking locks on
 //        [--min-fuse-fitness 0] [--max-fuse-rmse 0]         per-frame fusion quality gates (0 = off)
@@ -313,10 +313,13 @@ int main(int argc, char **argv) {
         // end is built on the acquisition thread and never handed back.
         const auto gpuStats = std::make_shared<ep::GpuFrontEndStats>();
 
-        // Device-side thinning. Below the map voxel the map cannot represent the difference, so
-        // that is the default; the tracker still sees every surviving point.
-        float gpuDownsampleVoxel = arg.ValueFloat("--gpu-downsample");
-        if (gpuDownsampleVoxel < 0.0f) gpuDownsampleVoxel = config.map.baseVoxel;
+        // Device-side thinning, tied to the map: half the base voxel is the map's detail level, so
+        // thinning to it removes points the map provably cannot tell apart while keeping every
+        // point the detail level CAN represent. Derived rather than set, because the two drifting
+        // apart is silent -- too coarse quietly deletes representable surface, too fine pays for a
+        // pass that removes nothing.
+        const auto detailVoxelFor = [](float baseVoxel) { return baseVoxel * 0.5f; };
+        const float gpuDownsampleVoxel = arg.ValueFloat("--gpu-downsample");
 
         Realsense::D435StreamOptions stream;
         stream.width = width;
@@ -327,8 +330,10 @@ int main(int argc, char **argv) {
 
         config.acquisition.stream = stream;
         config.acquisition.scoreThreshold = arg.ValueFloat("--score-threshold");
-        config.acquisition.downSample.enabled = gpuDownsampleVoxel > 0.0f;
-        config.acquisition.downSample.detailVoxelMeters = gpuDownsampleVoxel;
+        // The flag now only says WHETHER to thin; the size follows the map voxel. A negative
+        // value (the default) means on.
+        config.acquisition.downSample.enabled = gpuDownsampleVoxel != 0.0f;
+        config.acquisition.downSample.detailVoxelMeters = detailVoxelFor(config.map.baseVoxel);
         config.acquisition.gpuStats = gpuStats;
         // Already thinned on the device, before the readback. Thinning again on the host would only
         // pay for the same reduction twice.
@@ -458,6 +463,11 @@ int main(int argc, char **argv) {
         // a device that will not reopen throws with every stage already gone.
         const auto applyPending = [&] {
             try {
+                // Re-derived here, not just where it is displayed: the panel computes it before
+                // the Map section runs, so a base-voxel edit would otherwise be applied with the
+                // previous frame's detail voxel.
+                pending.config.acquisition.downSample.detailVoxelMeters =
+                        detailVoxelFor(pending.config.map.baseVoxel);
                 pipeline.Reconfigure(pending.config,
                                      makeTracker(pending.trackerName, pending.trackerParam));
                 applied = pending;
@@ -650,8 +660,16 @@ int main(int argc, char **argv) {
             if (pending.config.acquisition.normal.enabled)
                 changed |= ImGui::SliderInt("plane-fit r", &pending.config.acquisition.normal.planeFitRadius, 1, 8);
             changed |= ImGui::Checkbox("downsample", &pending.config.acquisition.downSample.enabled);
-            if (pending.config.acquisition.downSample.enabled)
-                changed |= ImGui::InputFloat("detail voxel", &pending.config.acquisition.downSample.detailVoxelMeters, 0.0f, 0.0f, "%.4f");
+            // Read-only on purpose: it is half the map's base voxel, kept in step with the Map
+            // section below rather than editable here, so the two cannot be set to disagree.
+            pending.config.acquisition.downSample.detailVoxelMeters =
+                    detailVoxelFor(pending.config.map.baseVoxel);
+            ImGui::BeginDisabled();
+            ImGui::InputFloat("detail voxel", &pending.config.acquisition.downSample.detailVoxelMeters,
+                              0.0f, 0.0f, "%.4f");
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::TextDisabled("= base voxel / 2");
 
             ImGui::SeparatorText("Register");
             {
