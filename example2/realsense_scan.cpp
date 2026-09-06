@@ -449,12 +449,28 @@ int main(int argc, char **argv) {
         // Reconfigure rebuilds every worker stage in place and replays from frame 0. The viewer's
         // own accumulators are reset with it, or the next frame's counters read as a continuation
         // of a run that no longer exists.
+        // Shown in the Visualize panel; written by a worker rethrow and by a failed Apply.
+        std::string workerError;
+
+        // Runs on the RENDER thread, inside the ImGui callback. An escaping exception there takes
+        // the process down -- which is what a failed rebuild used to do: Reconfigure destroys the
+        // old stages before building the new ones (it must, the old one still holds the device), so
+        // a device that will not reopen throws with every stage already gone.
         const auto applyPending = [&] {
-            pipeline.Reconfigure(pending.config, makeTracker(pending.trackerName, pending.trackerParam));
-            applied = pending;
-            applied.dirty = false;
-            pending.dirty = false;
-            pipeline.SetPaused(state.paused);
+            try {
+                pipeline.Reconfigure(pending.config,
+                                     makeTracker(pending.trackerName, pending.trackerParam));
+                applied = pending;
+                applied.dirty = false;
+                pending.dirty = false;
+                pipeline.SetPaused(state.paused);
+                workerError.clear();
+            } catch (const std::exception &e) {
+                // The pipeline is now unbuilt and stays that way; Pipeline's accessors tolerate it
+                // so this panel keeps drawing. Say so instead of dying, and keep the edits so they
+                // can be applied again once the device is free.
+                workerError = std::string("apply failed: ") + e.what();
+            }
         };
 
         auto applyVisibility = [&] {
@@ -469,7 +485,6 @@ int main(int argc, char **argv) {
         std::vector<PointVertex> surfaceVertices, newVertices;
         std::vector<PointVertex> tileBoxVertices, allocBoxVertices, submapBoxVertices;
         std::shared_ptr<const ep::ModelSnapshot> snapshot;
-        std::string workerError;
 
         // Three panels, matching the agreed layout:
         //   left top     visualisation options -- what is DRAWN, applied immediately

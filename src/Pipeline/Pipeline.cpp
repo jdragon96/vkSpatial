@@ -20,6 +20,7 @@ namespace Pipeline {
         m_integration.reset();
         m_registration.reset();
         m_acquisition.reset();
+        m_lastSource = cfg.acquisition.source;
         m_comm = std::make_unique<CommunicationModule>(cfg.acquisition.realTime);
         m_acquisition = std::make_unique<AcquisitionThread>(*m_comm, std::move(cfg.acquisition));
         m_registration = std::make_unique<RegistrationThread>(*m_comm, std::move(align), cfg.fusion);
@@ -33,35 +34,45 @@ namespace Pipeline {
     }
 
     void Pipeline::Start() {
+        if (!m_acquisition || !m_registration || !m_integration) return;
         m_integration->Start();
         m_registration->Start();
         m_acquisition->Start();
     }
 
     void Pipeline::Stop() {
-        m_comm->capturedFrames.Close();
-        m_comm->trackedFrames.Close();
-        m_comm->handshake.Close();
-        m_acquisition->Stop();
-        m_registration->Stop();
-        m_integration->Stop();
+        if (m_comm) {
+            m_comm->capturedFrames.Close();
+            m_comm->trackedFrames.Close();
+            m_comm->handshake.Close();
+        }
+        if (m_acquisition) m_acquisition->Stop();
+        if (m_registration) m_registration->Stop();
+        if (m_integration) m_integration->Stop();
     }
 
-    float Pipeline::DownsampleVoxel() const { return m_acquisition->DownsampleVoxel(); }
+    float Pipeline::DownsampleVoxel() const { return m_acquisition ? m_acquisition->DownsampleVoxel() : 0.0f; }
 
-    std::string Pipeline::VisualPresetRefusal() const { return m_acquisition->VisualPresetRefusal(); }
+    std::string Pipeline::VisualPresetRefusal() const { return m_acquisition ? m_acquisition->VisualPresetRefusal() : std::string(); }
 
-    void Pipeline::SetPaused(bool paused) { m_acquisition->SetPaused(paused); }
-    bool Pipeline::IsPaused() const { return m_acquisition->IsPaused(); }
+    void Pipeline::SetPaused(bool paused) {
+        if (m_acquisition) m_acquisition->SetPaused(paused);
+    }
+    bool Pipeline::IsPaused() const { return m_acquisition && m_acquisition->IsPaused(); }
 
     std::shared_ptr<const ModelSnapshot> Pipeline::LatestModel() const {
-        return m_comm->model.Latest();
+        return m_comm ? m_comm->model.Latest() : nullptr;
     }
-    int Pipeline::ProcessedFrame() const { return m_integration->ProcessedFrame(); }
-    EAcquisitionSource Pipeline::Source() const { return m_acquisition->Source(); }
+    int Pipeline::ProcessedFrame() const { return m_integration ? m_integration->ProcessedFrame() : 0; }
+    EAcquisitionSource Pipeline::Source() const {
+        return m_acquisition ? m_acquisition->Source() : m_lastSource;
+    }
 
+    // Zeros rather than a crash when a rebuild failed: the caller is a viewer drawing a panel,
+    // and a half-built pipeline is exactly when it most needs to keep drawing to show the error.
     PipelineStats Pipeline::GetStats() const {
         PipelineStats s;
+        if (!m_comm || !m_acquisition || !m_registration || !m_integration) return s;
         s.processedFrame = m_integration->ProcessedFrame();
         s.captureDepth = m_comm->capturedFrames.Size();
         s.trackDepth = m_comm->trackedFrames.Size();
@@ -97,8 +108,10 @@ namespace Pipeline {
     void Pipeline::CheckErrors() const {
         for (const PipelineStage *s: {static_cast<const PipelineStage *>(m_acquisition.get()),
                                       static_cast<const PipelineStage *>(m_registration.get()),
-                                      static_cast<const PipelineStage *>(m_integration.get())})
+                                      static_cast<const PipelineStage *>(m_integration.get())}) {
+            if (!s) continue; // a rebuild that threw left this stage unbuilt
             if (const std::exception_ptr e = s->Error()) std::rethrow_exception(e);
+        }
     }
 
 } // namespace Pipeline

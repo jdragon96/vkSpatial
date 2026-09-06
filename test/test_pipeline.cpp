@@ -1835,3 +1835,34 @@ TEST(Pipeline, PublishedSnapshotsCarryAFullEntryIndex) {
     EXPECT_EQ(indexedEntries, snap->entries.size());
     pipe.Stop();
 }
+
+// Reconfigure destroys the old stages BEFORE building the new ones -- it has to, because the old
+// acquisition stage still holds the camera and the new one cannot open it until that is released.
+// So a constructor that throws (a D435 reopened too soon after Close is the real case) leaves every
+// stage pointer null, and the next GetStats() dereferences one.
+//
+// realsense_scan's "Apply & restart" hit exactly this: the throw escaped the ImGui callback and
+// killed the process. The pipeline does not have to survive as a working pipeline -- the device is
+// genuinely gone -- but it must stay ANSWERABLE so the viewer can report the failure.
+TEST(Pipeline, AFailedReconfigureLeavesThePipelineAnswerable) {
+    int providerBuilds = 0;
+    ep::Pipeline::Config cfg = makeConfig(3);
+    cfg.acquisition.makeProvider = [&providerBuilds]() -> std::unique_ptr<ep::IDepthProvider> {
+        if (++providerBuilds > 1) throw std::runtime_error("device busy");
+        return std::make_unique<PlaneDepthProvider>(3);
+    };
+
+    ep::Pipeline pipe(cfg, identity());
+    pipe.Start();
+    ASSERT_EQ(providerBuilds, 1);
+
+    EXPECT_THROW(pipe.Reconfigure(cfg, identity()), std::runtime_error);
+
+    // Every one of these dereferenced a stage pointer that the failed rebuild left null.
+    EXPECT_NO_THROW((void) pipe.GetStats());
+    EXPECT_NO_THROW((void) pipe.LatestModel());
+    EXPECT_NO_THROW((void) pipe.ProcessedFrame());
+    EXPECT_NO_THROW(pipe.SetPaused(true));
+    EXPECT_NO_THROW(pipe.CheckErrors());
+    EXPECT_NO_THROW(pipe.Stop());
+}

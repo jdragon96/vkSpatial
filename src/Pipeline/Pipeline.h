@@ -49,6 +49,11 @@ namespace Pipeline {
     private:
         void buildStages(Config cfg, std::unique_ptr<Tracker> align); // ctor + Reconfigure
 
+        // Reconfigure destroys the old stages before building the new ones -- it must, because
+        // the old acquisition stage still holds the device. So a constructor that throws leaves
+        // every pointer below null, and every accessor has to tolerate that: the caller is a
+        // viewer that needs to keep drawing in order to report the failure.
+        EAcquisitionSource m_lastSource = EAcquisitionSource::Realsense;
         std::unique_ptr<CommunicationModule> m_comm;
         std::unique_ptr<AcquisitionThread> m_acquisition;
         std::unique_ptr<RegistrationThread> m_registration;
