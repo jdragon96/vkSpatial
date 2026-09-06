@@ -1866,3 +1866,33 @@ TEST(Pipeline, AFailedReconfigureLeavesThePipelineAnswerable) {
     EXPECT_NO_THROW(pipe.CheckErrors());
     EXPECT_NO_THROW(pipe.Stop());
 }
+
+// What realsense_scan's "Apply & restart" actually does, over a real recording: rebuild every
+// stage while the caller holds the Pipeline. This tears down and recreates the acquisition
+// thread's Engine::Core::Context and the integration thread's TSDF each time, which the synthetic
+// Reconfigure test above does not -- it injects a provider and never touches the depth front end.
+TEST(Pipeline, ReconfigureOverARecordingRebuildsRepeatedly) {
+    const std::filesystem::path capture = std::filesystem::path(VKBVH_SOURCE_DIR) / "capture";
+    if (!std::filesystem::exists(capture / "intrinsics.txt")) GTEST_SKIP() << "no capture/";
+
+    ep::Pipeline::Config cfg;
+    cfg.map.baseVoxel = 0.03f;
+    cfg.map.truncation = 0.09f;
+    cfg.map.submap = false;
+    cfg.acquisition.source = ep::EAcquisitionSource::RealsenseFile;
+    cfg.acquisition.recordingDirectory = capture.string();
+    cfg.acquisition.realTime = false;
+
+    ep::Pipeline pipe(cfg, identity());
+    pipe.Start();
+    ASSERT_TRUE(waitProcessed(pipe, 1)) << "the recording never started";
+
+    for (int i = 0; i < 3; ++i) {
+        cfg.acquisition.scoreThreshold = 0.5f + 0.1f * float(i);
+        pipe.Reconfigure(cfg, identity());
+        ASSERT_TRUE(waitProcessed(pipe, 1)) << "no frames after Reconfigure #" << i;
+        pipe.CheckErrors();
+        EXPECT_NE(pipe.LatestModel(), nullptr) << "no model after Reconfigure #" << i;
+    }
+    pipe.Stop();
+}
