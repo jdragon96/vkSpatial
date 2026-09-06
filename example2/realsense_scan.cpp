@@ -40,12 +40,12 @@
 #include "Engine/Render/Camera.h"
 #include "Engine/Render/GlfwWindow.h"
 #include "Engine/Render/Scene.h"
-#include "Pipeline/Pipeline.h"
 #include "Pipeline/Acquisition/AcquisitionThread.h"
-#include "Realsense/RealSenseD435.h"
-#include "Realsense/RealSenseD435Recorder.h"
+#include "Pipeline/Pipeline.h"
 #include "Pipeline/Registration/GpuIcpTracker.h"
 #include "Pipeline/Registration/Tracker.h"
+#include "Realsense/RealSenseD435.h"
+#include "Realsense/RealSenseD435Recorder.h"
 #include "Registration/RegistrationParam.h"
 #include "utilities/ArgParser.h"
 
@@ -54,8 +54,8 @@
 #include <Eigen/Core>
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <iostream>
 #include <memory>
@@ -76,7 +76,9 @@ namespace {
     constexpr int kSetAllocBox = 3;  // the AABB the map has actually allocated
     constexpr int kSetSubmapBox = 4; // dense (detail) submap regions
 
-    enum class EColorMode { Normal, Age, Weight };
+    enum class EColorMode { Normal,
+                            Age,
+                            Weight };
 
     // The world frame is the first camera's frame, which is the image convention: +y down, +z
     // forward. Rotating 180 degrees about x puts y up and the scene in front of a viewer looking
@@ -105,8 +107,7 @@ namespace {
                 {maximumCorner.x(), minimumCorner.y(), maximumCorner.z()},
                 {maximumCorner.x(), maximumCorner.y(), maximumCorner.z()},
                 {minimumCorner.x(), maximumCorner.y(), maximumCorner.z()}};
-        static const int kEdge[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
-                                         {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        static const int kEdge[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
         const int samplesPerEdge =
                 std::clamp(int((maximumCorner - minimumCorner).maxCoeff() / std::max(1e-6f, voxel)), 24, 512);
         vertices.reserve(std::size_t(12 * (samplesPerEdge + 1)));
@@ -148,8 +149,11 @@ namespace {
         const int band = std::min(3, int(x));
         const float f = x - float(band);
         static constexpr float kStops[5][3] = {
-                {0.10f, 0.20f, 0.90f}, {0.10f, 0.85f, 0.90f}, {0.15f, 0.85f, 0.20f},
-                {0.95f, 0.90f, 0.15f}, {0.95f, 0.20f, 0.15f}};
+                {0.10f, 0.20f, 0.90f},
+                {0.10f, 0.85f, 0.90f},
+                {0.15f, 0.85f, 0.20f},
+                {0.95f, 0.90f, 0.15f},
+                {0.95f, 0.20f, 0.15f}};
         auto mix = [&](int c) {
             return kStops[band][c] + f * (kStops[band + 1][c] - kStops[band][c]);
         };
@@ -367,7 +371,7 @@ int main(int argc, char **argv) {
         // building one is a create-then-configure pair, kept here so the option panel's rebuild and
         // the initial construction cannot drift.
         Registration::RegistrationParam trackerParam;
-        trackerParam.maxCorrDist = 0.0f;   // 0 = leave Track's own voxel-derived value alone
+        trackerParam.maxCorrDist = 0.0f; // 0 = leave Track's own voxel-derived value alone
         trackerParam.minFitness = 0.0f;
         trackerParam.maxStepMeters = 0.0f; // 0 = the tracker's voxel-scaled default
         trackerParam.minInliers = 0;       // 0 = leave the solver default
@@ -719,7 +723,8 @@ int main(int argc, char **argv) {
                 // On a live camera the accumulated map is discarded and cannot be recovered, so
                 // that case asks first. A replay just plays again.
                 if (live) ImGui::OpenPopup("confirm restart");
-                else applyPending();
+                else
+                    applyPending();
             }
             ImGui::SameLine();
             if (ImGui::Button("Revert")) {
@@ -729,7 +734,8 @@ int main(int argc, char **argv) {
             if (!pending.dirty) ImGui::EndDisabled();
             ImGui::SameLine();
             if (pending.dirty) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "unapplied");
-            else ImGui::TextDisabled("applied");
+            else
+                ImGui::TextDisabled("applied");
 
             if (ImGui::BeginPopupModal("confirm restart", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
                 ImGui::TextUnformatted("This restarts acquisition and DISCARDS the current map.");
@@ -751,9 +757,18 @@ int main(int argc, char **argv) {
         Engine::Render::MouseListenerGroup mouse(app.GetWindow().Mouse());
         mouse.Add(Engine::Render::MouseEventType::Drag, [&](Engine::Render::MouseEvent &e) {
             if (ImGui::GetIO().WantCaptureMouse) return;
-            if (e.button != Engine::Render::MouseButton::Left) return;
             const VkExtent2D size = app.GetWindow().FramebufferSize();
             if (size.width == 0 || size.height == 0) return;
+
+            // Right drag translates the orbit target in the view plane. Camera::Pan takes a
+            // per-event delta rather than an absolute position, so unlike the trackball it needs
+            // no begin/end -- there is no accumulated state to reset.
+            if (e.button == Engine::Render::MouseButton::Right) {
+                camera.Pan(e.deltaX, e.deltaY, int(size.width), int(size.height));
+                e.handled = true;
+                return;
+            }
+            if (e.button != Engine::Render::MouseButton::Left) return;
             if (!camera.IsTrackballDragging()) {
                 camera.BeginTrackballDrag(e.x, e.y, int(size.width), int(size.height));
                 return;
