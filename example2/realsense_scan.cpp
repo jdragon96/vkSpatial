@@ -251,8 +251,8 @@ int main(int argc, char **argv) {
                            .Option("--replay")
                            .Option("--record")
                            .Option("--tracker", "icp")
-                           .Option("--voxel", 0.01)
-                           .Option("--truncation", 0.03)
+                           .Option("--voxel", 0.05)
+                           .Option("--truncation", 0.05)
                            .Option("--width", 640)
                            .Option("--height", 480)
                            .Option("--fps", 30)
@@ -261,8 +261,8 @@ int main(int argc, char **argv) {
                            // likely to seed the map from a pose nothing has corroborated yet.
                            .Option("--bootstrap-frames", 5)
                            .Option("--bootstrap-fitness", 0.70)
-                           .Option("--min-fuse-fitness", 0.0) // 0 = off
-                           .Option("--max-fuse-rmse", 0.0)    // 0 = off
+                           .Option("--min-fuse-fitness", 0.7) // 0 = off
+                           .Option("--max-fuse-rmse", 0.02)   // 0 = off
                            // Weight only the occluded side of the truncation band down, instead
                            // of both sides equally (Bylow / Voxblox eq. 5).
                            .Option("--behind-dropoff")
