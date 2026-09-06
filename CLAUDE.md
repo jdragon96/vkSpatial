@@ -190,4 +190,4 @@ AcquisitionThread --Channel<Frame>-->  RegistrationThread
 
 ## 문서
 
-`docs/`에 알고리즘 해설과 비교 실험 결과가 있다(`TSDF_*`, `ICP_*`, `ISOSURFACE_EXTRACTION.md`, `MARCHING_CUBES_SURVEY.md`, `BVH.md`, `ENGINE_CORE_RENDER.md`, `KNOWN_ISSUES_*`). 경로·네임스페이스는 2026-08-31에 코드와 맞췄지만 **측정값과 서술은 코드보다 오래됐을 수 있다** — 문서의 시그니처를 근거로 삼기 전에 실제 파일을 연다. `docs/superpowers/plans`·`specs`는 당시 기록이라 일부러 갱신하지 않는다.
+`docs/RECONSTRUCTION_PIPELINE.md`가 3스레드 파이프라인 전체(취득→정합→융합, 채널 정책, 융합 판단 3층, 죽은 설정 필드)를 다룬다. 그 밖에 `docs/`에 알고리즘 해설과 비교 실험 결과가 있다(`TSDF_*`, `ICP_*`, `ISOSURFACE_EXTRACTION.md`, `MARCHING_CUBES_SURVEY.md`, `BVH.md`, `ENGINE_CORE_RENDER.md`, `KNOWN_ISSUES_*`). 경로·네임스페이스는 2026-08-31에 코드와 맞췄지만 **측정값과 서술은 코드보다 오래됐을 수 있다** — 문서의 시그니처를 근거로 삼기 전에 실제 파일을 연다. `docs/superpowers/plans`·`specs`는 당시 기록이라 일부러 갱신하지 않는다.
