@@ -9,6 +9,7 @@ namespace Pipeline {
     void PipelineStage::Start() {
         if (m_thread.joinable()) return; // already running
         m_stop = false;
+        m_running = true;
         m_thread = std::thread([this] { RunGuarded(); });
     }
 
@@ -24,6 +25,7 @@ namespace Pipeline {
         } catch (...) {
             m_error = std::current_exception();
         }
+        m_running = false;
     }
 
 } // namespace Pipeline

@@ -807,6 +807,28 @@ int main(int argc, char **argv) {
                 }
 
                 std::shared_ptr<const ep::ModelSnapshot> latest = pipeline.LatestModel();
+
+                // Reconfigure empties the published map, and until the new run fuses its first
+                // frame there is nothing to draw. Without this the previous run's points stay on
+                // screen indefinitely -- the old code only ever ACTED on a non-null snapshot, so
+                // "the map went away" had no path through it at all. They describe a map that no
+                // longer exists, at a voxel size the new configuration may not even use.
+                if (!latest && snapshot) {
+                    snapshot.reset();
+                    surfaceVertices.clear();
+                    newVertices.clear();
+                    tileBoxVertices.clear();
+                    allocBoxVertices.clear();
+                    submapBoxVertices.clear();
+                    vkDeviceWaitIdle(context.device);
+                    points->SetPointSet(kSetSurface, surfaceVertices);
+                    points->SetPointSet(kSetNew, newVertices);
+                    points->SetPointSet(kSetTileBox, tileBoxVertices);
+                    points->SetPointSet(kSetAllocBox, allocBoxVertices);
+                    points->SetPointSet(kSetSubmapBox, submapBoxVertices);
+                    uploadedFrame = -1; // the new run restarts at 0, which must count as advanced
+                }
+
                 const bool modelAdvanced = latest && (!snapshot || latest->processedFrame != uploadedFrame);
                 const bool displayChanged = uploadedColorMode != state.colorMode ||
                                             uploadedMinimumWeight != state.minimumWeight;

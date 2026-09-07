@@ -42,7 +42,12 @@ namespace Pipeline {
         // injects a recorder wrapping the device, and rebuilding that THROWS: the recorder refuses
         // a directory that already holds a recording. Keeping the provider is the only thing that
         // works there, and it is what the live case wants anyway.
+        // IsRunning matters as much as the source: a live acquisition loop that already ended --
+        // one Grab timeout is enough, since Grab returning false reads as end-of-stream -- would
+        // otherwise be KEPT, and the pipeline would never deliver another frame. Rebuilding
+        // restarts it, which is what the previous unconditional rebuild did by accident.
         const bool reuseAcquisition = m_acquisition && m_comm &&
+                                      m_acquisition->IsRunning() &&
                                       m_lastSource == EAcquisitionSource::Realsense &&
                                       cfg.acquisition.source == EAcquisitionSource::Realsense;
         if (!reuseAcquisition) {

@@ -2074,3 +2074,34 @@ TEST(Pipeline, ReconfigureClearsThePublishedModel) {
     EXPECT_FLOAT_EQ(after->voxel, 0.09f);
     pipe.Stop();
 }
+
+// Reuse is only correct while the acquisition loop is still alive. Grab returning false reads as
+// end-of-stream, so a single timeout ends it -- and KEEPING that stage yields a pipeline that
+// never delivers another frame. Before IsRunning gated it, this was a regression the old
+// unconditional rebuild had hidden by restarting the stage every time.
+TEST(Pipeline, ReconfigureRebuildsAnExhaustedLiveSource) {
+    int providerBuilds = 0;
+    ep::Pipeline::Config cfg = makeConfig(2); // finite: the loop ends after two frames
+    cfg.acquisition.source = ep::EAcquisitionSource::Realsense;
+    cfg.acquisition.makeProvider = [&]() -> std::unique_ptr<ep::IDepthProvider> {
+        ++providerBuilds;
+        return std::make_unique<PlaneDepthProvider>(2);
+    };
+
+    ep::Pipeline pipe(cfg, identity());
+    pipe.Start();
+    ASSERT_TRUE(waitProcessed(pipe, 1));
+
+    // Wait for the source to actually run out, which is what makes this the exhausted case.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (pipe.GetStats().acquiredFrames < 2 && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    ASSERT_GE(pipe.GetStats().acquiredFrames, std::uint64_t(2));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50)); // let the loop leave
+
+    pipe.Reconfigure(cfg, identity());
+    EXPECT_EQ(providerBuilds, 2) << "an acquisition stage whose loop had ended was kept";
+    ASSERT_TRUE(waitProcessed(pipe, 1)) << "no frames after rebuilding the exhausted source";
+    pipe.CheckErrors();
+    pipe.Stop();
+}

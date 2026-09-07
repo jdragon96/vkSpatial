@@ -20,6 +20,12 @@ namespace Pipeline {
         // Rethrow a worker-thread exception on the caller (nullptr if the stage ran clean).
         std::exception_ptr Error() const { return m_error; }
 
+        // False once Run() has returned -- the source ended, or it threw. Distinct from
+        // StopRequested: nobody asked it to stop, it simply finished. Pipeline::Reconfigure needs
+        // this before it decides to KEEP an acquisition stage rather than rebuild one; keeping a
+        // stage whose loop already exited produces a pipeline that never delivers another frame.
+        bool IsRunning() const { return m_running.load(); }
+
     protected:
         explicit PipelineStage(CommunicationModule &comm);
 
@@ -34,6 +40,7 @@ namespace Pipeline {
 
         std::thread m_thread;
         std::atomic<bool> m_stop{false};
+        std::atomic<bool> m_running{false};
         std::exception_ptr m_error;
     };
 
