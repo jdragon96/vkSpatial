@@ -39,6 +39,20 @@ namespace Pipeline {
         }
 
         // Idempotent; every stop path calls it, so a waiter is never left blocked on a dead stage.
+        // Back to a fresh run: counters zeroed and reopened. The counters are cumulative, so a
+        // rebuilt registration stage that starts pushing against a stale m_completed would either
+        // never wait or wait forever depending on which side was ahead.
+        void Reset(bool enabled) {
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_pushed = 0;
+                m_completed = 0;
+                m_closed = false;
+                m_enabled = enabled;
+            }
+            m_cv.notify_all();
+        }
+
         void Close() {
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
@@ -59,6 +73,16 @@ namespace Pipeline {
         explicit CommunicationModule(bool dropWhenBehind = true)
             : capturedFrames(8, dropWhenBehind), trackedFrames(4, dropWhenBehind) {
             handshake.SetEnabled(!dropWhenBehind);
+        }
+
+        // Put every link back to a fresh run WITHOUT replacing this object. PipelineStage holds a
+        // CommunicationModule REFERENCE, so a stage that survives a reconfigure (the acquisition
+        // stage keeps the open camera) would be left pointing at a destroyed one.
+        void Reset(bool dropWhenBehind) {
+            capturedFrames.Reopen();
+            trackedFrames.Reopen();
+            model.Clear(); // the old map must not be the new run's first alignment target
+            handshake.Reset(!dropWhenBehind);
         }
 
         util::Channel<Frame> capturedFrames;       // AcquisitionThread -> RegistrationThread (ICP)

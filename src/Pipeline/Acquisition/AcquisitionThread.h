@@ -77,8 +77,28 @@ namespace Pipeline {
 
         std::string VisualPresetRefusal() const;
 
+        // Swap the front end's options without touching the device or the GPU pipeline. Nothing
+        // the option panel edits is baked into either: RealSensePipeline is built from the frame
+        // WIDTH AND HEIGHT alone, and score / normal / downSample / scoreThreshold are handed to
+        // Execute per frame. So a reconfigure that leaves the resolution alone has no reason to
+        // close the camera -- and reopening a D400 right after Close is the failure this avoids.
+        //
+        // Safe while the thread is running. Ignores config.stream, source and makeProvider: those
+        // describe the device, and changing them needs a rebuilt stage.
+        void SetOptions(const AcquisitionConfig &config);
+
         void SetPaused(bool paused);
         bool IsPaused() const { return m_paused.load(); }
+
+        // Block until the worker is actually parked in the pause wait (not merely asked to pause),
+        // or the deadline passes. Reconfigure needs this: stopping the downstream stages CLOSES
+        // capturedFrames, and a worker that is between waitWhilePaused and Push reads that as
+        // end-of-stream and leaves its loop for good -- the stage object survives and silently
+        // stops producing. Parked, it is inside the wait and cannot reach Push at all.
+        //
+        // Returns false on timeout; the caller may then proceed anyway, since a worker that never
+        // parks is one that already exited or never started, and neither is pushing.
+        bool WaitUntilPaused(std::chrono::milliseconds timeout);
 
         double AcquireMsAvg() const { return m_acquireMs.Mean(); }
         float DownsampleVoxel() const { return m_config.downsampleVoxel; }
@@ -100,6 +120,8 @@ namespace Pipeline {
         std::unique_ptr<DepthFrontEnd> m_frontEnd;
         bool m_closed = false;
         std::atomic<bool> m_paused{false};
+        bool m_parked = false; // guarded by m_pauseMutex: the worker is inside the pause wait
+        std::condition_variable m_parkedCv;
         std::mutex m_pauseMutex;
         std::condition_variable m_pauseCv;
         util::RunningMean m_acquireMs;

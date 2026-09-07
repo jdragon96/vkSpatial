@@ -1,5 +1,7 @@
 #include "Pipeline/Pipeline.h"
 
+#include <chrono>
+
 #include "Pipeline/CommunicationModule.h"
 #include "Pipeline/Integration/IntegrationThread.h"
 #include "Pipeline/Acquisition/AcquisitionThread.h"
@@ -28,9 +30,51 @@ namespace Pipeline {
     }
 
     void Pipeline::Reconfigure(Config cfg, std::unique_ptr<Tracker> align) {
-        Stop();
-        buildStages(std::move(cfg), std::move(align));
-        Start();
+        // A live camera keeps its acquisition stage. Nothing the caller can retune here is baked
+        // into the device or the GPU front end -- RealSensePipeline is built from the frame size
+        // alone, and the score / normal / downsample options are Execute arguments -- so closing
+        // the camera to change a map voxel buys nothing and costs the one operation that actually
+        // fails: reopening a D400 immediately after Close.
+        //
+        // A recording does NOT qualify. There "restart" means rewinding to frame 0, and rebuilding
+        // the recorder IS the rewind. It has no device to contend for, so rebuilding is free.
+        // An injected factory does not disqualify reuse -- the opposite. realsense_scan --record
+        // injects a recorder wrapping the device, and rebuilding that THROWS: the recorder refuses
+        // a directory that already holds a recording. Keeping the provider is the only thing that
+        // works there, and it is what the live case wants anyway.
+        const bool reuseAcquisition = m_acquisition && m_comm &&
+                                      m_lastSource == EAcquisitionSource::Realsense &&
+                                      cfg.acquisition.source == EAcquisitionSource::Realsense;
+        if (!reuseAcquisition) {
+            Stop();
+            buildStages(std::move(cfg), std::move(align));
+            Start();
+            return;
+        }
+
+        // Park acquisition FIRST. Stopping the downstream stages closes capturedFrames, and a
+        // worker that is mid-Push reads that as end-of-stream and leaves its loop permanently --
+        // the stage object would survive and quietly stop producing frames.
+        const bool wasPaused = m_acquisition->IsPaused();
+        m_acquisition->SetPaused(true);
+        m_acquisition->WaitUntilPaused(std::chrono::milliseconds(2000));
+
+        // Only the two downstream stages restart. The acquisition stage keeps running against the
+        // same CommunicationModule -- which is why that object is RESET rather than replaced: every
+        // PipelineStage holds a reference to it.
+        m_registration->Stop();
+        m_integration->Stop();
+        m_integration.reset();
+        m_registration.reset();
+
+        m_comm->Reset(cfg.acquisition.realTime);
+        m_acquisition->SetOptions(cfg.acquisition);
+
+        m_registration = std::make_unique<RegistrationThread>(*m_comm, std::move(align), cfg.fusion);
+        m_integration = std::make_unique<IntegrationThread>(*m_comm, cfg.map);
+        m_integration->Start();
+        m_registration->Start();
+        m_acquisition->SetPaused(wasPaused);
     }
 
     void Pipeline::Start() {

@@ -60,6 +60,21 @@ namespace util {
             m_notFull.notify_all();
         }
 
+        // Undo Close and drop whatever was queued, so the same channel can carry a second run.
+        // Without this, a stage rebuilt around a surviving channel finds Push returning false
+        // forever -- Close only ever set m_closed, and Clear does not touch it. The drop counter
+        // resets too: a viewer showing "dropped" must not carry the previous run's total into the
+        // new one.
+        void Reopen() {
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_queue.clear();
+                m_closed = false;
+                m_dropped = 0;
+            }
+            m_notFull.notify_all();
+        }
+
         void Close() {
             {
                 std::lock_guard<std::mutex> lock(m_mutex);

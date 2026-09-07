@@ -41,6 +41,10 @@ namespace {
     // to a 0.8 m patch, the same size the retired PLY fixture wrote.
     class PlaneDepthProvider : public ep::IDepthProvider {
     public:
+        // frames < 0 = endless, which is the only faithful stand-in for a live camera: a finite
+        // provider is drained by the acquisition thread far faster than a test can reconfigure
+        // (the channel DROPS when full, so nothing throttles it), and the stage then exits. A
+        // reuse-across-Reconfigure test built on that measures the exhaustion, not the reuse.
         explicit PlaneDepthProvider(int frames, double frameIntervalMs = 0.0)
             : m_left(frames), m_frameIntervalMs(frameIntervalMs) {
             m_intrinsics.width = 48;
@@ -56,7 +60,7 @@ namespace {
         const ep::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
 
         bool Grab(ep::DepthFrame &out) override {
-            if (m_left-- <= 0) return false;
+            if (m_left >= 0 && m_left-- <= 0) return false;
             // Paced in the device, not in the config: a camera is what has a frame rate, and the
             // acquisition stage no longer owns a clock.
             if (m_frameIntervalMs > 0.0)
@@ -160,12 +164,15 @@ TEST(Pipeline, PacedDeviceDeliversAllFrames) {
 // so the old stages MUST be destroyed before the comm they reference -- rebuilding comm-first was a
 // use-after-free that crashed on the first toggle. Repeated to exercise back-to-back rebuilds.
 TEST(Pipeline, ReconfigureRebuildsCleanly) {
-    ep::Pipeline pipe(makeConfig(5), identity());
+    // Enough frames to outlast three reconfigures. A live source is REUSED across Reconfigure
+    // rather than rebuilt, so it is never rewound -- a short provider standing in for a camera
+    // simply runs out, which is correct behaviour and not what this test is about.
+    ep::Pipeline pipe(makeConfig(-1, 2.0), identity());
     pipe.Start();
     ASSERT_TRUE(waitProcessed(pipe, 1)) << "pipeline did not start";
 
     for (int i = 0; i < 3; ++i) {
-        ep::Pipeline::Config cfg = makeConfig(5);
+        ep::Pipeline::Config cfg = makeConfig(-1, 2.0);
         cfg.map.submap = (i % 2 == 0); // flip an option, as a UI toggle would
         // An ACQUISITION option too, not just a map one: realsense_scan's option panel edits both,
         // and rebuilding the map stage while reusing a front end configured for the old settings
@@ -675,8 +682,8 @@ namespace {
         const ep::CameraIntrinsics &Intrinsics() const override { return m_intrinsics; }
 
         bool Grab(ep::DepthFrame &out) override {
-            if (m_left-- <= 0) return false;
-            out.rawZ16 = m_frame.data();
+            if (m_left >= 0 && m_left-- <= 0) return false;
+            out.rawZ16 = m_frame.data(); // m_left < 0 = endless, standing in for a live camera
             return true;
         }
 
@@ -1845,8 +1852,12 @@ TEST(Pipeline, PublishedSnapshotsCarryAFullEntryIndex) {
 // killed the process. The pipeline does not have to survive as a working pipeline -- the device is
 // genuinely gone -- but it must stay ANSWERABLE so the viewer can report the failure.
 TEST(Pipeline, AFailedReconfigureLeavesThePipelineAnswerable) {
+    // A RECORDING, because that is the source Reconfigure still rebuilds. A live source reuses its
+    // provider precisely so this failure cannot happen for it -- but the rebuild path still exists
+    // and still has to leave the object usable when a constructor throws.
     int providerBuilds = 0;
     ep::Pipeline::Config cfg = makeConfig(3);
+    cfg.acquisition.source = ep::EAcquisitionSource::RealsenseFile;
     cfg.acquisition.makeProvider = [&providerBuilds]() -> std::unique_ptr<ep::IDepthProvider> {
         if (++providerBuilds > 1) throw std::runtime_error("device busy");
         return std::make_unique<PlaneDepthProvider>(3);
@@ -1966,4 +1977,100 @@ TEST(Pipeline, ConfigureIsHarmlessOnGatelessTrackers) {
     frame.nrm.emplace_back(0.0f, 0.0f, 1.0f);
     const ep::TrackingResult r = tracker->Track(frame, nullptr, Eigen::Isometry3f::Identity());
     EXPECT_TRUE(r.valid) << "identity stopped accepting frames after being configured";
+}
+
+// Reconfiguring a LIVE source must not rebuild the acquisition stage. Nothing the caller can
+// retune is baked into the device or the GPU front end, and closing a D400 only to reopen it is
+// the one step that actually fails. Asserted by counting provider builds, because that is what a
+// closed-and-reopened camera would show.
+TEST(Pipeline, ReconfiguringALiveSourceKeepsTheDeviceOpen) {
+    int providerBuilds = 0;
+    int closeCount = 0;
+    ep::Pipeline::Config cfg = makeConfig(-1, 2.0);
+    cfg.acquisition.source = ep::EAcquisitionSource::Realsense;
+    cfg.acquisition.makeProvider = [&]() -> std::unique_ptr<ep::IDepthProvider> {
+        ++providerBuilds;
+        return std::make_unique<CloseCountingDepthProvider>(-1, &closeCount);
+    };
+
+    ep::Pipeline pipe(cfg, identity());
+    pipe.Start();
+    ASSERT_TRUE(waitProcessed(pipe, 1));
+    ASSERT_EQ(providerBuilds, 1);
+
+    cfg.map.baseVoxel = 0.08f; // a map change: no reason to touch the camera
+    pipe.Reconfigure(cfg, identity());
+
+    EXPECT_EQ(providerBuilds, 1) << "the device was rebuilt for a map-only change";
+    EXPECT_EQ(closeCount, 0) << "the device was closed for a map-only change";
+
+    ASSERT_TRUE(waitProcessed(pipe, 1)) << "no frames after the reconfigure";
+    pipe.CheckErrors();
+    EXPECT_NE(pipe.LatestModel(), nullptr);
+    pipe.Stop();
+    EXPECT_GT(closeCount, 0) << "the device was never released on shutdown";
+}
+
+// A recording is the opposite case: "restart" there means rewinding to frame 0, and rebuilding the
+// recorder IS the rewind. It has no device to contend for, so it must go the rebuild route.
+TEST(Pipeline, ReconfiguringARecordingRebuildsTheSource) {
+    int providerBuilds = 0;
+    ep::Pipeline::Config cfg = makeConfig(200);
+    cfg.acquisition.source = ep::EAcquisitionSource::RealsenseFile;
+    cfg.acquisition.recordingDirectory = "unused: the factory wins";
+    cfg.acquisition.makeProvider = [&]() -> std::unique_ptr<ep::IDepthProvider> {
+        ++providerBuilds;
+        return std::make_unique<PlaneDepthProvider>(200);
+    };
+
+    ep::Pipeline pipe(cfg, identity());
+    pipe.Start();
+    ASSERT_TRUE(waitProcessed(pipe, 1));
+    ASSERT_EQ(providerBuilds, 1);
+
+    pipe.Reconfigure(cfg, identity());
+    EXPECT_EQ(providerBuilds, 2) << "the recording was not rewound";
+    ASSERT_TRUE(waitProcessed(pipe, 1));
+    pipe.CheckErrors();
+    pipe.Stop();
+}
+
+// The map is the tracker's alignment target, so a reconfigure must not leave the previous run's
+// snapshot in the mailbox: it carries the OLD voxel size, which is what trackers derive their
+// correspondence distance from. The first frames of the new run would align against the old map at
+// the old scale, and nothing would report it.
+//
+// Asserted with acquisition PAUSED across the reconfigure. Let it run and the new integration
+// thread publishes a fresh snapshot within milliseconds, which hides a mailbox that was never
+// cleared -- an earlier version of this test did exactly that and passed with the clear removed.
+TEST(Pipeline, ReconfigureClearsThePublishedModel) {
+    ep::Pipeline::Config cfg = makeConfig(-1, 2.0);
+    cfg.acquisition.source = ep::EAcquisitionSource::Realsense;
+    cfg.acquisition.makeProvider = [] { return std::make_unique<PlaneDepthProvider>(-1, 2.0); };
+    cfg.map.baseVoxel = 0.05f;
+
+    ep::Pipeline pipe(cfg, identity());
+    pipe.Start();
+    ASSERT_TRUE(waitProcessed(pipe, 1));
+    const auto before = pipe.LatestModel();
+    ASSERT_NE(before, nullptr);
+    ASSERT_FLOAT_EQ(before->voxel, 0.05f);
+
+    // Paused BEFORE the reconfigure, so it is still paused after: no new frame can publish over a
+    // stale snapshot and make the assertion below pass for the wrong reason.
+    pipe.SetPaused(true);
+    cfg.map.baseVoxel = 0.09f;
+    pipe.Reconfigure(cfg, identity());
+
+    EXPECT_EQ(pipe.LatestModel(), nullptr)
+            << "the previous run's snapshot survived the reconfigure: the next frame would align "
+               "against the old map at the old voxel size";
+
+    // And once it resumes, what appears is the NEW configuration.
+    pipe.SetPaused(false);
+    ASSERT_TRUE(waitProcessed(pipe, 1));
+    const auto after = pipe.LatestModel();
+    ASSERT_NE(after, nullptr);
+    EXPECT_FLOAT_EQ(after->voxel, 0.09f);
+    pipe.Stop();
 }
