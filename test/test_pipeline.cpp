@@ -1896,3 +1896,74 @@ TEST(Pipeline, ReconfigureOverARecordingRebuildsRepeatedly) {
     }
     pipe.Stop();
 }
+
+// Tracker::Configure has to reach whichever tracker actually solves, including through a
+// composite. Callers used to configure via dynamic_cast<GpuIcpTracker*>, which MISSES on
+// "icp+global" -- RelocalizingIcpTracker CONTAINS a GpuIcpTracker rather than deriving from one --
+// so every gate was silently dropped for exactly the tracker whose fallback makes tuning matter.
+//
+// Asserted through behaviour, not a getter: maxStepMeters is set far below the fixture's known
+// displacement, so the solve must be refused as ImplausibleMotion. Left unconfigured, the default
+// gate is max(0.08, 1.6*voxel) and the same solve is accepted -- which is what made the dropped
+// gate invisible.
+TEST(Pipeline, ConfigureReachesTheSolverThroughEveryTracker) {
+    const Corner corner = makeCorner();
+
+    ep::ModelSnapshot model;
+    model.voxel = 0.02f; // default gate = max(0.08, 1.6*0.02) = 0.08 m
+    model.entries.reserve(corner.pts.size());
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        TSDFVoxel e{};
+        e.center = corner.pts[i];
+        e.normal = corner.nrm[i];
+        model.entries.push_back(e);
+    }
+
+    // ~0.027 m of translation: comfortably under the 0.08 m default, far over the 0.001 m gate set
+    // below. That gap is what makes the assertion discriminate.
+    Eigen::Isometry3f perturb = Eigen::Isometry3f::Identity();
+    perturb.translate(Vector3f(0.02f, -0.015f, 0.01f));
+    perturb.rotate(Eigen::AngleAxisf(0.03f, Vector3f::UnitZ()));
+
+    ep::Frame frame;
+    for (std::size_t i = 0; i < corner.pts.size(); ++i) {
+        frame.pts.push_back(perturb * corner.pts[i]);
+        frame.nrm.push_back(perturb.rotation() * corner.nrm[i]);
+    }
+
+    for (const char *name: {"icp", "icp-cpu", "icp+global"}) {
+        const std::unique_ptr<ep::Tracker> unconfigured = ep::TrackerRegistry::Default().Create(name);
+        ASSERT_NE(unconfigured, nullptr) << name;
+        const ep::TrackingResult loose =
+                unconfigured->Track(frame, &model, Eigen::Isometry3f::Identity());
+        ASSERT_TRUE(loose.valid) << name << ": the fixture must converge with the default gate, or "
+                                          "the tight-gate assertion below proves nothing";
+
+        const std::unique_ptr<ep::Tracker> configured = ep::TrackerRegistry::Default().Create(name);
+        Registration::RegistrationParam gates;
+        gates.maxStepMeters = 0.001f; // far below the fixture's displacement
+        configured->Configure(gates);
+        const ep::TrackingResult tight =
+                configured->Track(frame, &model, Eigen::Isometry3f::Identity());
+
+        EXPECT_FALSE(tight.valid) << name << ": Configure did not reach the solver";
+        EXPECT_EQ(tight.failure, ep::ETrackFailure::ImplausibleMotion) << name;
+    }
+}
+
+// A tracker with no gates must ignore Configure rather than reject it -- callers configure
+// whatever the registry handed them without knowing which one it is.
+TEST(Pipeline, ConfigureIsHarmlessOnGatelessTrackers) {
+    const std::unique_ptr<ep::Tracker> tracker = ep::TrackerRegistry::Default().Create("identity");
+    ASSERT_NE(tracker, nullptr);
+    Registration::RegistrationParam gates;
+    gates.maxStepMeters = 0.001f;
+    gates.minFitness = 0.99f;
+    EXPECT_NO_THROW(tracker->Configure(gates));
+
+    ep::Frame frame;
+    frame.pts.emplace_back(0.0f, 0.0f, 1.0f);
+    frame.nrm.emplace_back(0.0f, 0.0f, 1.0f);
+    const ep::TrackingResult r = tracker->Track(frame, nullptr, Eigen::Isometry3f::Identity());
+    EXPECT_TRUE(r.valid) << "identity stopped accepting frames after being configured";
+}

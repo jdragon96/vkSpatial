@@ -99,7 +99,14 @@ namespace {
         ep::TrackerRegistry registry = ep::TrackerRegistry::Default();
         std::unique_ptr<ep::Tracker> tracker = registry.Create(trackerName);
         if (g_minFitness > 0.0f)
-            if (auto *gpu = dynamic_cast<ep::GpuIcpTracker *>(tracker.get())) gpu->SetMinFitness(g_minFitness);
+            // Through the Tracker hook, not a cast to GpuIcpTracker: the cast missed "icp+global"
+            // (it CONTAINS a GpuIcpTracker rather than deriving from one), so --min-fitness was
+            // silently ignored for it and the sweep compared a gate that was never applied.
+            {
+                Registration::RegistrationParam gates;
+                gates.minFitness = g_minFitness;
+                tracker->Configure(gates);
+            }
         ep::Pipeline pipe(config, std::move(tracker));
         pipe.Start();
         pipe.SetPaused(false);

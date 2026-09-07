@@ -31,6 +31,13 @@ namespace Pipeline {
                              const ModelSnapshot *model,
                              const Eigen::Isometry3f &priorPose) override;
 
+        // Forwarded to the local solver, which is the one with gates. The global half is
+        // prior-free feature matching and has no use for them, and its result is adopted only
+        // after the local refine passes these same gates anyway.
+        void Configure(const Registration::RegistrationParam &params) override {
+            m_local.Configure(params);
+        }
+
         // Observability: the fallback is expensive and silent success/failure would be
         // undiagnosable — expose how often it fired and how often it was adopted. Atomic because
         // Stats() is read from the caller's thread while Track runs on the registration thread.

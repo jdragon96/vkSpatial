@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Pipeline/Types.h"
+#include "Registration/RegistrationParam.h"
 
 #include <Eigen/Geometry>
 
@@ -34,6 +35,19 @@ namespace Pipeline {
         virtual TrackingResult Track(const Frame &frame,
                                      const ModelSnapshot *model,
                                      const Eigen::Isometry3f &priorPose) = 0;
+        // Optional gate tuning. A tracker with no gates (identity, global) ignores it; the ICP
+        // trackers apply it; a composite forwards it to whichever tracker actually solves.
+        //
+        // This is a virtual rather than a setter on the concrete class because callers reach a
+        // tracker through TrackerRegistry, which hands back a Tracker. Configuring one meant a
+        // dynamic_cast to GpuIcpTracker, and that cast MISSES on "icp+global" -- which contains a
+        // GpuIcpTracker rather than deriving from one -- so every gate the caller set was silently
+        // dropped for exactly the tracker whose extra machinery makes tuning matter most.
+        //
+        // Fields left at 0 mean "keep the tracker's own default"; what that default is belongs to
+        // the tracker, not the caller. Call it before Track: there is no locking.
+        virtual void Configure(const Registration::RegistrationParam &params) { (void) params; }
+
         // Internal counters for Pipeline::GetStats(). Called from the caller's thread while Track
         // runs on the registration thread, so an implementation must keep them atomic.
         virtual TrackerStats Stats() const { return {}; }

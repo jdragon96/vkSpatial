@@ -366,10 +366,9 @@ int main(int argc, char **argv) {
         // which opens the device synchronously. A missing camera or an occupied recording
         // directory therefore reports as one CLI line, with no window ever appearing -- and the
         // device is opened exactly once, which a separate pre-flight probe would not manage.
-        // The gates below only reach the tracker through GpuIcpTracker's concrete setters --
-        // TrackerRegistry::Factory takes no arguments and Tracker has no parameter interface -- so
-        // building one is a create-then-configure pair, kept here so the option panel's rebuild and
-        // the initial construction cannot drift.
+        // TrackerRegistry::Factory takes no arguments, so building a configured tracker is a
+        // create-then-configure pair. Kept in one place so the option panel's rebuild and the
+        // initial construction cannot drift.
         Registration::RegistrationParam trackerParam;
         trackerParam.maxCorrDist = 0.0f; // 0 = leave Track's own voxel-derived value alone
         trackerParam.minFitness = 0.0f;
@@ -381,12 +380,7 @@ int main(int argc, char **argv) {
                 -> std::unique_ptr<ep::Tracker> {
             std::unique_ptr<ep::Tracker> made = registry.Create(name);
             if (!made) throw std::runtime_error("realsense_scan: unknown tracker '" + name + "'");
-            if (auto *gpu = dynamic_cast<ep::GpuIcpTracker *>(made.get())) {
-                if (param.maxCorrDist > 0.0f) gpu->SetMaxCorrespondenceDistance(param.maxCorrDist);
-                if (param.minFitness > 0.0f) gpu->SetMinFitness(param.minFitness);
-                if (param.maxStepMeters > 0.0f) gpu->SetMaxStepMeters(param.maxStepMeters);
-                if (param.minInliers > 0) gpu->SetMinInliers(param.minInliers);
-            }
+            made->Configure(param); // reaches icp, icp-cpu and icp+global alike
             return made;
         };
 

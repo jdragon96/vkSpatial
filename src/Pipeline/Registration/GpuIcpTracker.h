@@ -20,6 +20,17 @@ namespace Pipeline {
         // cell count cubically, so a viewer exposing it should keep it near a few map voxels.
         void SetMaxCorrespondenceDistance(float metres) { m_params.maxCorrDist = metres; }
         void SetMinInliers(int count) { m_params.minInliers = count; }
+
+        // Only non-zero fields are taken: 0 means "leave the default", and for maxCorrDist and
+        // maxStepMeters that default is derived per frame from the map voxel, which a caller
+        // cannot know in advance.
+        void Configure(const Registration::RegistrationParam &params) override {
+            if (params.maxCorrDist > 0.0f) m_params.maxCorrDist = params.maxCorrDist;
+            if (params.minFitness > 0.0f) m_params.minFitness = params.minFitness;
+            if (params.maxStepMeters > 0.0f) m_params.maxStepMeters = params.maxStepMeters;
+            if (params.minInliers > 0) m_params.minInliers = params.minInliers;
+        }
+
         const char *Name() const override { return "icp"; }
 
         TrackingResult Track(const Frame &frame,
